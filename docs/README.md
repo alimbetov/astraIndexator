@@ -34,7 +34,7 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 | TZ-10 | Access Zones & TTL | AstraVector-compatible access-zone selectors, one-zone ingestion scope, registry-owned TTL semantics | Baseline |
 | TZ-11 | AstraVector Integration | Public ingestion facade, LogicalBlock mapping, single/session ingestion, batching, idempotency, reconciliation and readiness | Baseline |
 | TZ-12 | Document Lifecycle | Create/new-version/reindex/delete, cancellation, TTL expiry, replacement and searchability semantics | Baseline |
-| TZ-13 | Reliability & Recovery | Crash recovery, poison jobs, dead-letter, reconciliation | Planned |
+| TZ-13 | Reliability & Recovery | Crash recovery, replay, reconciliation, poison jobs, dead-letter, fencing and operator recovery | Baseline |
 | TZ-14 | Observability | Logs, metrics, tracing, health/readiness, audit fields | Planned |
 | TZ-15 | Configuration & Model Delivery | Nexus model delivery, config schema, startup validation | Planned |
 | TZ-16 | Security | Trust boundary, secrets, storage/network policies, validation | Planned |
@@ -243,22 +243,58 @@ Session expiry and document TTL expiry are distinct lifecycle events. AstraVecto
 
 Source objects, prepared canonical artifacts and AstraVector vector state are separate resources and therefore have separate retention/deletion policies.
 
+## Reliability and recovery invariant
+
+Recovery is **state-driven**, not a blind restart of the whole pipeline.
+
+Canonical recovery model:
+
+```text
+reclaim expired lease
+  -> validate fencing generation
+  -> load durable checkpoints
+  -> validate source/prepared artifact compatibility
+  -> reconcile downstream ingestion/vector state
+  -> resume from earliest safe stage
+  -> execute idempotently
+  -> prove searchable or enter terminal failure/dead-letter
+```
+
+A mutating RPC timeout is an ambiguous outcome, not proof of failure. Start/Append/Finalize/Delete are reconciled before unsafe replacement or replay. Compatible prepared artifacts and deterministic session checkpoints are reused across worker crashes.
+
+AstraIndexator never repairs Qdrant directly; AstraVector PostgreSQL remains the downstream canonical state and Qdrant is a rebuildable search projection.
+
+Finite retry budgets are mandatory. Poison work transitions to `DEAD_LETTER`, and requeue is explicit, auditable and history-preserving.
+
 ## Current critical design path
 
-The cross-service correctness chain now has baseline specifications for:
+The cross-service correctness/control-plane chain now has baseline specifications for:
 
 ```text
 TZ-02 Job Coordinator & PostgreSQL       ✅
 TZ-10 Access Zones & TTL                 ✅
 TZ-11 AstraVector Integration            ✅
 TZ-12 Document Lifecycle                 ✅
+TZ-13 Reliability & Recovery             ✅
 ```
 
-The next critical design work is:
+Before production implementation, the processing-plane specifications still need to be completed:
 
 ```text
-TZ-13 Reliability & Recovery
-  -> TZ-17 failure/recovery E2E verification
+TZ-03 Object Storage / SeaweedFS
+TZ-04 File Validation & Acquisition
+TZ-05 Document Parser
+TZ-06 OCR Pipeline
+TZ-07 Text Normalization
 ```
 
-TZ-13 must combine TZ-02 fencing, TZ-09 prepared artifacts, TZ-11 session checkpoints and TZ-12 lifecycle reconciliation into deterministic recovery for worker/dependency crashes and ambiguous downstream mutations.
+Then the next cross-cutting specifications should close operability and proof:
+
+```text
+TZ-14 Observability
+TZ-16 Security
+TZ-17 Testing & Verification
+TZ-18 Deployment & Operations
+```
+
+TZ-17 SHALL convert the golden failure scenarios from TZ-13 into executable multi-replica, lost-ACK, crash/reclaim and end-to-end retrieval evidence.
