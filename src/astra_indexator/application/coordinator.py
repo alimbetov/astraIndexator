@@ -11,7 +11,7 @@ from astra_indexator.persistence.models import IndexationJob, JobEvent, Processi
 
 
 class LeaseLostError(RuntimeError):
-    """Raised when a worker tries to mutate state with a stale lease token."""
+    """Raised when a worker tries to mutate state with a stale or expired lease token."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,8 +35,8 @@ class ClaimedJob:
 class JobCoordinator:
     """M2 coordinator implementing claim/lease/heartbeat/fencing semantics.
 
-    PostgreSQL `now()` is the time authority. All authoritative worker mutations
-    are fenced by `(job_id, worker_id, lease_generation)`.
+    PostgreSQL `now()` is the time authority. Every authoritative worker mutation
+    is fenced by `(job_id, worker_id, lease_generation, non-expired lease)`.
     """
 
     def claim_next(self, session: Session, *, worker_id: str, lease_seconds: int) -> ClaimedJob | None:
@@ -46,7 +46,7 @@ class JobCoordinator:
             raise ValueError("lease_seconds must be positive")
 
         now = func.now()
-        runnable = or_(
+        runnable_state = or_(
             IndexationJob.status == "PENDING",
             and_(
                 IndexationJob.status == "RETRY_WAIT",
@@ -61,7 +61,11 @@ class JobCoordinator:
 
         job = session.execute(
             select(IndexationJob)
-            .where(runnable)
+            .where(
+                runnable_state,
+                IndexationJob.cancel_requested.is_(False),
+                IndexationJob.attempt_count < IndexationJob.max_attempts,
+            )
             .order_by(IndexationJob.priority.desc(), IndexationJob.created_at, IndexationJob.id)
             .with_for_update(skip_locked=True)
             .limit(1)
@@ -242,13 +246,15 @@ class JobCoordinator:
             IndexationJob.id == token.job_id,
             IndexationJob.worker_id == token.worker_id,
             IndexationJob.lease_generation == token.lease_generation,
+            IndexationJob.lease_until.is_not(None),
+            IndexationJob.lease_until >= func.now(),
         )
 
     @staticmethod
     def _require_one(session: Session, stmt) -> None:
         result = session.execute(stmt)
         if result.rowcount != 1:
-            raise LeaseLostError("lease token is stale or job is no longer owned by this worker")
+            raise LeaseLostError("lease token is stale, expired, or job is no longer owned by this worker")
 
     @staticmethod
     def _finish_attempt(
