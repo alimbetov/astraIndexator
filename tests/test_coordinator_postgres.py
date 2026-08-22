@@ -37,6 +37,25 @@ def database_url() -> str:
         command.downgrade(cfg, "base")
 
 
+@pytest.fixture(autouse=True)
+def clean_database(database_url: str):
+    engine = create_engine(database_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "TRUNCATE TABLE "
+                "astra_indexator.knowledge_inventory, "
+                "astra_indexator.job_event, "
+                "astra_indexator.delivery_batch, "
+                "astra_indexator.delivery_checkpoint, "
+                "astra_indexator.processing_attempt, "
+                "astra_indexator.indexation_job CASCADE"
+            )
+        )
+    yield
+    engine.dispose()
+
+
 def _enqueue(engine, count: int) -> list:
     repo = IndexationJobRepository()
     ids = []
@@ -76,6 +95,27 @@ def test_three_replicas_claim_distinct_jobs(database_url: str) -> None:
     assert None not in claimed_ids
     assert set(claimed_ids) == expected
     assert len(set(claimed_ids)) == 3
+    engine.dispose()
+
+
+def test_one_job_is_claimed_by_only_one_replica(database_url: str) -> None:
+    engine = create_engine(database_url)
+    job_id = _enqueue(engine, 1)[0]
+    barrier = Barrier(3)
+
+    def claim(worker_id: str):
+        with Session(engine) as session:
+            barrier.wait()
+            claimed = JobCoordinator().claim_next(session, worker_id=worker_id, lease_seconds=30)
+            session.commit()
+            return None if claimed is None else claimed.token.job_id
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(claim, ["indexator-1", "indexator-2", "indexator-3"]))
+
+    assert results.count(job_id) == 1
+    assert results.count(None) == 2
+    engine.dispose()
 
 
 def test_heartbeat_renews_current_lease(database_url: str) -> None:
@@ -95,6 +135,7 @@ def test_heartbeat_renews_current_lease(database_url: str) -> None:
         renewed = session.get(IndexationJob, job_id)
         assert renewed.lease_until > first_until
         assert renewed.last_heartbeat_at is not None
+    engine.dispose()
 
 
 def test_expired_lease_is_reclaimed_and_generation_increments(database_url: str) -> None:
@@ -138,6 +179,7 @@ def test_expired_lease_is_reclaimed_and_generation_increments(database_url: str)
         assert len(attempts) == 2
         assert attempts[0].result == "LEASE_EXPIRED"
         assert attempts[1].lease_generation == second.token.lease_generation
+    engine.dispose()
 
 
 def test_expired_worker_cannot_complete_before_reclaim(database_url: str) -> None:
@@ -168,6 +210,7 @@ def test_expired_worker_cannot_complete_before_reclaim(database_url: str) -> Non
         job = session.get(IndexationJob, job_id)
         assert job.status == "PROCESSING"
         assert job.completed_at is None
+    engine.dispose()
 
 
 def test_stage_and_completion_are_fenced(database_url: str) -> None:
@@ -188,6 +231,7 @@ def test_stage_and_completion_are_fenced(database_url: str) -> None:
         assert job.processing_stage == "ACQUIRING"
         assert job.worker_id is None
         assert job.lease_until is None
+    engine.dispose()
 
 
 def test_retry_wait_is_not_claimed_before_due_time(database_url: str) -> None:
@@ -212,3 +256,4 @@ def test_retry_wait_is_not_claimed_before_due_time(database_url: str) -> None:
         job = session.get(IndexationJob, job_id)
         assert job.status == "RETRY_WAIT"
         assert job.next_retry_at is not None
+    engine.dispose()
