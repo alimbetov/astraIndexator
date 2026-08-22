@@ -31,8 +31,8 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 | TZ-07 | Text Normalization | Canonical cleanup while preserving provenance and structure | Planned |
 | TZ-08 | Multilingual Logical Splitter | Structure-aware, tokenizer-calibrated logical fragmentation before AstraVector | Baseline |
 | TZ-09 | Canonical Document Model | ParsedDocument, DocumentElement, LogicalFragment, provenance, deterministic IDs, prepared artifacts | Baseline |
-| TZ-10 | Access Zones & TTL | accessZone normalization/propagation and expiration semantics | Planned |
-| TZ-11 | AstraVector Integration | Ingestion DTO, fragment/source-group identity, batching, idempotency, ACK/error handling | Planned |
+| TZ-10 | Access Zones & TTL | AstraVector-compatible access-zone selectors, one-zone ingestion scope, registry-owned TTL semantics | Baseline |
+| TZ-11 | AstraVector Integration | Public ingestion facade, LogicalBlock mapping, session batching, idempotency, status/error handling | Planned |
 | TZ-12 | Document Lifecycle | Create/update/reindex/delete/version replacement semantics | Planned |
 | TZ-13 | Reliability & Recovery | Crash recovery, poison jobs, dead-letter, reconciliation | Planned |
 | TZ-14 | Observability | Logs, metrics, tracing, health/readiness, audit fields | Planned |
@@ -47,7 +47,7 @@ No production implementation should introduce a contract that contradicts these 
 
 ## Canonical responsibility boundary
 
-AstraIndexator owns document acquisition, parsing, OCR, normalization and **logical semantic fragmentation**. AstraVector owns tokenizer/model execution, dense/sparse embedding generation, multi-granularity searchable chunking, vector persistence and retrieval.
+AstraIndexator owns document acquisition, parsing, OCR, normalization and **logical semantic fragmentation**. AstraVector owns tokenizer/model execution, tokenizer-aware searchable chunking, dense/sparse embedding generation, canonical vector/document state, Qdrant projection, activation/reconciliation and retrieval.
 
 ```text
 Spring Boot
@@ -66,15 +66,15 @@ Spring Boot
             `- multilingual logical splitting
                     |
                     v
-              LogicalFragment[]
+            canonical logical blocks
                     |
                     v
-               AstraVector
-                    |- SOURCE/PARENT/SUB_* chunking
-                    |- tokenizer
+        AstraVectorIngestionFacade
+                    |- tokenizer-aware chunking
                     |- BGE-M3
                     |- dense/sparse projection
                     |- PostgreSQL/Qdrant
+                    |- activation/reconciliation
                     `- retrieval
 ```
 
@@ -116,7 +116,7 @@ PENDING
 
 `processing_stage` carries progress details such as parsing/OCR/splitting/delivery while top-level status remains stable.
 
-Large-document recovery requires prepared-artifact checkpoints plus persisted fragment-delivery checkpoints so a crash does not force blind full reprocessing or duplicate downstream ingestion.
+Large-document recovery requires prepared-artifact checkpoints plus persisted downstream/session checkpoints so a crash does not force blind full reprocessing or duplicate downstream ingestion.
 
 ## Canonical document-model invariant
 
@@ -127,11 +127,11 @@ IndexationJob
   -> SourceObject
   -> ParsedDocument
   -> DocumentElement[]
-  -> LogicalFragment[]
-  -> AstraVector source-group ingestion
+  -> LogicalFragment[] / AstraVector LogicalBlock mapping
+  -> AstraVector public ingestion facade
 ```
 
-`LogicalFragment` is the stable AstraIndexator semantic source container. It MUST NOT be confused with AstraVector-generated `SOURCE`, `PARENT`, `SUB_180`, `SUB_260` chunks or their IDs.
+`LogicalFragment` is the stable AstraIndexator semantic source container. It MUST NOT be confused with AstraVector-generated tokenizer-aware chunks or their internal IDs.
 
 The canonical model must preserve:
 
@@ -141,7 +141,7 @@ The canonical model must preserve:
 - page/slide/sheet/layout provenance where available;
 - image/OCR origin relationships;
 - structured tables/lists;
-- `originalText` versus synthetic `contextPrefix` versus downstream `embeddingText`;
+- `originalText` versus synthetic `contextPrefix` versus downstream embedding representation;
 - processing/schema versions needed for deterministic replay and diagnostics.
 
 Prepared artifacts are expected to use a manifest plus streaming-friendly element/fragment collections such as JSONL so downstream delivery can be replayed without reparsing the original binary when the canonical schema version is supported.
@@ -155,21 +155,44 @@ Canonical path:
 ```text
 ParsedDocument
   -> LogicalFragment[]
-  -> AstraVector CreateMultiGranularityChunks
-  -> SOURCE / PARENT / SUB_180 / SUB_260
+  -> AstraVector LogicalBlock[]
+  -> AstraVector tokenizer-aware chunking
+  -> searchable parent/child representations
 ```
 
 For multilingual content, language switching alone is not a split boundary. Original language content is preserved; automatic translation/transliteration is not part of the indexing pipeline.
+
+## Access-zone and TTL invariant
+
+AstraIndexator mirrors the current AstraVector contract instead of inventing a parallel security/lifecycle model.
+
+```text
+accessZoneCode = exactly four ASCII digits: 0000..9999
+accessZoneId   = UUID-backed zone identity
+```
+
+One indexed document version belongs to exactly one effective access zone. Plural zone selectors are retained for producer/retrieval compatibility, but a single indexing job MUST normalize to one distinct effective zone; AstraIndexator does not silently fan-out one job into multiple zones.
+
+The current AstraVector code-to-default-TTL matrix is documented in TZ-10 for compatibility and verification, but the Access Zone Registry remains the runtime authority. AstraIndexator MUST NOT independently implement the matrix as business policy.
+
+For session ingestion:
+
+```text
+ttl_days = 0 -> inherit effective zone/platform policy
+
+ttl_days > 0 -> explicit relative finite lifetime in days
+```
+
+`0` MUST NOT be interpreted as unconditional never-expire. AstraVector owns effective expiry, search exclusion, cleanup and Qdrant reconciliation.
 
 ## Current critical design path
 
 The next specifications should close the cross-service correctness chain in this order:
 
 ```text
-TZ-10 Access Zones & TTL
-  -> TZ-11 AstraVector Integration
+TZ-11 AstraVector Integration
   -> TZ-13 Reliability & Recovery
   -> TZ-17 failure/recovery E2E verification
 ```
 
-This sequence ensures access/lifecycle semantics are fixed before the downstream ingestion protocol and that recovery is designed against the real coordinator and AstraVector contracts.
+TZ-11 must now bind the canonical AstraIndexator document model to the actual `AstraVectorIngestionFacade`, including single-call versus session ingestion, `LogicalBlock[]`, idempotency/session hashes, access-zone propagation, TTL mapping and authoritative status handling.
