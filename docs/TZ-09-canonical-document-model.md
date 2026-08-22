@@ -8,153 +8,130 @@
 - **Status:** Consolidated design baseline
 - **Parent specification:** `TZ-00-system-architecture.md`
 - **Related specifications:** TZ-01, TZ-03, TZ-04, TZ-05, TZ-06, TZ-07, TZ-08, TZ-10, TZ-11, TZ-12, TZ-13, TZ-14, TZ-17
-- **Primary downstream integration:** AstraVector `RegisterDocumentVersion` + `CreateMultiGranularityChunks`
+- **Authoritative downstream wire contract:** `astravector.embedding.v1.AstraVectorIngestionFacade` from `alimbetov/llm2/main`
+- **Approved consumer mapping:** `agent-astradeployment-portable-local-1.0/docs/integration/ASTRAINDEXATOR_PROTO_MAPPING.md` and `EXTERNAL_DTO_REFERENCE.md`
 
 ---
 
 ## 2. Purpose
 
-This specification defines the canonical data model used inside AstraIndexator between acquisition/parsing/OCR/normalization/logical fragmentation and downstream AstraVector ingestion.
-
-The model SHALL provide a stable, versioned semantic boundary independent of source file format and independent of AstraVector's internal chunk topology.
+This specification defines AstraIndexator's canonical, storage-independent document model between acquisition/parsing/OCR/normalization/logical fragmentation and the AstraVector adapter.
 
 The canonical flow is:
 
 ```text
 IndexationJob
-   -> SourceObject
-   -> ParsedDocument
-   -> DocumentElement[]
-   -> normalized canonical document
-   -> LogicalFragment[]
-   -> AstraVector source-group ingestion
+  -> AcquiredSource
+  -> ParsedDocument
+  -> DocumentElement[]
+  -> normalized canonical document
+  -> LogicalFragment[]
+  -> LogicalBlockMapper
+  -> AstraVector LogicalBlock[]
+  -> AstraVectorIngestionFacade
 ```
 
-AstraIndexator owns `ParsedDocument`, `DocumentElement` and `LogicalFragment` semantics.
+AstraIndexator owns `ParsedDocument`, `DocumentElement`, `LogicalFragment`, provenance and deterministic source identities.
 
-AstraVector owns `SOURCE`, `PARENT`, `SUB_180`, `SUB_260`, embeddings, vector projection and retrieval internals.
+AstraVector owns tokenizer-aware chunking, BGE-M3 execution, generated searchable chunk identities, embeddings, canonical vector/document state, outbox/Qdrant projection, activation/reconciliation, effective TTL and retrieval.
+
+Legacy v004 control-plane concepts such as `RegisterDocumentVersion`, `CreateMultiGranularityChunks`, `SOURCE`, `PARENT`, `SUB_180`, `SUB_260` and `root_chunk_id` are **not** the AstraIndexator integration boundary and MUST NOT appear in AstraIndexator domain DTOs.
 
 ---
 
-## 3. Architectural goals
+## 3. Canonical design goals
 
 The canonical model MUST:
 
-1. preserve stable business document identity end-to-end;
-2. preserve exact document version identity;
-3. preserve source provenance sufficient for citation and diagnostics;
-4. normalize heterogeneous source formats into one representation;
-5. preserve document structure and reading order;
-6. preserve multilingual content without translation/transliteration;
-7. preserve image/OCR origin relationships;
-8. preserve tables and lists as structured elements;
-9. produce deterministic logical fragment identities for repeatable reindexing;
-10. distinguish original normalized text from contextualized embedding text;
-11. permit prepared artifacts to be serialized and recovered without reparsing the source;
-12. map cleanly to AstraVector without exposing AstraVector internal chunk IDs as AstraIndexator identities;
-13. support future schema evolution with explicit contract versioning.
+1. preserve stable document identity and immutable version identity;
+2. preserve source provenance sufficient for citation and diagnostics;
+3. normalize heterogeneous file formats into one semantic representation;
+4. preserve reading order and document hierarchy;
+5. preserve multilingual RU/KK/EN content without translation/transliteration;
+6. preserve image/OCR origin relationships;
+7. preserve tables and lists as structured data;
+8. produce deterministic element/fragment identities under the same processing fingerprint;
+9. distinguish source/original text, normalized text and contextualized downstream text;
+10. permit prepared artifacts to be serialized/replayed without reparsing the source;
+11. map deterministically to AstraVector `LogicalBlock[]`;
+12. never expose AstraVector-generated chunk IDs as AstraIndexator canonical identities;
+13. support explicit schema evolution.
 
 ---
 
 ## 4. Non-goals
 
-TZ-09 SHALL NOT define:
+TZ-09 does not define:
 
-- PostgreSQL claim/lease mechanics;
-- SeaweedFS object lifecycle;
+- PostgreSQL claim/lease/fencing mechanics;
+- SeaweedFS retention/publication mechanics;
 - parser implementation libraries;
-- OCR model choice;
-- logical boundary scoring details beyond the fields needed to represent decisions;
-- BGE-M3 tokenization;
-- AstraVector `PARENT/SUB_*` chunk generation;
+- OCR model delivery;
+- logical split scoring algorithms;
+- BGE-M3 tokenization or embedding generation;
+- AstraVector generated parent/child/atomic chunk topology;
 - Qdrant payload implementation;
-- retrieve ranking.
-
-Those concerns belong to their respective specifications.
+- retrieval ranking.
 
 ---
 
-## 5. Canonical entity hierarchy
+## 5. Identity model
 
-```text
-IndexationJob
-  |
-  `-- DocumentIdentity
-      |
-      +-- SourceObject
-      |
-      `-- ParsedDocument
-           |
-           +-- DocumentMetadata
-           +-- LanguageContext
-           +-- ProcessingProvenance
-           +-- DocumentElement[]
-           |     +-- HEADING
-           |     +-- PARAGRAPH
-           |     +-- LIST
-           |     +-- LIST_ITEM
-           |     +-- TABLE
-           |     +-- IMAGE
-           |     +-- OCR_TEXT
-           |     +-- CAPTION
-           |     +-- CODE_BLOCK
-           |     +-- PAGE_BREAK
-           |     `-- OTHER
-           |
-           `-- LogicalFragment[]
-                 +-- stable fragmentId
-                 +-- originalText
-                 +-- contextPrefix
-                 +-- embeddingText
-                 +-- hierarchy
-                 +-- language context
-                 +-- provenance range
-                 +-- statistics
-                 `-- split decision
-```
-
----
-
-## 6. Identity model
-
-The following identifiers MUST remain semantically distinct:
+These identities are semantically distinct:
 
 ```text
 documentId
-  != documentVersion
-  != jobId
-  != processingAttemptId
-  != elementId
-  != fragmentId
-  != AstraVector root_chunk_id
-  != AstraVector parent/sub chunk IDs
+!= documentVersion
+!= jobId
+!= processingAttemptId
+!= elementId
+!= fragmentId
+!= LogicalBlock.blockId
+!= AstraVector generated chunk IDs
+!= ingestionSessionId
 ```
 
-### 6.1 documentId
+### 5.1 `documentId`
 
-Stable business/platform document identifier supplied before AstraIndexator processing.
+Baseline AstraIndexator 1.0 domain type:
 
-Requirements:
+```text
+UUID-compatible stable identifier
+```
 
-- MUST remain unchanged across worker retries;
-- SHOULD remain unchanged across revisions of the same logical document;
-- MUST be propagated into all fragments and downstream AstraVector requests;
-- MUST NOT be derived from temporary file paths, worker IDs or parsing attempts;
-- MUST be usable for later retrieve/document lifecycle operations.
+Rules:
 
-### 6.2 documentVersion
+- stable across retries and reindex attempts of the same logical document;
+- stable across document versions;
+- never derived from temporary file paths or worker identity;
+- supplied downstream explicitly whenever the AstraVector facade allows it.
 
-Producer-visible immutable version identifier for the submitted content revision.
+### 5.2 `documentVersion`
 
-AstraIndexator SHALL treat the value as opaque unless the downstream contract requires a canonical numeric mapping.
+AstraIndexator 1.0 canonical version is a **positive numeric version**:
 
-If AstraVector requires numeric `document_version`, TZ-11 SHALL define the authoritative mapping and persistence strategy; TZ-09 SHALL retain the original producer version string as canonical source metadata.
+```text
+long / uint64 semantic domain
+value > 0
+```
 
-### 6.3 elementId
+The producer contract SHOULD supply a positive numeric version. A business/source-system revision that is not numeric belongs in metadata such as `externalRevision` and MUST NOT replace the canonical numeric version.
 
-Stable identifier of one canonical source element within one parsed document version.
+Important wire constraint from current `llm2`:
 
-Recommended deterministic construction input:
+```text
+IndexLogicalDocument.DocumentIdentity.document_version = uint64
+DocumentRef.document_version                           = uint64
+StartLogicalDocumentIngestionRequest.document_version  = uint32
+```
+
+Therefore the session-ingestion adapter SHALL reject a canonical version outside the current `uint32` Start range instead of truncating or wrapping it.
+
+### 5.3 `elementId`
+
+Deterministic identity for one canonical source element within one document version.
+
+Recommended deterministic inputs:
 
 ```text
 documentId
@@ -162,17 +139,14 @@ documentId
 + canonical reading-order position
 + element type
 + stable source locator
++ canonical schema/parser profile
 ```
 
-The implementation MAY use a namespaced hash/UUID, but generation MUST be deterministic for identical normalized parser output under the same canonical schema/parser profile.
+### 5.4 `fragmentId`
 
-### 6.4 fragmentId
+Deterministic AstraIndexator logical-fragment identity.
 
-Stable identifier of one AstraIndexator logical fragment.
-
-`fragmentId` identifies the logical source container delivered to AstraVector. It is NOT an AstraVector chunk ID.
-
-Recommended conceptual identity:
+Conceptual formula:
 
 ```text
 fragmentId = deterministic_id(
@@ -184,17 +158,17 @@ fragmentId = deterministic_id(
 )
 ```
 
-A repeated reprocessing of unchanged content with the same relevant parser/normalizer/splitter contract SHOULD reproduce the same `fragmentId`.
+`fragmentId` is never an AstraVector generated chunk ID.
 
-A material logical split change MAY legitimately change fragment IDs and MUST be visible through splitter/profile version metadata.
+### 5.5 `LogicalBlock.blockId`
+
+`blockId` is the public ingestion identity of one block in the deterministic LogicalBlock tree. It MAY reuse a canonical element/fragment identity when semantics are one-to-one, but this is a mapper decision. The mapping MUST remain deterministic for the same canonical input and adapter contract version.
 
 ---
 
-## 7. Canonical schema versioning
+## 6. Canonical schema versioning
 
-Every prepared canonical artifact MUST declare a schema version.
-
-Baseline:
+Every prepared canonical artifact declares:
 
 ```text
 schemaVersion = astra-indexator-document-v1
@@ -202,15 +176,14 @@ schemaVersion = astra-indexator-document-v1
 
 Rules:
 
-- backward-compatible additive changes MAY retain major version `v1`;
-- semantic/incompatible changes require a new major canonical schema version;
-- deserializers SHOULD reject unsupported major versions;
-- prepared artifacts MUST retain the exact schema version used to create them;
-- schema version MUST participate in verification evidence and replay diagnostics.
+- additive compatible changes may retain major version `v1`;
+- incompatible semantic changes require a new major version;
+- unsupported major versions are rejected during replay;
+- schema version participates in processing/replay compatibility diagnostics.
 
 ---
 
-## 8. ParsedDocument
+## 7. ParsedDocument
 
 Conceptual DTO:
 
@@ -218,13 +191,14 @@ Conceptual DTO:
 {
   "schemaVersion": "astra-indexator-document-v1",
   "document": {
-    "documentId": "DOC-100",
-    "documentVersion": "3"
+    "documentId": "20fd6906-cf10-4d2a-bdbf-31ae32316716",
+    "documentVersion": 3,
+    "externalRevision": "optional-source-revision"
   },
   "source": {
     "storage": "SEAWEEDFS",
     "bucket": "documents",
-    "objectKey": "original/DOC-100/v3/source.pdf",
+    "objectKey": "original/.../v3/source.pdf",
     "fileName": "contract.pdf",
     "declaredContentType": "application/pdf",
     "detectedContentType": "application/pdf",
@@ -242,154 +216,90 @@ Conceptual DTO:
 }
 ```
 
-`ParsedDocument` SHALL represent one immutable processing view of one source document version.
+`ParsedDocument` represents one immutable processing view of one source document version.
 
 ---
 
-## 9. SourceObject
+## 8. SourceObject
 
-Required/expected source fields:
+Expected fields:
 
 | Field | Required | Meaning |
 |---|---:|---|
-| `storage` | yes | Source storage type, initially `SEAWEEDFS` |
-| `bucket` | conditional | Logical bucket/collection where applicable |
-| `objectKey` | yes | Physical source object reference |
-| `fileName` | no | Original/display file name |
-| `declaredContentType` | no | Producer-provided MIME hint |
-| `detectedContentType` | yes after validation | Actual detected MIME/type |
-| `contentHash` | yes after acquisition | Canonical source content hash |
-| `sizeBytes` | yes after acquisition | Source size |
-| `etag` | no | Storage version hint |
-| `versionId` | no | Storage-native object version if available |
+| `storage` | yes | storage type, initially SeaweedFS |
+| `bucket` | conditional | logical bucket/collection |
+| `objectKey` | yes | source object reference |
+| `fileName` | no | original/display name |
+| `declaredContentType` | no | producer MIME hint |
+| `detectedContentType` | yes after TZ-04 | detected format/MIME |
+| `contentHash` | yes after acquisition | SHA-256 source identity |
+| `sizeBytes` | yes | actual acquired bytes |
+| `etag` | no | storage evidence |
+| `versionId` | no | storage-native version |
 
-`documentId` MUST NOT be inferred from `objectKey`.
+`documentId` MUST NOT be inferred from the object key.
 
 ---
 
-## 10. DocumentMetadata
+## 9. ProcessingProvenance
 
-Business metadata is allowed but bounded.
-
-Recommended representation:
+Prepared canonical data MUST retain processing identity sufficient for deterministic replay and audit:
 
 ```json
 {
-  "title": "Договор поставки",
-  "sourceSystem": "document-service",
-  "businessEntityType": "CONTRACT",
-  "businessEntityId": "C-123"
+  "parser": {"name":"pdf-parser","version":"...","profile":"..."},
+  "ocr": {"engine":"...","modelId":"...","artifactRevision":"...","profile":"..."},
+  "normalizer": {"version":"...","profile":"...","unicodeForm":"NFC"},
+  "splitter": {"version":"...","profile":"..."},
+  "adapter": {"contract":"astravector.embedding.v1","mappingVersion":"..."},
+  "contract": {"schemaVersion":"astra-indexator-document-v1"}
 }
+```
+
+Only executed stages are populated. OCR metadata may be absent when OCR was not used.
+
+---
+
+## 10. LanguageContext
+
+Canonical fields MAY include:
+
+```text
+primary
+detected[]
+mixed
+script
+confidence
 ```
 
 Rules:
 
-- metadata MUST NOT alter document identity semantics;
-- metadata MUST NOT contain secrets or credentials;
-- arbitrary deeply nested objects SHOULD be rejected in v1;
-- scalar values and bounded arrays of scalars are preferred;
-- metadata propagated to AstraVector MUST be explicitly mapped in TZ-11 rather than blindly forwarded.
-
----
-
-## 11. LanguageContext
-
-Canonical representation:
-
-```json
-{
-  "primary": "kk",
-  "detected": ["kk", "ru", "en"],
-  "mixed": true,
-  "script": "CYRILLIC",
-  "confidence": 0.86
-}
-```
-
-Rules:
-
-- language codes SHOULD use BCP 47/ISO-compatible stable codes such as `ru`, `kk`, `en`, `de`;
-- `und` SHALL represent unknown/undetermined language;
+- use stable language tags such as `ru`, `kk`, `en`, `und`;
 - mixed-language content is valid;
-- language detection is metadata, not a processing admission gate;
-- language changes MUST NOT automatically split a fragment;
-- original script and lexical distinctions MUST be preserved;
+- original script is preserved;
+- language changes alone do not force fragment boundaries;
 - translation/transliteration is outside AstraIndexator 1.0.
 
-Language context MAY exist at document, fragment and element levels.
-
 ---
 
-## 12. ProcessingProvenance
+## 11. DocumentElement
 
-Every canonical artifact MUST record enough processing provenance to reproduce/diagnose the result.
-
-Recommended fields:
-
-```json
-{
-  "parser": {
-    "name": "pdf-parser",
-    "version": "1.0.0",
-    "profile": "default"
-  },
-  "ocr": {
-    "engine": "...",
-    "modelVersion": "...",
-    "profile": "multilingual-v1"
-  },
-  "normalizer": {
-    "version": "normalizer-v1",
-    "unicodeForm": "NFC"
-  },
-  "splitter": {
-    "version": "logical-v1",
-    "profile": "multilingual-general-v1"
-  },
-  "contract": {
-    "schemaVersion": "astra-indexator-document-v1"
-  }
-}
-```
-
-Only applicable components need to be populated. For example, OCR metadata may be absent when OCR was not used.
-
----
-
-## 13. DocumentElement base contract
-
-All canonical elements SHALL share a common envelope.
-
-Conceptual DTO:
+Common envelope:
 
 ```json
 {
   "elementId": "el-000213",
   "type": "PARAGRAPH",
   "sequence": 213,
-  "text": "...",
+  "originalText": "...",
+  "normalizedText": "...",
   "language": {},
   "source": {},
   "attributes": {}
 }
 ```
 
-Required semantics:
-
-- `elementId`: deterministic element identity;
-- `type`: canonical element type;
-- `sequence`: total reading-order position within the document;
-- `text`: normalized textual representation when applicable;
-- `source`: source provenance/locator;
-- `attributes`: bounded type-specific attributes.
-
-`sequence` MUST provide a deterministic total order for elements participating in reading order.
-
----
-
-## 14. Canonical DocumentElement types
-
-Baseline v1 types:
+Baseline canonical element types:
 
 ```text
 HEADING
@@ -405,926 +315,304 @@ PAGE_BREAK
 OTHER
 ```
 
-### 14.1 HEADING
+The canonical model may be richer than AstraVector `BlockType`; the adapter performs the lossy/structural mapping explicitly rather than forcing parser semantics to equal wire semantics.
 
-Additional attributes MAY include:
+### Structured requirements
 
-```text
-level
-numbering
-hierarchyPath
-```
+- lists preserve item order, nesting and governing introduction;
+- tables preserve headers/rows/cells and source ranges;
+- images preserve identity/provenance even when not mapped directly to a LogicalBlock;
+- OCR_TEXT retains origin element/image/page/region and OCR model/confidence evidence;
+- code blocks preserve line/whitespace structure;
+- page breaks are provenance, not searchable text by themselves.
 
-A heading SHOULD remain attachable to following body content.
+---
 
-### 14.2 PARAGRAPH
+## 12. SourceProvenance
 
-Represents a coherent textual paragraph in reading order.
-
-### 14.3 LIST / LIST_ITEM
-
-Lists SHALL preserve:
-
-- governing introduction where available;
-- list ordering;
-- nesting level;
-- item marker/numbering;
-- parent list relationship.
-
-### 14.4 TABLE
-
-Table representation MUST preserve tabular semantics and MUST NOT degrade immediately into an unstructured paragraph stream.
-
-Canonical table data SHOULD retain:
+AstraIndexator canonical provenance is richer than the current wire `SourceLocation` and MAY contain:
 
 ```text
-caption/title
-column headers
-rows
-row/column counts
-source range
-```
-
-Large-table continuation semantics are defined by TZ-08.
-
-### 14.5 IMAGE
-
-Image elements SHALL remain representable even when OCR is skipped.
-
-Recommended attributes:
-
-```text
-mimeType
-width
-height
+page/pageFrom/pageTo
+slide
+sheet/sheetRange
+paragraphIndex
 bbox
-page/slide
-embeddedObjectRef
-contentHash
-oCRCandidate
+sourcePart
+sourceObjectRef
+charStart/charEnd
+sectionPath
+heading
+tableId
+rowIndex/columnIndex
 ```
 
-### 14.6 OCR_TEXT
+Unavailable locators are absent/null and MUST NOT be fabricated.
 
-OCR text SHALL point back to the originating image/page/region via `originElementId` or equivalent provenance relation.
+### Wire mapping caveat
 
-Recommended attributes:
+Current `llm2` `SourceLocation` uses non-optional proto3 `uint32` scalar fields:
 
 ```text
-originElementId
-ocrConfidence
-ocrEngine
-ocrModelVersion
-region/bbox
+page_start/page_end
+char_start/char_end
+row_index/column_index
 ```
 
-### 14.7 CAPTION
-
-Captions SHOULD retain a relation to the associated image/table/figure when resolvable.
-
-### 14.8 CODE_BLOCK
-
-Code blocks SHALL preserve whitespace/line structure where parser output permits.
-
-### 14.9 PAGE_BREAK
-
-Used as structural provenance; it SHOULD NOT independently become searchable content.
-
----
-
-## 15. SourceProvenance
-
-Every textual or structural element SHOULD carry the strongest source locator available for its file type.
-
-Canonical source provenance MAY include:
-
-```json
-{
-  "page": 14,
-  "pageFrom": 14,
-  "pageTo": 15,
-  "slide": null,
-  "sheet": null,
-  "sheetRange": null,
-  "paragraphIndex": 27,
-  "bbox": [100.0, 230.0, 812.0, 460.0],
-  "sourcePart": "word/document.xml",
-  "sourceObjectRef": null
-}
-```
-
-Not every format supports every locator.
-
-Rules:
-
-- unavailable locators SHALL be absent/null, not fabricated;
-- page/slide/sheet semantics MUST remain format-aware;
-- bbox coordinates MUST declare a consistent coordinate system in TZ-05/TZ-06;
-- citation-capable formats SHOULD retain page/region ranges.
-
----
-
-## 16. Reading order and layout
-
-The canonical model MUST preserve reconstructed reading order before logical splitting.
-
-This is critical for:
-
-- multi-column PDF;
-- bilingual parallel columns;
-- text surrounding images;
-- captions;
-- page headers/footers;
-- tables.
-
-Language detection SHALL NOT be used as a substitute for layout reconstruction.
-
-For parallel bilingual columns, the parser SHOULD represent column regions separately rather than interleave alternating lines.
-
----
-
-## 17. Native text and OCR coexistence
-
-Native text and OCR may coexist in one document, but duplicate physical content MUST be detectable.
-
-The model SHALL support provenance needed to determine that two textual elements originated from the same or overlapping physical region.
-
-Example:
+AstraIndexator domain DTOs SHALL preserve nullability/presence internally. The adapter SHALL apply one documented convention for absent wire values. Until AstraVector publishes explicit optional presence, baseline convention is:
 
 ```text
-PDF native text region R1
-OCR text region R1
+0 = unknown / not applicable
+1+ = actual 1-based page/row/column where applicable
 ```
 
-MUST NOT silently produce duplicate logical content without an explicit merge/deduplication rule.
-
-The canonical model SHOULD retain extraction method metadata such as:
-
-```text
-NATIVE_TEXT
-OCR_PAGE
-OCR_IMAGE
-```
+Character offsets MAY legitimately start at zero; therefore adapter metadata SHOULD include explicit presence/provenance when ambiguity matters. TZ-17 contract tests SHALL verify the agreed convention against current `llm2` behavior.
 
 ---
 
-## 18. LogicalFragment contract
+## 13. LogicalFragment
 
-`LogicalFragment` is the canonical AstraIndexator output unit for downstream source-group ingestion.
+`LogicalFragment` is the canonical AstraIndexator semantic unit prior to the AstraVector adapter.
 
 Conceptual DTO:
 
 ```json
 {
   "schemaVersion": "astra-indexator-document-v1",
-  "fragmentId": "DOC-100:F-000042",
-  "documentId": "DOC-100",
-  "documentVersion": "3",
+  "fragmentId": "...",
+  "documentId": "20fd6906-cf10-4d2a-bdbf-31ae32316716",
+  "documentVersion": 3,
   "sequence": 42,
   "fragmentType": "SECTION",
-  "language": {
-    "primary": "kk",
-    "detected": ["kk", "ru"],
-    "mixed": true
-  },
-  "hierarchy": [
-    "3. Жеткізу",
-    "3.2 Жеткізу мерзімі"
-  ],
-  "originalText": "Тауарды жеткізу мерзімі...",
-  "contextPrefix": "3. Жеткізу\n3.2 Жеткізу мерзімі",
-  "embeddingText": "3. Жеткізу\n3.2 Жеткізу мерзімі\n\nТауарды жеткізу мерзімі...",
-  "elementIds": ["el-213", "el-214", "el-215"],
-  "source": {
-    "pageFrom": 14,
-    "pageTo": 15,
-    "elementFrom": "el-213",
-    "elementTo": "el-215"
-  },
-  "statistics": {
-    "charCount": 5318,
-    "wordCount": 734,
-    "sentenceCount": 29
-  },
-  "split": {
-    "reason": "SECTION_BOUNDARY",
-    "forced": false,
-    "profile": "multilingual-general-v1",
-    "splitterVersion": "logical-v1"
-  },
-  "contentHash": "sha256:..."
+  "language": {"primary":"kk","detected":["kk","ru"],"mixed":true},
+  "hierarchy": ["3. Жеткізу", "3.2 Жеткізу мерзімі"],
+  "originalText": "...",
+  "normalizedText": "...",
+  "contextPrefix": "...",
+  "embeddingText": "...",
+  "elementIds": ["..."],
+  "source": {},
+  "statistics": {},
+  "splitDecision": {}
 }
 ```
 
----
-
-## 19. originalText, contextPrefix and embeddingText
-
-These fields have different semantics and MUST NOT be conflated.
-
-### 19.1 originalText
-
-The normalized source-derived content represented by the fragment.
-
-It is the authoritative text for source/citation semantics.
-
-### 19.2 contextPrefix
-
-Synthetic structural context added to improve retrievability, for example:
-
-```text
-Document title
-Chapter
-Section
-Subsection
-```
-
-It MAY repeat hierarchy that exists elsewhere in the source.
-
-### 19.3 embeddingText
-
-Materialized downstream source text:
-
-```text
-embeddingText = contextPrefix + canonical separator + originalText
-```
-
-AstraVector receives this text as the logical source container unless TZ-11 defines an evolved explicit context contract.
-
-Citation MUST NOT falsely claim that synthetic `contextPrefix` text occurred at the exact source location represented by `originalText`.
+`embeddingText` is an AstraIndexator derived representation and is not evidence that AstraIndexator owns BGE-M3 tokenization or final searchable chunking.
 
 ---
 
-## 20. Fragment hierarchy
+## 14. Canonical -> AstraVector LogicalBlock mapping
 
-`hierarchy` SHALL represent semantic ancestor context, not arbitrary metadata.
+The approved wire DTO is current `llm2`:
 
-Example:
-
-```json
-[
-  "Глава 3. Поставка",
-  "3.2 Сроки поставки"
-]
-```
-
-Rules:
-
-- order is outermost -> innermost;
-- hierarchy MAY be empty for unstructured content;
-- repeated hierarchy values SHOULD be normalized/deduplicated deterministically;
-- hierarchy must preserve original language/script;
-- hierarchy SHOULD be used to create `contextPrefix` according to TZ-08 profile rules.
-
----
-
-## 21. Fragment source range
-
-A fragment SHALL identify the set/range of canonical elements that produced it.
-
-At minimum:
-
-```text
-elementIds[]
-```
-
-or a compact deterministic range plus sufficient replay information.
-
-Recommended:
-
-```text
-elementFrom
-elementTo
-pageFrom
-pageTo
-```
-
-For non-page formats, format-specific locators MAY supplement or replace page values.
-
----
-
-## 22. Fragment statistics
-
-Baseline fields:
-
-```text
-charCount
-wordCount
-sentenceCount
-```
-
-Optional useful fields:
-
-```text
-elementCount
-lineCount
-tableRowCount
-imageOcrContributionCount
-```
-
-Statistics SHALL be calculated from the exact canonical text representation defined by the splitter profile, with field semantics documented to avoid ambiguity.
-
-They support:
-
-- size guards;
-- calibration;
-- observability;
-- regression testing.
-
----
-
-## 23. SplitDecision
-
-Every fragment SHOULD record why it ended where it did.
-
-Baseline fields:
-
-```json
-{
-  "reason": "SECTION_BOUNDARY",
-  "forced": false,
-  "profile": "multilingual-general-v1",
-  "splitterVersion": "logical-v1"
+```proto
+message LogicalBlock {
+  string block_id = 1;
+  string parent_block_id = 2;
+  BlockType block_type = 3;
+  string text = 10;
+  uint32 order_index = 20;
+  SourceLocation source_location = 30;
+  repeated SourceLink source_links = 31;
+  map<string,string> metadata = 40;
 }
 ```
 
-Recommended reason enum:
+Supported current block types:
 
 ```text
-DOCUMENT_END
-CHAPTER_BOUNDARY
-SECTION_BOUNDARY
-SUBSECTION_BOUNDARY
-ARTICLE_BOUNDARY
-CLAUSE_BOUNDARY
-PARAGRAPH_BOUNDARY
-LIST_GROUP_BOUNDARY
-TABLE_BOUNDARY
-SENTENCE_BOUNDARY
-HARD_LIMIT_FORCED
-```
-
-This metadata is important for quality debugging and deterministic regression evidence.
-
----
-
-## 24. Fragment types
-
-Baseline logical fragment types:
-
-```text
+DOCUMENT
 SECTION
-CLAUSE_GROUP
-PARAGRAPH_GROUP
-LIST_GROUP
+SUBSECTION
+PARAGRAPH
 TABLE
-OCR_REGION
-CODE_SECTION
-UNSTRUCTURED
+TABLE_ROW
+LIST
+LIST_ITEM
+FAQ_ITEM
+CODE_BLOCK
+CAPTION
 ```
 
-The fragment type describes the dominant semantic container, not AstraVector granularity.
+Mapping rules:
 
-No fragment type named `PARENT`, `SUB_180`, `SUB_260` SHALL be introduced into AstraIndexator canonical model because those are downstream AstraVector concepts.
+- exactly one `DOCUMENT` root per document version;
+- `HEADING`/hierarchy may create `SECTION`/`SUBSECTION` blocks;
+- ordinary prose maps to `PARAGRAPH`;
+- structured tables map to `TABLE` plus `TABLE_ROW` where useful;
+- lists map to `LIST` plus `LIST_ITEM`;
+- OCR text maps according to recovered structure, not to a nonexistent `OCR` block type;
+- raw `IMAGE` has no dedicated current AstraVector block type and remains canonical provenance unless useful text/caption/table structure is derived;
+- `PAGE_BREAK` is not emitted as a searchable block;
+- `BLOCK_TYPE_UNSPECIFIED` is never emitted.
+
+`order_index` is `uint32` on the wire. The adapter MUST validate range before conversion.
 
 ---
 
-## 25. Tables in LogicalFragment
+## 15. SourceLink mapping
 
-When a table fits within one fragment, the fragment SHOULD retain a deterministic textual rendering suitable for AstraVector while preserving canonical structured table data in prepared artifacts.
+Current wire fields:
 
-For oversized tables:
+```text
+type
+url
+label
+mime_type
+requires_auth
+expires_at
+attributes
+```
 
-- repeat table title/caption where necessary;
-- repeat column headers;
-- split by row groups;
-- retain row range metadata;
-- do not split one logical row unless unavoidable.
+Current wire link types include:
 
-The serialized canonical document SHOULD preserve the structured table independently from the text rendering used for embedding.
+```text
+ORIGINAL_DOCUMENT
+PREVIEW
+DOWNLOAD
+PAGE
+SECTION
+CHUNK
+EXTERNAL_SYSTEM
+```
+
+Domain code MAY use typed `Instant` for expiry and map it to the wire string representation. Source-link expiry is not document TTL expiry.
+
+No credential/token may be embedded in links or attributes.
 
 ---
 
-## 26. Images and OCR in LogicalFragment
+## 16. Access-zone relationship
 
-Images are not separate business documents by default.
+Access-zone fields are not embedded into every canonical fragment.
 
-An OCR-derived fragment SHALL keep the same `documentId/documentVersion` and SHALL reference its source image element.
-
-Example relationship:
+The accepted job retains producer compatibility selectors:
 
 ```text
-DOC-100
-  IMAGE el-500
-    -> OCR_TEXT el-501
-       -> LogicalFragment DOC-100:F-0088
+accessZoneId
+accessZoneIds[]
+accessZoneCode
+accessZoneCodes[]
 ```
 
-Recommended fragment metadata:
+Before ingestion these normalize to one effective `AccessZoneRef`, per TZ-10/TZ-11.
 
-```text
-originElementIds
-extractionMethod = OCR_IMAGE | OCR_PAGE
-page/region
-ocrModelVersion
-```
-
-A later retrieve by `documentId` therefore covers native and OCR-derived content of the same business document.
+AstraVector may resolve a code to the canonical UUID `access_zone_id`; AstraIndexator Knowledge Inventory SHOULD retain both the requested code (when supplied) and the resolved ID returned through downstream `DocumentRef`/status evidence.
 
 ---
 
-## 27. Parallel translations and multilingual documents
+## 17. Prepared artifact representation
 
-Separate source regions containing parallel translations SHOULD remain separate fragments when that preserves layout and provenance.
+Canonical prepared artifacts use the TZ-03 manifest + sharded JSONL model.
 
-Optional future linkage:
-
-```text
-translationGroupId
-```
-
-Example:
-
-```text
-frag-100-ru -> translationGroupId TG-100
-frag-100-kk -> translationGroupId TG-100
-```
-
-AstraIndexator 1.0 SHALL NOT automatically translate or semantically collapse parallel translations.
-
----
-
-## 28. Content hashing
-
-Hashes SHALL distinguish at least:
-
-1. source document content hash;
-2. canonical fragment content hash;
-3. downstream ingestion fingerprint/idempotency key.
-
-Recommended fragment content hash input:
-
-```text
-canonical UTF-8 embeddingText
-+ relevant schema/profile version markers where required
-```
-
-Exact downstream idempotency fingerprint belongs to TZ-11.
-
-Hash algorithms MUST be explicit and versioned; SHA-256 is the recommended baseline.
-
----
-
-## 29. Determinism requirements
-
-For identical:
-
-```text
-source bytes
-+ parser version/profile
-+ OCR outputs/version where applicable
-+ normalization version/profile
-+ splitter version/profile
-+ canonical schema version
-```
-
-AstraIndexator SHOULD reproduce:
-
-- equivalent reading order;
-- equivalent canonical element sequence;
-- equivalent normalized text;
-- equivalent fragment boundaries;
-- equivalent element IDs;
-- equivalent fragment IDs;
-- equivalent fragment content hashes.
-
-Nondeterministic model-based operations MUST NOT silently affect identity without their version/output fingerprint being part of provenance.
-
----
-
-## 30. Prepared artifact serialization
-
-The canonical model SHALL support durable prepared artifacts in SeaweedFS.
-
-Recommended layout from TZ-00:
-
-```text
-prepared/<documentId>/<processingVersion>/manifest.json
-prepared/<documentId>/<processingVersion>/elements.jsonl
-prepared/<documentId>/<processingVersion>/fragments.jsonl
-```
-
-Recommended `manifest.json` contents:
+At minimum the prepared manifest identifies:
 
 ```text
 schemaVersion
 documentId
 documentVersion
-source contentHash
-jobId
-processing versions
-language summary
-element count
-fragment count
-artifact hashes
+sourceSha256
+processingFingerprint
+parts[] + hashes/counts/order
 createdAt
 ```
 
-JSONL is preferred for potentially large element/fragment collections so consumers can stream without loading the entire document into memory.
+Prepared artifacts are AstraIndexator-internal durable replay data. They are not AstraVector wire DTOs.
+
+Ordering across shards and records MUST be deterministic and explicit in the manifest/part ordering contract.
 
 ---
 
-## 31. Memory and size constraints
+## 18. Structural validation before adapter mapping
 
-The canonical model MUST be stream-friendly for large documents.
+Before network mutation, AstraIndexator validates:
 
-Implementation requirements:
+1. canonical document identity present and version > 0;
+2. deterministic element/fragment ordering;
+3. exactly one downstream `DOCUMENT` root;
+4. non-blank unique block IDs;
+5. valid parent references;
+6. acyclic hierarchy;
+7. non-UNSPECIFIED block type;
+8. non-blank block text where required;
+9. `order_index` fits current `uint32` wire range;
+10. source-location conversion respects presence/zero convention;
+11. source-link/metadata bounds;
+12. one effective ingestion access zone.
 
-- avoid requiring all binary source data in memory;
-- allow element/fragments JSONL streaming;
-- bound per-element metadata;
-- bound arbitrary business metadata;
-- avoid base64 embedding of large images into canonical JSON;
-- represent large image/table artifacts by references when needed.
-
-Image binaries SHALL remain in source/prepared object storage rather than being embedded directly into fragment JSON.
+Server validation remains authoritative.
 
 ---
 
-## 32. Access-zone and lifecycle context
+## 19. Determinism and processing fingerprint
 
-Access-zone and lifecycle fields are cross-cutting document context, not text semantics.
-
-Canonical document/fragment processing MUST preserve the normalized values defined in TZ-10, including where applicable:
+The following materially affect canonical replay identity and therefore participate in processing fingerprint/profile provenance as appropriate:
 
 ```text
-accessZoneIds[]
-accessZoneCodes[]
-accessLevel
-expiresAt
-legalHold/lifecycle metadata when later supported
+canonical schema version
+parser version/profile
+OCR engine/model artifact revision/profile
+normalizer version/profile
+splitter version/profile
+LogicalBlock mapper version
 ```
 
-Fragments SHALL NOT independently invent different access-zone values from their source job unless a future explicitly supported sub-document security model is introduced.
-
-Mapping from potentially plural AstraIndexator zones to AstraVector's actual ingestion contract is defined in TZ-10/TZ-11.
+Changing any behavior that changes canonical elements/fragments/blocks requires new evidence and may require reindexing.
 
 ---
 
-## 33. AstraVector mapping boundary
+## 20. DTO boundary rule
 
-Current AstraVector ingestion exposes `RegisterDocumentVersion` and `CreateMultiGranularityChunks` with document identity, source text, access/lifecycle metadata, profile, metadata, idempotency and correlation fields.
-
-The canonical mapping SHALL follow this semantic model:
+AstraIndexator keeps three layers distinct:
 
 ```text
-AstraIndexator document
-  -> RegisterDocumentVersion once per downstream access-zone/version scope
-
-LogicalFragment #1
-  -> CreateMultiGranularityChunks(source_text = embeddingText)
-  -> AstraVector root_chunk_id A
-
-LogicalFragment #2
-  -> CreateMultiGranularityChunks(source_text = embeddingText)
-  -> AstraVector root_chunk_id B
+canonical/domain DTOs
+       ↓
+AstraVector adapter/mapping
+       ↓
+generated protobuf DTOs from llm2
 ```
 
-`fragmentId` SHALL be retained as caller metadata/idempotency identity and SHOULD be mapped explicitly in TZ-11.
-
-AstraVector-generated `root_chunk_id` MUST be stored as a downstream delivery result/reference; it MUST NOT replace `fragmentId`.
+Generated protobuf classes MUST NOT become AstraIndexator's canonical domain model, and AstraIndexator MUST NOT hand-maintain duplicate wire protobuf classes.
 
 ---
 
-## 34. Downstream idempotency relationship
+## 21. Acceptance criteria
 
-Each fragment delivery MUST have a deterministic downstream idempotency identity.
+TZ-09 is accepted when:
 
-Conceptual baseline:
-
-```text
-ingestionKey = SHA256(
-  documentId
-  + canonical downstream documentVersion
-  + fragmentId
-  + fragmentContentHash
-  + AstraVector ingestion profile/version
-)
-```
-
-The exact formula is owned by TZ-11, but TZ-09 requires all ingredients needed to construct a stable key.
-
-This protects the crash window:
-
-```text
-Indexator sends fragment
-AstraVector commits
-ACK is lost
-worker dies
-another worker retries
-```
-
-The retry MUST resolve to the same logical downstream ingestion rather than create duplicate chunks.
+- **AC-01:** `documentId/documentVersion/jobId/attemptId/elementId/fragmentId/blockId/sessionId` are not conflated;
+- **AC-02:** canonical `documentVersion` is positive numeric;
+- **AC-03:** session adapter rejects versions that exceed current Start `uint32` range;
+- **AC-04:** legacy v004 chunk-control DTOs do not appear in AstraIndexator canonical boundaries;
+- **AC-05:** ParsedDocument preserves structure, language and source provenance;
+- **AC-06:** canonical nullability is not lost merely because current proto scalars lack presence;
+- **AC-07:** tables/lists/images/OCR relations remain representable;
+- **AC-08:** LogicalFragment IDs are deterministic under the same processing fingerprint;
+- **AC-09:** mapper creates exactly one root `DOCUMENT` block;
+- **AC-10:** `LogicalBlock` fields/types match current `llm2` proto;
+- **AC-11:** wire `uint32` fields are range-checked before conversion;
+- **AC-12:** raw images/page breaks are not forced into nonexistent block types;
+- **AC-13:** source links contain no secrets and their expiry is distinct from document TTL;
+- **AC-14:** requested access-zone code and resolved zone ID can both be observed without creating multi-zone ingestion;
+- **AC-15:** prepared artifacts remain replayable independent of protobuf implementation classes;
+- **AC-16:** mapper/schema/model/profile changes are visible in processing identity;
+- **AC-17:** TZ-17 contract tests prove canonical -> proto mapping against the current pinned `llm2` revision.
 
 ---
 
-## 35. Document version registration versus fragment ingestion
+## 22. Final invariant
 
-The model SHALL distinguish:
-
-```text
-DOCUMENT VERSION registration
-```
-
-from:
-
-```text
-LOGICAL FRAGMENT ingestion
-```
-
-A document version is registered once per relevant AstraVector scope, then zero or more logical fragment source groups are created, then document activation occurs according to TZ-11/TZ-12.
-
-A document with no successfully indexed fragments MUST NOT be considered fully indexed merely because its version registration succeeded.
-
----
-
-## 36. Mapping to retrieve/citation
-
-The canonical model MUST preserve enough metadata so downstream retrieve results can ultimately be traced to:
-
-```text
-documentId
--> documentVersion
--> fragmentId
--> canonical element range
--> source object
--> page/slide/sheet/region
-```
-
-This traceability is required for:
-
-- citation rendering;
-- audit;
-- debugging bad retrieval;
-- selective reindexing;
-- OCR/parser quality analysis.
-
----
-
-## 37. Error handling for canonicalization
-
-Canonical model construction SHOULD use machine-readable error categories.
-
-Recommended baseline:
-
-```text
-CANONICAL_SCHEMA_ERROR
-READING_ORDER_ERROR
-UNSUPPORTED_ELEMENT_MAPPING
-PROVENANCE_INCOMPLETE
-DUPLICATE_ELEMENT_ID
-DUPLICATE_FRAGMENT_ID
-INVALID_FRAGMENT_RANGE
-EMPTY_FRAGMENT
-INVALID_LANGUAGE_METADATA
-SERIALIZATION_ERROR
-```
-
-A recoverable optional metadata defect SHOULD NOT fail the entire document when safe degradation is possible; identity/provenance corruption that could misattribute content MUST fail or quarantine the job.
-
----
-
-## 38. Validation invariants
-
-A canonical document is valid only if all applicable invariants hold:
-
-1. `documentId` is non-empty;
-2. `documentVersion` is non-empty;
-3. source content hash exists after acquisition;
-4. element IDs are unique within document version;
-5. element sequences are deterministic and non-conflicting;
-6. fragment IDs are unique within document version/profile;
-7. every fragment references valid element IDs/ranges;
-8. `originalText` is non-empty for searchable textual fragments;
-9. `embeddingText` is non-empty before AstraVector delivery;
-10. fragment source range is ordered;
-11. synthetic context is distinguishable from source-derived content;
-12. OCR-derived text can be traced to source image/page where available;
-13. schema/process versions are present;
-14. no AstraVector internal chunk ID is used as AstraIndexator canonical identity.
-
----
-
-## 39. Compatibility rules
-
-Consumers of prepared canonical artifacts SHALL:
-
-- validate `schemaVersion`;
-- ignore explicitly allowed unknown additive fields when forward-compatible mode is enabled;
-- reject unknown enum values when semantics cannot be safely inferred;
-- never reinterpret an existing field with different semantics without major schema version change.
-
-Canonical field naming SHOULD use lower camelCase in JSON unless a project-wide serialization standard chooses otherwise.
-
----
-
-## 40. Observability requirements
-
-Metrics/logs SHOULD expose aggregate canonicalization quality without using high-cardinality IDs as metric labels.
-
-Useful metrics:
-
-```text
-canonical_elements_total{type}
-logical_fragments_total{fragment_type}
-fragment_forced_split_total
-fragment_size_chars histogram
-fragment_size_words histogram
-ocr_elements_total
-mixed_language_fragments_total
-canonical_validation_failures_total{code}
-prepared_artifact_bytes
-```
-
-Logs MAY include `jobId`, `documentId`, `fragmentId` for diagnostics, subject to TZ-14 logging/privacy rules.
-
----
-
-## 41. Security and data minimization
-
-Canonical/prepared artifacts contain extracted business text and SHALL be protected equivalently to the source document.
-
-Requirements:
-
-- no secrets/tokens in arbitrary metadata;
-- no unrestricted binary embedding in JSON;
-- access-zone/lifecycle context must accompany prepared artifacts according to TZ-10/TZ-16;
-- temporary/debug dumps must not bypass retention/security controls;
-- diagnostic logging must not emit full document text by default.
-
----
-
-## 42. Pydantic/implementation contract
-
-The eventual Python implementation SHOULD represent the canonical schema using strict typed models, preferably Pydantic v2 or an equivalent typed validation layer.
-
-Required characteristics:
-
-- enum-backed element/fragment types;
-- strict validation for required identities;
-- bounded strings/collections where practical;
-- explicit UTC datetime handling;
-- JSON schema generation for contract verification;
-- deterministic serialization for hashing/idempotency;
-- unit tests for round-trip serialization.
-
-The generated Python schema SHALL follow this TZ rather than inventing a divergent implementation-only DTO.
-
----
-
-## 43. Required verification fixtures
-
-TZ-09 implementation tests SHALL include at least:
-
-- native Russian PDF;
-- Kazakh document;
-- mixed RU/KK/EN technical document;
-- scanned PDF with OCR;
-- mixed native/OCR PDF;
-- DOCX with headings, list, table and embedded image;
-- image-only source;
-- bilingual two-column PDF;
-- large table;
-- oversized logical section requiring forced split;
-- unknown language;
-- duplicate native/OCR region case.
-
-For each fixture, expected canonical elements/fragments/provenance SHOULD be snapshot-tested where deterministic.
-
----
-
-## 44. Acceptance criteria
-
-### AC-01 — Format independence
-
-After parsing, logical fragmentation operates on canonical elements and does not depend on PDF/DOCX-specific parser classes.
-
-### AC-02 — Stable document identity
-
-All fragments preserve the original `documentId/documentVersion`.
-
-### AC-03 — Deterministic element identity
-
-Repeated processing with identical relevant inputs reproduces the same element IDs.
-
-### AC-04 — Deterministic fragment identity
-
-Repeated processing with identical relevant inputs reproduces the same fragment IDs and content hashes.
-
-### AC-05 — Provenance traceability
-
-Every searchable fragment can be traced back to canonical element(s) and source location information available from the parser.
-
-### AC-06 — OCR provenance
-
-OCR-derived text retains relation to its originating image/page/region and OCR model/version.
-
-### AC-07 — Native/OCR duplicate safety
-
-The model contains sufficient provenance to prevent or diagnose duplicate native/OCR representations of the same source region.
-
-### AC-08 — Multilingual preservation
-
-RU, KK, EN and mixed-language content survives canonicalization without automatic translation/transliteration or destructive character normalization.
-
-### AC-09 — Structured content
-
-Lists and tables remain representable as structured canonical elements.
-
-### AC-10 — Original versus synthetic context
-
-`originalText`, `contextPrefix` and `embeddingText` remain explicitly distinguishable.
-
-### AC-11 — AstraVector boundary
-
-No AstraVector `PARENT/SUB_*` chunk IDs/types are used as canonical AstraIndexator element/fragment identities.
-
-### AC-12 — Source-group mapping
-
-Each `LogicalFragment` can be mapped to one deterministic AstraVector source-group ingestion call and its resulting `root_chunk_id` can be stored as downstream delivery metadata.
-
-### AC-13 — Idempotency ingredients
-
-The model exposes all stable fields required by TZ-11 to construct deterministic downstream idempotency keys.
-
-### AC-14 — Prepared artifact replay
-
-A prepared canonical artifact can be deserialized and delivered downstream without reparsing the original source, provided the schema version is supported.
-
-### AC-15 — Streaming viability
-
-Large canonical element/fragment collections can be serialized/deserialized in a streaming-friendly form such as JSONL.
-
-### AC-16 — Schema validation
-
-Invalid duplicate IDs, invalid fragment ranges, missing required identity or unsupported schema major versions fail deterministic validation.
-
-### AC-17 — Retrieve continuity
-
-Downstream retrieval metadata can be traced from AstraVector result/document identity back to `fragmentId` and source provenance through the persisted integration mapping.
-
-### AC-18 — Contract tests
-
-Generated typed implementation schemas/JSON schemas are contract-tested against representative canonical fixtures.
-
----
-
-## 45. Required implementation evidence
-
-Before TZ-09 implementation is accepted, the repository SHALL contain evidence for:
-
-1. canonical JSON schema or generated schema artifact;
-2. typed model unit tests;
-3. deterministic serialization/hash tests;
-4. deterministic element/fragment ID tests;
-5. multilingual round-trip fixtures;
-6. OCR/native provenance fixtures;
-7. table/list structured fixtures;
-8. JSONL streaming test with a large synthetic document;
-9. prepared artifact replay test;
-10. AstraVector mapping contract test coordinated with TZ-11.
-
----
-
-## 46. Decisions deferred to child specifications
-
-The following are intentionally deferred:
-
-- exact producer-string -> AstraVector numeric document version mapping: TZ-11/TZ-12;
-- accessZoneId(s)/accessZoneCode(s) normalization and mapping to AstraVector `access_zone_id`: TZ-10/TZ-11;
-- TTL `expiresAt` -> AstraVector `ttl_days` behavior and precision implications: TZ-10/TZ-11;
-- exact fragment idempotency-key formula: TZ-11;
-- downstream activation transaction/orchestration: TZ-11/TZ-12;
-- deletion/reindex replacement: TZ-12;
-- prepared object naming/retention: TZ-03.
-
-These MUST NOT be guessed by implementation before the responsible TZ is finalized.
-
----
-
-## 47. Final architecture invariant
-
-The canonical data boundary for AstraIndexator 1.0 is:
+The canonical boundary is:
 
 ```text
 source file
-  -> format-specific extraction
-  -> canonical DocumentElement[]
-  -> multilingual logical fragmentation
-  -> stable LogicalFragment[]
-  -> deterministic AstraVector source-group ingestion
+  -> ParsedDocument
+  -> DocumentElement[]
+  -> LogicalFragment[]
+  -> versioned LogicalBlockMapper
+  -> generated AstraVector LogicalBlock[]
+  -> AstraVectorIngestionFacade
 ```
 
-`LogicalFragment` is a semantic source container, not a final vector-search chunk.
-
-AstraVector remains the sole owner of tokenizer/model-aware `SOURCE/PARENT/SUB_*` projection and retrieval internals.
+AstraIndexator preserves source semantics and provenance; AstraVector owns tokenizer-aware searchable chunk generation and vector/search lifecycle.
