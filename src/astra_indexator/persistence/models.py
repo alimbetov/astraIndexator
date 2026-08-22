@@ -3,12 +3,24 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
-
 
 SCHEMA = "astra_indexator"
 
@@ -18,9 +30,16 @@ class IndexationJob(Base):
     __table_args__ = (
         CheckConstraint("document_version > 0", name="document_version_positive"),
         CheckConstraint("access_zone_code ~ '^[0-9]{4}$'", name="access_zone_code_format"),
+        CheckConstraint("requested_ttl_days IS NULL OR requested_ttl_days >= 0", name="requested_ttl_days_non_negative"),
+        CheckConstraint("source_size_bytes IS NULL OR source_size_bytes >= 0", name="source_size_bytes_non_negative"),
         CheckConstraint("lease_generation >= 0", name="lease_generation_non_negative"),
         CheckConstraint("attempt_count >= 0", name="attempt_count_non_negative"),
         CheckConstraint("max_attempts > 0", name="max_attempts_positive"),
+        CheckConstraint(
+            "status IN ('PENDING','PROCESSING','RETRY_WAIT','COMPLETED','FAILED','DEAD_LETTER','CANCELLED')",
+            name="status_allowed",
+        ),
+        UniqueConstraint("producer_request_id", name="uq_indexation_job_producer_request_id"),
         Index(
             "ix_indexation_job_claim",
             text("priority DESC"),
@@ -50,6 +69,7 @@ class IndexationJob(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    producer_request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     document_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     document_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
     external_revision: Mapped[str | None] = mapped_column(String(255))
@@ -64,7 +84,7 @@ class IndexationJob(Base):
     source_content_hash: Mapped[str | None] = mapped_column(String(128))
     source_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
 
-    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'PENDING'"))
     processing_stage: Mapped[str | None] = mapped_column(String(64))
     priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
 
@@ -118,6 +138,8 @@ class DeliveryCheckpoint(Base):
     __table_args__ = (
         CheckConstraint("next_batch_index >= 0", name="next_batch_index_non_negative"),
         CheckConstraint("last_accepted_batch_index IS NULL OR last_accepted_batch_index >= 0", name="last_accepted_batch_index_non_negative"),
+        CheckConstraint("expected_bindings IS NULL OR expected_bindings >= 0", name="expected_bindings_non_negative"),
+        CheckConstraint("synced_bindings IS NULL OR synced_bindings >= 0", name="synced_bindings_non_negative"),
         {"schema": SCHEMA},
     )
 
@@ -159,13 +181,14 @@ class DeliveryBatch(Base):
 class JobEvent(Base):
     __tablename__ = "job_event"
     __table_args__ = (
+        CheckConstraint("lease_generation IS NULL OR lease_generation >= 0", name="event_lease_generation_non_negative"),
         Index("ix_job_event_job_created", "job_id", "created_at"),
         {"schema": SCHEMA},
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"), nullable=False)
-    attempt_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    attempt_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.processing_attempt.id", ondelete="SET NULL"))
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     from_status: Mapped[str | None] = mapped_column(String(32))
     to_status: Mapped[str | None] = mapped_column(String(32))
@@ -180,6 +203,8 @@ class KnowledgeInventory(Base):
     __table_args__ = (
         CheckConstraint("document_version > 0", name="inventory_document_version_positive"),
         CheckConstraint("access_zone_code ~ '^[0-9]{4}$'", name="inventory_access_zone_code_format"),
+        CheckConstraint("logical_fragment_count IS NULL OR logical_fragment_count >= 0", name="logical_fragment_count_non_negative"),
+        CheckConstraint("logical_block_count IS NULL OR logical_block_count >= 0", name="logical_block_count_non_negative"),
         Index("ix_knowledge_inventory_zone_searchable", "access_zone_code", "searchable"),
         Index("ix_knowledge_inventory_expiry", "effective_expires_at"),
         {"schema": SCHEMA},
