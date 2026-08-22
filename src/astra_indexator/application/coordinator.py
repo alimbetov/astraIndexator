@@ -115,6 +115,10 @@ class JobCoordinator:
             processing_fingerprint=job.processing_fingerprint,
         )
         session.add(attempt)
+        # `job_event.attempt_id` is a real FK. Persist the attempt before its
+        # audit event so ordering is deterministic even without ORM relationships.
+        session.flush([attempt])
+
         session.add(
             JobEvent(
                 job_id=job.id,
