@@ -25,7 +25,7 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 | TZ-01 | Indexation Request & Job Contract | Spring Boot → PostgreSQL durable job contract and document identity propagation | Baseline |
 | TZ-02 | Job Coordinator & PostgreSQL | Durable queue, multi-replica claim/lease/fencing, retries, attempts, recovery checkpoints and state machine | Baseline |
 | TZ-03 | Object Storage / SeaweedFS | Immutable source objects, sharded prepared artifacts, manifest publication, retention and recovery | Baseline |
-| TZ-04 | File Validation & Acquisition | Download, MIME/type validation, hashing, temporary workspace | Planned |
+| TZ-04 | File Validation & Acquisition | Bounded source acquisition, SHA-256, trusted type detection, container/image safety and parser admission | Baseline |
 | TZ-05 | Document Parser | Native PDF/text extraction, page/layout representation | Planned |
 | TZ-06 | OCR Pipeline | OCR decision rules, model acquisition/versioning, OCR results | Planned |
 | TZ-07 | Text Normalization | Canonical cleanup while preserving provenance and structure | Planned |
@@ -59,7 +59,7 @@ Spring Boot
             v
       AstraIndexator replicas
             |- atomic claim/lease/fencing
-            |- SeaweedFS acquisition
+            |- bounded source acquisition + validation
             |- parsing/layout
             |- conditional OCR
             |- normalization
@@ -115,7 +115,7 @@ PENDING
       -> CANCELLED
 ```
 
-`processing_stage` carries progress details such as parsing/OCR/splitting/delivery while top-level status remains stable.
+`processing_stage` carries progress details such as acquisition/parsing/OCR/splitting/delivery while top-level status remains stable.
 
 Large-document recovery requires prepared-artifact checkpoints plus persisted downstream/session checkpoints so a crash does not force blind full reprocessing or duplicate downstream ingestion.
 
@@ -150,13 +150,43 @@ A prepared artifact becomes authoritative for a job only after its manifest refe
 
 Source, prepared artifacts, staging objects and AstraVector vector state have independent retention lifecycles. Vector deletion/TTL expiry never implicitly deletes SeaweedFS source/prepared objects, and SeaweedFS cleanup never directly mutates AstraVector/Qdrant.
 
+## File validation & acquisition invariant
+
+A producer file name, extension, declared MIME type, object content-type and object metadata are hints rather than trusted parser-routing evidence.
+
+Canonical acquisition boundary:
+
+```text
+immutable SeaweedFS source reference
+        -> HEAD/preflight
+        -> bounded streaming download
+        -> actual byte-count enforcement
+        -> SHA-256 over acquired bytes
+        -> signature/container/type detection
+        -> decompression/image/resource safety checks
+        -> supported-format admission
+        -> attempt-local source.validated
+        -> AcquiredSource
+        -> TZ-05/TZ-06
+```
+
+The actual byte stream is authoritative for size and integrity. Metadata size is checked early but the hard source-size limit is also enforced continuously while reading. Partial downloads never become parser input.
+
+Parser routing uses the detected canonical format, not the extension alone. Declared MIME, extension and detected type remain distinct evidence and mismatches are explicit. Unknown, ambiguous, executable-masquerading or unsupported content fails closed.
+
+ZIP-based Office formats are admitted only through bounded container inspection. Generic archive ingestion remains disabled by default. Container admission protects against excessive entry count, expansion size, compression ratio, nesting and path traversal; image admission applies dimensions/pixel/page guards before OCR decoding.
+
+Source acquisition computes the SHA-256 used by TZ-03 prepared-artifact identity and TZ-13 recovery. A retry of the same immutable source under the same validation profile is expected to reproduce size, hash, detected format and admission result.
+
+Local source files are attempt-scoped and non-authoritative. A reclaimed worker reacquires the source unless a later compatible prepared checkpoint makes reacquisition unnecessary.
+
 ## Canonical document-model invariant
 
 The internal semantic data path is:
 
 ```text
 IndexationJob
-  -> SourceObject
+  -> AcquiredSource
   -> ParsedDocument
   -> DocumentElement[]
   -> LogicalFragment[] / AstraVector LogicalBlock mapping
@@ -300,11 +330,12 @@ Finite retry budgets are mandatory. Poison work transitions to `DEAD_LETTER`, an
 
 ## Current critical design path
 
-The control/cross-service and storage baselines now include:
+The control/cross-service, storage and acquisition baselines now include:
 
 ```text
 TZ-02 Job Coordinator & PostgreSQL       ✅
 TZ-03 Object Storage / SeaweedFS          ✅
+TZ-04 File Validation & Acquisition       ✅
 TZ-10 Access Zones & TTL                 ✅
 TZ-11 AstraVector Integration            ✅
 TZ-12 Document Lifecycle                 ✅
@@ -314,8 +345,7 @@ TZ-13 Reliability & Recovery             ✅
 The remaining processing-plane specifications should now be completed in order:
 
 ```text
-TZ-04 File Validation & Acquisition
-  -> TZ-05 Document Parser
+TZ-05 Document Parser
   -> TZ-06 OCR Pipeline
   -> TZ-07 Text Normalization
 ```
@@ -330,4 +360,4 @@ TZ-17 Testing & Verification
 TZ-18 Deployment & Operations
 ```
 
-TZ-17 SHALL convert the golden failure scenarios from TZ-13 and storage publication/recovery criteria from TZ-03 into executable multi-replica, lost-ACK, crash/reclaim, corruption and end-to-end retrieval evidence.
+TZ-17 SHALL convert the golden failure scenarios from TZ-13, storage publication/recovery criteria from TZ-03 and hostile-input/acquisition criteria from TZ-04 into executable multi-replica, lost-ACK, crash/reclaim, corruption, resource-limit and end-to-end retrieval evidence.
