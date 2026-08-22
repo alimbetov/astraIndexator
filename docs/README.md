@@ -32,7 +32,7 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 | TZ-08 | Multilingual Logical Splitter | Structure-aware, tokenizer-calibrated logical fragmentation before AstraVector | Baseline |
 | TZ-09 | Canonical Document Model | ParsedDocument, DocumentElement, LogicalFragment, provenance, deterministic IDs, prepared artifacts | Baseline |
 | TZ-10 | Access Zones & TTL | AstraVector-compatible access-zone selectors, one-zone ingestion scope, registry-owned TTL semantics | Baseline |
-| TZ-11 | AstraVector Integration | Public ingestion facade, LogicalBlock mapping, session batching, idempotency, status/error handling | Planned |
+| TZ-11 | AstraVector Integration | Public ingestion facade, LogicalBlock mapping, single/session ingestion, batching, idempotency, reconciliation and readiness | Baseline |
 | TZ-12 | Document Lifecycle | Create/update/reindex/delete/version replacement semantics | Planned |
 | TZ-13 | Reliability & Recovery | Crash recovery, poison jobs, dead-letter, reconciliation | Planned |
 | TZ-14 | Observability | Logs, metrics, tracing, health/readiness, audit fields | Planned |
@@ -185,14 +185,58 @@ ttl_days > 0 -> explicit relative finite lifetime in days
 
 `0` MUST NOT be interpreted as unconditional never-expire. AstraVector owns effective expiry, search exclusion, cleanup and Qdrant reconciliation.
 
-## Current critical design path
+## AstraVector integration invariant
 
-The next specifications should close the cross-service correctness chain in this order:
+AstraIndexator uses the generated client for:
 
 ```text
-TZ-11 AstraVector Integration
+astravector.embedding.v1.AstraVectorIngestionFacade
+```
+
+and does not introduce a parallel custom ingestion API.
+
+Canonical integration model:
+
+```text
+canonical AstraIndexator model
+        -> anti-corruption mapping
+        -> LogicalBlock[]
+        -> single-call IndexLogicalDocument
+           OR
+           StartLogicalDocumentIngestion
+             -> AppendLogicalDocumentBlocks x N
+             -> FinalizeLogicalDocumentIngestion
+        -> GetLogicalDocumentIngestionStatus
+        -> GetDocumentVectorStatus
+        -> searchable=true
+        -> AstraIndexator job COMPLETED
+```
+
+Mutating RPC timeouts are ambiguous outcomes. Start retries reuse the same logical idempotency key, Append retries reuse the same batch index/hash, and Finalize timeout is reconciled through status before any replacement operation is considered.
+
+Session delivery is deterministic, bounded-memory and checkpointed durably so a reclaimed job can continue without blind full re-ingestion.
+
+Two P0 integration decisions remain explicit rather than guessed:
+
+1. exact cross-language canonicalization/golden vectors for `batch_content_hash` and `final_content_hash`;
+2. deterministic mapping of producer-visible `documentVersion` to AstraVector numeric `uint64 document_version` when the producer version is not already numeric.
+
+## Current critical design path
+
+The cross-service contract chain now has baseline specifications for coordination, access/lifecycle and downstream ingestion:
+
+```text
+TZ-02 Job Coordinator & PostgreSQL       ✅
+TZ-10 Access Zones & TTL                 ✅
+TZ-11 AstraVector Integration            ✅
+```
+
+The next critical design work is:
+
+```text
+TZ-12 Document Lifecycle
   -> TZ-13 Reliability & Recovery
   -> TZ-17 failure/recovery E2E verification
 ```
 
-TZ-11 must now bind the canonical AstraIndexator document model to the actual `AstraVectorIngestionFacade`, including single-call versus session ingestion, `LogicalBlock[]`, idempotency/session hashes, access-zone propagation, TTL mapping and authoritative status handling.
+TZ-12 should define create/new-version/reindex/delete/replacement semantics against the public AstraVector facade. TZ-13 must then combine TZ-02 fencing, TZ-09 prepared artifacts, TZ-11 session checkpoints and downstream status reconciliation into deterministic crash recovery.
