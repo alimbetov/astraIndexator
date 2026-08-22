@@ -27,7 +27,7 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 | TZ-03 | Object Storage / SeaweedFS | Immutable source objects, sharded prepared artifacts, manifest publication, retention and recovery | Baseline |
 | TZ-04 | File Validation & Acquisition | Bounded source acquisition, SHA-256, trusted type detection, container/image safety and parser admission | Baseline |
 | TZ-05 | Document Parser | Structure reconstruction, reading order, native extraction, tables/images and OCR-candidate handoff | Baseline |
-| TZ-06 | OCR Pipeline | OCR decision rules, model acquisition/versioning, OCR results | Planned |
+| TZ-06 | OCR Pipeline | Page/region-aware OCR policy, multilingual recognition, native/OCR reconciliation and versioned model/runtime contract | Baseline |
 | TZ-07 | Text Normalization | Canonical cleanup while preserving provenance and structure | Planned |
 | TZ-08 | Multilingual Logical Splitter | Structure-aware, tokenizer-calibrated logical fragmentation before AstraVector | Baseline |
 | TZ-09 | Canonical Document Model | ParsedDocument, DocumentElement, LogicalFragment, provenance, deterministic IDs, prepared artifacts | Baseline |
@@ -61,7 +61,7 @@ Spring Boot
             |- atomic claim/lease/fencing
             |- bounded source acquisition + validation
             |- structure-aware parsing/layout
-            |- conditional OCR
+            |- conditional page/region-aware OCR
             |- normalization
             |- multilingual logical splitting
             `- prepared artifact publication
@@ -205,6 +205,30 @@ Tables are preserved structurally rather than immediately flattened to pipe-deli
 `alimbetov/llm-indexator` remains a source of implementation lessons (parser versioning, low-signal/OCR-required diagnostics, table-aware extraction and smoke fixtures), but its old flat extraction, local embeddings/chunking and vector ownership are not normative for AstraIndexator.
 
 Parser-core is independent from OCR model delivery. TZ-06/TZ-15 may obtain approved OCR/ML artifacts from the internal Nexus service at `https://nexus.astrabase.asia`; TZ-05 only emits deterministic OCR candidates and provenance.
+
+## OCR invariant
+
+OCR is a conditional enrichment stage after native parsing, not a replacement for the parser.
+
+```text
+ParsedDocument + OcrCandidate[]
+  -> versioned OCR decision policy
+  -> bounded page/image/region rendering
+  -> verified local OCR model
+  -> OcrObservation{text,bbox,confidence,model provenance}
+  -> native/OCR reconciliation
+  -> canonical DocumentElement[]
+```
+
+`OCR_IF_NEEDED` is the production default. Mixed PDFs are handled page/region-wise: good native text is retained, OCR fills missing visual regions, and overlapping OCR copies are deterministically suppressed rather than concatenated.
+
+The baseline OCR language capability is `ru/kk/en`; language switching inside a page/document is allowed, while translation and transliteration are excluded from the OCR stage.
+
+OCR models are versioned deployment artifacts. The target internal registry is `https://nexus.astrabase.asia`, but document-time OCR uses only locally available, manifest/checksum-verified bundles supplied by TZ-15. Runtime internet/Nexus downloads and silent model/engine fallbacks are forbidden.
+
+OCR resource use is bounded by page count, pixels, rendering scale/DPI, memory, concurrency and timeouts. PDF rasterization is page-wise rather than accumulating every rendered page in memory. Model, preprocessing and decision-policy versions participate in the processing fingerprint so model upgrades do not silently alter replay semantics.
+
+CPU OCR is the portable baseline; GPU OCR is optional and explicitly profiled. Missing models/devices/checksum mismatches fail closed according to worker capability/readiness policy.
 
 ## Canonical document-model invariant
 
@@ -363,17 +387,17 @@ TZ-02 Job Coordinator & PostgreSQL       ✅
 TZ-03 Object Storage / SeaweedFS          ✅
 TZ-04 File Validation & Acquisition       ✅
 TZ-05 Document Parser                     ✅
+TZ-06 OCR Pipeline                        ✅
 TZ-10 Access Zones & TTL                  ✅
 TZ-11 AstraVector Integration             ✅
 TZ-12 Document Lifecycle                  ✅
 TZ-13 Reliability & Recovery              ✅
 ```
 
-The remaining processing-plane specifications should now be completed in order:
+The remaining processing-plane specification is now:
 
 ```text
-TZ-06 OCR Pipeline
-  -> TZ-07 Text Normalization
+TZ-07 Text Normalization
 ```
 
 Then the cross-cutting specifications should close operability and proof:
@@ -386,4 +410,4 @@ TZ-17 Testing & Verification
 TZ-18 Deployment & Operations
 ```
 
-TZ-17 SHALL convert the golden failure scenarios from TZ-13, storage publication/recovery criteria from TZ-03, hostile-input criteria from TZ-04 and structure/reading-order/RAG-quality criteria from TZ-05 into executable evidence.
+TZ-17 SHALL convert the golden failure scenarios from TZ-13, storage publication/recovery criteria from TZ-03, hostile-input criteria from TZ-04, structure/reading-order criteria from TZ-05 and multilingual/mixed-mode/resource/model-supply OCR criteria from TZ-06 into executable evidence.
