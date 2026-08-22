@@ -23,7 +23,7 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 |---|---|---|---|
 | TZ-00 | System Architecture | Overall boundaries, terminology, invariants, end-to-end flow | Baseline |
 | TZ-01 | Indexation Request & Job Contract | Spring Boot → PostgreSQL durable job contract and document identity propagation | Baseline |
-| TZ-02 | Job Coordinator & PostgreSQL | Queue, claim/lease, worker concurrency, retries, state machine | Planned |
+| TZ-02 | Job Coordinator & PostgreSQL | Durable queue, multi-replica claim/lease/fencing, retries, attempts, recovery checkpoints and state machine | Baseline |
 | TZ-03 | Object Storage / SeaweedFS | Source and prepared artifact lifecycle and object layout | Planned |
 | TZ-04 | File Validation & Acquisition | Download, MIME/type validation, hashing, temporary workspace | Planned |
 | TZ-05 | Document Parser | Native PDF/text extraction, page/layout representation | Planned |
@@ -58,7 +58,7 @@ Spring Boot
             |
             v
       AstraIndexator replicas
-            |- claim/lease
+            |- atomic claim/lease/fencing
             |- SeaweedFS acquisition
             |- parsing/layout
             |- conditional OCR
@@ -77,6 +77,46 @@ Spring Boot
                     |- PostgreSQL/Qdrant
                     `- retrieval
 ```
+
+## Coordinator invariant
+
+AstraIndexator uses PostgreSQL as the durable queue and distributed coordination authority for one or N active replicas.
+
+The reliability model is:
+
+```text
+at-least-once processing
++
+short transactional claim with FOR UPDATE SKIP LOCKED
++
+renewable lease
++
+monotonic lease_generation fencing token
++
+append-oriented processing attempts
++
+idempotent/reconcilable downstream effects
+```
+
+The system does not claim distributed exactly-once execution.
+
+A stale worker whose lease generation was superseded MUST NOT be able to finalize or overwrite the current job state.
+
+Canonical lifecycle:
+
+```text
+PENDING
+  -> PROCESSING
+      -> COMPLETED
+      -> RETRY_WAIT -> PROCESSING
+      -> FAILED
+      -> DEAD_LETTER
+      -> CANCELLED
+```
+
+`processing_stage` carries progress details such as parsing/OCR/splitting/delivery while top-level status remains stable.
+
+Large-document recovery requires prepared-artifact checkpoints plus persisted fragment-delivery checkpoints so a crash does not force blind full reprocessing or duplicate downstream ingestion.
 
 ## Canonical document-model invariant
 
@@ -120,3 +160,16 @@ ParsedDocument
 ```
 
 For multilingual content, language switching alone is not a split boundary. Original language content is preserved; automatic translation/transliteration is not part of the indexing pipeline.
+
+## Current critical design path
+
+The next specifications should close the cross-service correctness chain in this order:
+
+```text
+TZ-10 Access Zones & TTL
+  -> TZ-11 AstraVector Integration
+  -> TZ-13 Reliability & Recovery
+  -> TZ-17 failure/recovery E2E verification
+```
+
+This sequence ensures access/lifecycle semantics are fixed before the downstream ingestion protocol and that recovery is designed against the real coordinator and AstraVector contracts.
