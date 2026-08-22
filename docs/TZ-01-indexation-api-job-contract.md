@@ -23,7 +23,7 @@ The producer:
 1. assigns or obtains the stable business `documentId`;
 2. uploads the source file to SeaweedFS;
 3. creates a durable `IndexationJob` record in PostgreSQL;
-4. returns control to the caller without waiting for parsing, OCR, logical splitting or AstraVector indexing.
+4. returns control to the caller without waiting for parsing, OCR, logical fragmentation or AstraVector indexing.
 
 AstraIndexator:
 
@@ -31,13 +31,12 @@ AstraIndexator:
 2. claims eligible jobs from PostgreSQL;
 3. loads the source object from SeaweedFS;
 4. parses and OCR-processes the source when required;
-5. creates canonical `DocumentBlock[]`;
-6. sends them to AstraVector;
-7. persists processing state and completion/failure information.
+5. creates canonical `ParsedDocument`/`DocumentElement[]` and `LogicalFragment[]` according to TZ-09;
+6. maps the canonical model to AstraVector public-facade `LogicalBlock[]` according to TZ-11;
+7. sends the document through `AstraVectorIngestionFacade`;
+8. persists processing state and completion/failure information.
 
-This specification defines the request/job boundary, identity, ownership of fields, source reference, access/lifecycle context, file-format baseline, document-image handling principles and acceptance requirements.
-
-The detailed claim/lease/heartbeat/retry SQL and state machine are defined in TZ-02.
+The detailed claim/lease/heartbeat/retry SQL and state machine are defined in TZ-02. Access-zone and TTL semantics are defined in TZ-10. AstraVector transport/session behavior is defined in TZ-11.
 
 ---
 
@@ -46,8 +45,8 @@ The detailed claim/lease/heartbeat/retry SQL and state machine are defined in TZ
 ```text
 Spring Boot producer
     |
-    | 1. determine documentId/documentVersion
-    | 2. upload source object
+    | determine documentId/documentVersion
+    | upload source object
     v
 SeaweedFS
     |
@@ -65,13 +64,16 @@ Indexator-1        Indexator-2           Indexator-N
 +---------- dynamic PostgreSQL claim/lease --+
                        |
                        v
-                 processing pipeline
+          parse / OCR / normalize / split
                        |
                        v
-                DocumentBlock[]
+              LogicalFragment[]
                        |
                        v
-                  AstraVector
+         map to AstraVector LogicalBlock[]
+                       |
+                       v
+          AstraVectorIngestionFacade
                        |
               PostgreSQL + Qdrant
                        |
@@ -79,11 +81,11 @@ Indexator-1        Indexator-2           Indexator-N
                  Retrieve by documentId
 ```
 
-### 3.1 Core decision
+### 3.1 Multi-replica decision
 
 AstraIndexator 1.0 SHALL support **N active replicas sharing one PostgreSQL coordination database**.
 
-No replica owns a static partition of jobs. Jobs are dynamically claimed.
+No replica owns a static partition of jobs. Jobs are dynamically claimed according to TZ-02.
 
 ### 3.2 Durable queue principle
 
@@ -101,7 +103,7 @@ A producer application must be able to submit a document once and preserve a sta
 upload
 → indexation job
 → parsing/OCR
-→ logical splitting
+→ logical fragmentation
 → AstraVector ingestion
 → vector persistence
 → subsequent retrieve
@@ -121,8 +123,8 @@ The stable `documentId` is therefore a platform-wide identifier and must survive
 - creation of the durable job intent;
 - source object reference;
 - original file metadata;
-- access-zone input;
-- TTL/expiration input;
+- access-zone assignment supplied by the trusted platform/business boundary;
+- optional TTL request intent that is representable by the selected AstraVector ingestion path;
 - optional business metadata;
 - initial `PENDING` state.
 
@@ -135,21 +137,28 @@ The stable `documentId` is therefore a platform-wide identifier and must survive
 - parsing;
 - OCR decisions/execution;
 - normalization;
-- logical splitting;
+- multilingual logical fragmentation;
 - prepared artifacts;
-- delivery to AstraVector;
+- mapping canonical elements/fragments to AstraVector `LogicalBlock[]`;
+- AstraVector ingestion/session orchestration;
 - retry/failure transitions;
 - final completion state;
 - processing diagnostics and metrics.
 
 ### 5.3 AstraVector owns
 
-- tokenization;
+- access-zone registry resolution and effective zone validation;
+- effective TTL policy/lifecycle enforcement;
+- tokenizer-aware chunking;
 - BGE-M3 model execution;
 - dense/sparse representations;
-- PostgreSQL/Qdrant projection;
-- retrieval behavior;
-- filtering using document/access/lifecycle metadata supplied by AstraIndexator.
+- canonical vector/document state;
+- outbox/Qdrant projection;
+- activation/reconciliation;
+- expired-content search exclusion and cleanup;
+- retrieval behavior.
+
+AstraIndexator SHALL NOT duplicate AstraVector's code-to-TTL policy, tokenizer-aware chunking or vector lifecycle logic.
 
 ---
 
@@ -162,8 +171,10 @@ documentId
     != documentVersion
     != jobId
     != processingAttemptId
-    != blockId
-    != ingestionId
+    != elementId
+    != fragmentId
+    != AstraVector ingestionSessionId
+    != AstraVector chunk IDs
 ```
 
 ### 6.1 documentId
@@ -175,63 +186,37 @@ Requirements:
 - generated/assigned before AstraIndexator processing;
 - stable across retries;
 - SHOULD remain stable across versions of the same logical document;
-- MUST be propagated to every canonical block and AstraVector ingestion;
-- MUST be usable as a retrieval filter;
+- MUST be propagated to the canonical document and AstraVector ingestion;
+- MUST be usable for later retrieval/document lifecycle operations;
 - MUST NOT depend on SeaweedFS object key, worker identity or processing attempt.
-
-Example:
-
-```text
-contract-2026-000123
-```
 
 ### 6.2 documentVersion
 
 `documentVersion` identifies a producer-visible revision of the logical document.
 
-AstraIndexator treats it as an opaque string.
-
-Examples:
-
-```text
-1
-2
-rev-17
-sha256:...
-```
+AstraVector public ingestion uses a positive numeric version. Therefore the producer/AstraIndexator contract SHOULD use a positive integer version for direct interoperability. If an upstream system has an opaque revision string, its mapping to numeric `documentVersion` must be explicit and durable rather than recomputed ad hoc.
 
 Replacement/reindex semantics are defined in TZ-12.
 
 ### 6.3 jobId
 
-`jobId` identifies one durable work item.
+`jobId` identifies one durable AstraIndexator work item.
 
-Recommended canonical type: UUID v7 or ULID. One implementation SHALL choose one format consistently.
-
-One `documentId` MAY have multiple jobs over time:
-
-```text
-DOC-100
-  |- JOB-1 initial index
-  |- JOB-2 reindex
-  `- JOB-3 new processing profile
-```
+One `documentId` MAY have multiple jobs over time.
 
 ### 6.4 processingAttemptId
 
 One job may have multiple processing attempts because of retry or crash recovery.
 
-Attempt identity is internal to AstraIndexator and must never replace the business `documentId`.
+Attempt identity is internal to AstraIndexator and never replaces `documentId`.
 
-### 6.5 blockId
+### 6.5 elementId / fragmentId
 
-Each `DocumentBlock` must have a deterministic identifier scoped to document/version/processing contract as defined in TZ-09.
+Deterministic canonical identities are defined in TZ-09. They are not AstraVector internal chunk IDs.
 
-### 6.6 ingestionId
+### 6.6 downstream idempotency identity
 
-Delivery to AstraVector must have deterministic idempotency semantics so repeated delivery after ambiguous timeout does not duplicate logical content.
-
-Exact construction belongs to TZ-11.
+Retries of the same logical AstraVector operation MUST reuse the same idempotency identity. Exact construction and session/batch hashing belong to TZ-11.
 
 ---
 
@@ -253,33 +238,23 @@ etag        = optional
 
 A document may keep the same `documentId` while its storage location changes between versions.
 
-AstraIndexator SHALL NOT accept unrestricted arbitrary HTTP URLs as a baseline source mechanism. This avoids turning the service into a generic downloader and avoids an unnecessary SSRF trust boundary.
+AstraIndexator SHALL NOT accept unrestricted arbitrary HTTP URLs as a baseline source mechanism.
 
 ---
 
 ## 8. Canonical job contract
 
-A logical job record contains four groups of information:
-
-```text
-IndexationJob
-|- identity
-|- source
-|- business/security/lifecycle intent
-`- worker processing state
-```
-
-Recommended logical shape:
+Conceptual shape:
 
 ```json
 {
   "jobId": "0198d2aa-7f00-7c23-9b10-000000000001",
-  "documentId": "contract-2026-000123",
-  "documentVersion": "2",
+  "documentId": "a4d2c7b1-83d6-4f82-a1b6-7a2f5143a012",
+  "documentVersion": 2,
   "source": {
     "storage": "SEAWEEDFS",
     "bucket": "documents",
-    "objectKey": "original/contract-2026-000123/v2/source.pdf",
+    "objectKey": "original/a4d2c7b1-83d6-4f82-a1b6-7a2f5143a012/v2/source.pdf",
     "versionId": null,
     "etag": null
   },
@@ -290,12 +265,13 @@ Recommended logical shape:
   },
   "access": {
     "accessZoneId": null,
-    "accessZoneIds": ["6c84a7a8-1460-4fa7-a544-57c472667f51"],
-    "accessZoneCode": null,
-    "accessZoneCodes": ["LEGAL", "INTERNAL"]
+    "accessZoneIds": [],
+    "accessZoneCode": "1500",
+    "accessZoneCodes": []
   },
-  "lifecycle": {
-    "expiresAt": "2026-09-01T00:00:00Z"
+  "ttl": {
+    "mode": "INHERIT_ZONE_POLICY",
+    "ttlDays": null
   },
   "indexing": {
     "profile": "default"
@@ -305,13 +281,11 @@ Recommended logical shape:
 }
 ```
 
-This JSON is conceptual. PostgreSQL physical schema belongs to TZ-02.
+The JSON is conceptual. Physical PostgreSQL schema belongs to TZ-02.
 
 ---
 
 ## 9. Producer-owned fields
-
-Spring Boot may populate only producer-contract fields.
 
 Baseline producer-owned values:
 
@@ -332,26 +306,16 @@ access_zone_id
 access_zone_ids
 access_zone_code
 access_zone_codes
-expires_at
+requested_ttl_mode
+requested_ttl_days
+requested_ttl_seconds      optional compatibility field
+requested_expires_at       optional compatibility field
 business_metadata
 status = PENDING
 created_at
 ```
 
-The producer MUST NOT set internal runtime values such as:
-
-```text
-worker_id
-locked_at
-lease_until
-last_heartbeat_at
-processing_stage
-attempt_count
-started_at
-completed_at
-last_error_code
-last_error_message
-```
+Spring Boot MUST NOT populate worker runtime fields.
 
 ---
 
@@ -363,6 +327,7 @@ AstraIndexator exclusively controls runtime processing fields such as:
 worker_id
 locked_at
 lease_until
+lease_generation
 last_heartbeat_at
 processing_stage
 attempt_count
@@ -375,17 +340,16 @@ last_error_message
 updated_at
 ```
 
-Spring Boot MUST NOT update job state after creation except through explicitly defined lifecycle operations introduced later (for example cancellation), if supported by TZ-12.
+Spring Boot MUST NOT update job state after creation except through explicitly defined lifecycle operations introduced by TZ-12.
 
 ---
 
 ## 11. Job state abstraction
 
-TZ-01 uses the following high-level states:
+Top-level lifecycle follows TZ-02:
 
 ```text
 PENDING
-CLAIMED
 PROCESSING
 RETRY_WAIT
 COMPLETED
@@ -394,7 +358,7 @@ DEAD_LETTER
 CANCELLED
 ```
 
-Detailed processing stage may include:
+Detailed processing stages may include:
 
 ```text
 ACQUIRING
@@ -403,62 +367,36 @@ PARSING
 OCR_PROCESSING
 NORMALIZING
 SPLITTING
-PREPARED
-DELIVERING
+PREPARING_ARTIFACTS
+REGISTERING_DOCUMENT
+DELIVERING_FRAGMENTS / APPENDING_BLOCKS
+FINALIZING
+FINALIZING_VECTOR_STATE
 ```
 
 `status` represents lifecycle. `processing_stage` represents pipeline progress.
-
-Example:
-
-```text
-status = PROCESSING
-processing_stage = OCR_PROCESSING
-```
-
-Exact transition rules belong to TZ-02.
 
 ---
 
 ## 12. Multi-replica processing requirement
 
-AstraIndexator SHALL support multiple active replicas:
+AstraIndexator SHALL support multiple active replicas using the TZ-02 claim/lease/fencing model.
 
-```text
-Indexator-1 --\
-Indexator-2 ----> PostgreSQL
-Indexator-3 --/
-```
+Core requirements:
 
-Requirements:
-
-1. only one active worker may own a specific job lease at a time;
-2. job claim must be transactional;
-3. the preferred PostgreSQL strategy uses `FOR UPDATE SKIP LOCKED`;
-4. long-running processing must use a renewable lease;
-5. a crashed worker must not permanently orphan work;
-6. expired work must become recoverable;
-7. AstraVector delivery must be idempotent because delivery may be replayed after ambiguous failures.
-
-Illustrative claim principle:
-
-```sql
-SELECT id
-FROM astra_indexator.indexation_job
-WHERE status = 'PENDING'
-   OR (status = 'RETRY_WAIT' AND next_retry_at <= now())
-ORDER BY created_at
-FOR UPDATE SKIP LOCKED
-LIMIT :batch_size;
-```
-
-This SQL is illustrative only. Atomic claim/update, lease and race-condition handling are defined in TZ-02.
+1. one current lease owner per job;
+2. transactional claim;
+3. `FOR UPDATE SKIP LOCKED`-based coordination;
+4. renewable lease and heartbeat;
+5. monotonic fencing generation;
+6. crashed-worker recovery;
+7. idempotent/reconcilable AstraVector delivery.
 
 ---
 
 ## 13. Access-zone contract
 
-The producer compatibility contract may provide:
+The producer compatibility surface MAY provide:
 
 ```text
 accessZoneId
@@ -467,56 +405,70 @@ accessZoneCode
 accessZoneCodes[]
 ```
 
-AstraIndexator must normalize singular and plural forms without losing information:
+### 13.1 Access-zone code format
 
-```text
-accessZoneId + accessZoneIds[]
-        -> normalizedAccessZoneIds[]
+`accessZoneCode` is a four-character numeric string:
 
-accessZoneCode + accessZoneCodes[]
-        -> normalizedAccessZoneCodes[]
+```regex
+^[0-9]{4}$
 ```
 
-Rules:
+Valid range:
 
-1. absent values are ignored;
-2. invalid values are rejected according to contract validation;
-3. duplicate exact values are deduplicated;
-4. deterministic ordering is used for canonical hashing/persistence when needed;
-5. a singular value MUST NOT be silently discarded when plural values are present;
-6. the normalized access context must follow the entire pipeline;
-7. every resulting `DocumentBlock` must retain the effective access context required by AstraVector;
-8. AstraIndexator does not reinterpret business authorization semantics beyond validation/normalization/propagation.
+```text
+0000 .. 9999
+```
 
-Detailed ID/code relationship rules belong to TZ-10.
+Leading zeroes are significant. Codes such as `LEGAL` or `INTERNAL` are invalid under the current AstraVector contract.
+
+### 13.2 Normalization
+
+Singular and plural values are combined within their representation and deduplicated. If IDs and codes are both supplied, they must resolve to the same effective zone set; they are not independent unions.
+
+### 13.3 One-zone ingestion invariant
+
+AstraVector ingestion is scoped to exactly one effective access zone per indexed document version.
+
+Therefore one AstraIndexator job MUST normalize to exactly one distinct effective zone before downstream ingestion.
+
+A request such as:
+
+```json
+{"accessZoneCodes":["1500","2500"]}
+```
+
+is invalid for one ingestion job. AstraIndexator SHALL NOT silently fan-out one job into multiple zones.
+
+Plural selectors remain useful for producer/retrieval compatibility, but multi-zone retrieval is a separate read concern.
+
+Detailed semantics, registry states and code/TTL matrix are defined in TZ-10.
 
 ---
 
-## 14. TTL and expiration
+## 14. TTL intent
 
-The producer may express lifecycle using a relative TTL or an absolute expiration depending on the producer-facing integration API.
+AstraIndexator SHALL preserve producer TTL intent but SHALL NOT independently become the authority for effective document expiry.
 
-Before processing, the durable job contract SHALL contain canonical absolute:
-
-```text
-expires_at TIMESTAMPTZ
-```
-
-If Spring Boot receives:
+For the production-oriented session ingestion path, the interoperable field is:
 
 ```text
-ttlSeconds = 86400
+ttl_days
 ```
 
-it or the integration layer must normalize this exactly once using the accepted creation timestamp:
+Semantics:
 
 ```text
-acceptedAt + ttlSeconds -> expiresAt
+0  -> inherit effective access-zone/platform TTL policy
+>0 -> request explicit relative finite lifetime in days
 ```
 
-Retries MUST NOT restart TTL.
+`ttl_days=0` MUST NOT be documented or interpreted as unconditional never-expire.
 
-If the document is already expired before useful processing can begin, behavior must be deterministic and defined in TZ-10/TZ-12.
+The full single-call facade contains `TtlPolicy` with relative/absolute wire shapes, but exact absolute-expiry persistence is not yet a stable cross-service guarantee. AstraIndexator SHALL NOT silently convert an absolute timestamp to approximate days.
+
+The access-zone code matrix is owned by AstraVector registry/configuration. AstraIndexator MAY document it for compatibility tests but MUST NOT independently calculate authoritative TTL from the code.
+
+Detailed lifecycle semantics are defined in TZ-10/TZ-11/TZ-12.
 
 ---
 
@@ -530,19 +482,13 @@ declared MIME type
 detected MIME/content signature
 ```
 
-The producer-provided file name and MIME type are hints only.
-
-Parser routing SHALL be based on trusted content detection plus explicit format policy.
-
-Mismatch handling belongs to TZ-04.
+Producer file name and MIME type are hints only. Parser routing is based on trusted content detection plus explicit format policy.
 
 ---
 
 ## 16. Supported file-format baseline
 
-AstraIndexator SHALL use tiered format support rather than claiming universal file compatibility.
-
-### 16.1 Tier 1 — AstraIndexator 1.0 mandatory
+### Tier 1 — AstraIndexator 1.0 mandatory
 
 | Format | Baseline processing |
 |---|---|
@@ -556,16 +502,16 @@ AstraIndexator SHALL use tiered format support rather than claiming universal fi
 | TXT | text decoding + normalization |
 | Markdown | structure-aware text extraction |
 
-### 16.2 Tier 2 — planned near-term
+### Tier 2 — planned near-term
 
-| Format | Processing |
-|---|---|
-| XLSX | spreadsheet-aware extraction |
-| PPTX | slide-aware extraction |
-| CSV | tabular extraction |
-| HTML | DOM/content extraction from stored file |
+```text
+XLSX
+PPTX
+CSV
+HTML
+```
 
-### 16.3 Tier 3 — extended structured/image formats
+### Tier 3 — extended
 
 ```text
 JSON
@@ -575,7 +521,7 @@ BMP
 RTF
 ```
 
-### 16.4 Tier 4 — legacy/conversion
+### Tier 4 — legacy/conversion
 
 ```text
 DOC
@@ -586,25 +532,20 @@ ODS
 ODP
 ```
 
-Legacy binary formats SHOULD be handled through an explicit conversion layer rather than contaminating the core parser contract with format-specific legacy behavior.
-
-### 16.5 Explicitly not baseline 1.0
+Not baseline 1.0:
 
 ```text
 ZIP / RAR / 7Z container ingestion
-audio transcription
-video transcription
+audio/video transcription
 arbitrary website crawling
 arbitrary remote URL download
 ```
-
-Archive extraction and ASR introduce different security/resource/model concerns and require separate decisions.
 
 ---
 
 ## 17. Parser extensibility contract
 
-Format support must be plugin/handler-oriented conceptually:
+Format support must be handler-oriented:
 
 ```text
 source
@@ -614,29 +555,11 @@ source
   -> ParsedDocument
 ```
 
-Representative handlers:
-
-```text
-PdfHandler
-ImageHandler
-DocxHandler
-TextHandler
-MarkdownHandler
-XlsxHandler
-PptxHandler
-CsvHandler
-HtmlHandler
-```
-
-The processing pipeline after parsing MUST NOT depend directly on the original file type.
-
-All handlers produce the canonical intermediate representation defined in TZ-05/TZ-09.
+All handlers converge to the canonical model defined by TZ-09.
 
 ---
 
 ## 18. Canonical parsed-document principle
-
-All formats converge to a common structural representation such as:
 
 ```text
 ParsedDocument
@@ -651,98 +574,25 @@ ParsedDocument
     `- other explicitly defined structural elements
 ```
 
-This allows the downstream flow to remain format-independent:
+Downstream:
 
 ```text
-PDF ----\
-DOCX ----\
-IMAGE ----> ParsedDocument -> Normalizer -> Logical Splitter -> DocumentBlock[]
-TXT ------/
-MD -------/
+ParsedDocument
+  -> Normalizer
+  -> Logical Splitter
+  -> LogicalFragment[]
+  -> AstraVector LogicalBlock[] mapping
 ```
-
-Exact element DTOs belong to TZ-05/TZ-09.
 
 ---
 
 ## 19. Images inside documents
 
-Images embedded inside PDF, DOCX, PPTX and future rich formats are first-class document elements, not disposable parser side effects.
+Images embedded inside PDF, DOCX, PPTX and future rich formats are first-class document elements.
 
-### 19.1 Core rule
+The parser must preserve image existence/provenance even when OCR is not executed.
 
-The parser must preserve image existence and provenance even when OCR is not executed.
-
-Representative conceptual element:
-
-```json
-{
-  "elementId": "img-17",
-  "type": "IMAGE",
-  "page": 5,
-  "order": 17,
-  "bbox": [100, 200, 900, 700],
-  "mimeType": "image/png",
-  "width": 1200,
-  "height": 800,
-  "ocrCandidate": true,
-  "origin": {
-    "documentId": "DOC-100"
-  }
-}
-```
-
-### 19.2 PDF image scenarios
-
-AstraIndexator must distinguish:
-
-1. scanned page represented mainly by an image and without usable native text;
-2. mixed page with usable native text plus embedded images;
-3. image-only diagram/table/screenshot inside an otherwise textual page.
-
-For scanned pages:
-
-```text
-page -> render -> OCR whole page
-```
-
-For mixed pages:
-
-```text
-native text -> preserve
-embedded image -> OCR candidate decision
-```
-
-AstraIndexator MUST avoid blindly OCR-processing all PDF images because that would create noise and duplicates from logos, decoration, repeated headers, signatures and background assets.
-
-### 19.3 DOCX images
-
-DOCX parsing should preserve ordering such as:
-
-```text
-Heading
-Paragraph
-Image
-Caption
-Paragraph
-```
-
-The system MUST NOT flatten DOCX to plain text while silently dropping image context.
-
-### 19.4 PPTX images
-
-When PPTX support is introduced, image provenance should preserve at least:
-
-```text
-slide number
-shape/order
-bounding box
-associated caption/text where identifiable
-```
-
-### 19.5 Image OCR policy
-
-The baseline policy model should support:
+Baseline OCR policy:
 
 ```text
 OFF
@@ -756,96 +606,28 @@ Recommended production default:
 OCR_IF_NEEDED
 ```
 
-### 19.6 OCR candidate heuristics
+The system must distinguish scanned pages, mixed PDF pages, embedded screenshots/tables/diagrams and decorative/repeated images. OCR-derived text remains linked to the source image/page and inherits the parent `documentId`.
 
-Deterministic 1.0 heuristics may include:
+Native extraction and OCR overlap must not create uncontrolled duplicate text.
 
-```text
-very small decorative image       -> skip
-repeated logo on many pages       -> skip
-background/decorative asset       -> skip
-large screenshot                  -> OCR candidate
-diagram with labels               -> OCR candidate
-image containing table            -> OCR candidate
-full-page scan                    -> OCR required
-```
-
-Detailed thresholds and OCR model behavior belong to TZ-06.
-
-### 19.7 OCR result provenance
-
-OCR text must remain linked to the source image/page:
-
-```json
-{
-  "type": "OCR_TEXT",
-  "originElementId": "img-17",
-  "text": "recognized text",
-  "ocrModelVersion": "...",
-  "confidence": 0.94
-}
-```
-
-### 19.8 Duplicate-content prevention
-
-Native text and OCR output may overlap. The pipeline must have deterministic duplicate/overlap handling so the same textual region is not indexed twice merely because both native extraction and OCR saw it.
-
-Possible signals include page identity, region overlap, normalized-text similarity and image/hash provenance. Exact algorithm belongs to TZ-06/TZ-07.
-
-### 19.9 Image is not a separate business document by default
-
-An embedded image normally inherits the parent `documentId`.
-
-OCR-derived blocks should remain retrievable through the parent document identity:
-
-```json
-{
-  "documentId": "DOC-100",
-  "blockId": "DOC-100:000042",
-  "sourceType": "IMAGE_OCR",
-  "pageFrom": 7,
-  "pageTo": 7,
-  "originElementId": "img-17",
-  "text": "..."
-}
-```
+Detailed thresholds/heuristics belong to TZ-06/TZ-07.
 
 ---
 
 ## 20. Retrieve continuity requirement
 
-The entire ingestion chain must preserve the producer's document identity so AstraVector can support retrieval constrained by one or more documents.
+The ingestion chain must preserve the original `documentId`, `documentVersion`, source provenance and effective access-zone identity so retrieval can return correct citations and scope.
 
-Conceptual retrieve request:
-
-```json
-{
-  "query": "Какой срок действия договора?",
-  "documentIds": ["contract-2026-000123"]
-}
-```
-
-Conceptual AstraVector filtering:
-
-```text
-semantic query
-AND documentId IN (...)
-AND access-zone constraints
-AND expiration constraints
-```
-
-TZ-01 does not define the AstraVector public retrieve API, but it establishes the identity metadata required for that API to work reliably.
+AstraIndexator does not define the public retrieval API, but it must provide the metadata required by AstraVector's retrieval facade.
 
 ---
 
 ## 21. Transactional producer submission
 
-The producer workflow should guarantee that a processable job does not point to a source object that was never successfully published.
-
 Canonical order:
 
 ```text
-1. generate/resolve documentId
+1. generate/resolve documentId + numeric documentVersion
 2. upload source to SeaweedFS
 3. verify successful upload/object reference
 4. begin PostgreSQL transaction
@@ -855,341 +637,287 @@ Canonical order:
 
 If source upload fails, the job must not become processable.
 
-If DB insertion fails after a successful upload, the source object may become orphaned; object cleanup/reconciliation rules belong to TZ-03/TZ-13.
+If DB insertion fails after upload, the object may become orphaned; cleanup/reconciliation belongs to TZ-03/TZ-13.
 
-The system must not rely on a distributed XA transaction between PostgreSQL and SeaweedFS.
+No XA transaction between PostgreSQL and SeaweedFS is assumed.
 
 ---
 
 ## 22. Job immutability principle
 
-Once accepted, the original processing intent must not be silently mutated.
+Once accepted, the original intent must not be silently mutated.
 
-In particular, the following values SHOULD be immutable for a given job:
+Immutable for one job:
 
 ```text
 documentId
 documentVersion
 source reference
-normalized access context
-canonical expiresAt
+requested access-zone selectors
+normalized one-zone ingestion scope
+requested TTL intent
 indexing profile
 ```
 
-A business change should normally create a new version/job rather than modify historical processing intent in place.
+A business change should normally create a new version/job.
 
 ---
 
 ## 23. Idempotency requirements
 
-The architecture requires idempotency at multiple boundaries.
+Idempotency is required at three boundaries:
 
-### 23.1 Producer job creation
+1. producer job creation;
+2. worker crash/retry execution;
+3. AstraVector ingestion/session operations.
 
-Spring Boot should use a stable producer request/business key or enforce an equivalent unique database constraint so client-level retries do not create accidental duplicate jobs.
-
-Exact database key strategy is defined in TZ-02/TZ-12.
-
-### 23.2 Worker execution
-
-A processing attempt may repeat after worker failure. Re-execution must not corrupt durable state.
-
-### 23.3 AstraVector delivery
-
-AstraIndexator may resend the same logically prepared document if AstraVector accepted data but the acknowledgement was lost.
-
-Therefore AstraVector ingestion MUST be idempotent using deterministic ingestion identity.
+Same logical operation retries MUST reuse deterministic downstream idempotency/session identities according to TZ-11.
 
 ---
 
 ## 24. Validation requirements
 
-Before a job becomes eligible for processing, the contract must validate at least:
+Before processing, validate at least:
 
-- non-empty `documentId`;
-- valid/allowed source storage;
-- non-empty object key;
-- bounded file name and metadata lengths;
+- non-empty valid `documentId` for the chosen downstream mapping;
+- `documentVersion > 0`;
+- source storage and object key;
+- bounded file/metadata fields;
 - valid indexing profile;
-- valid access-zone syntax;
-- valid canonical expiration;
-- initial status exactly `PENDING`;
+- access-zone code syntax `^[0-9]{4}$` when code supplied;
+- UUID syntax when ID supplied;
+- exactly one distinct effective ingestion zone after normalization/resolution;
+- supported TTL intent for the selected downstream path;
+- initial status `PENDING`;
 - job identifier uniqueness;
 - producer-owned fields only.
 
-During acquisition AstraIndexator additionally validates:
-
-- source existence;
-- source readability;
-- actual size;
-- magic/content signature;
-- supported format;
-- MIME/extension inconsistencies;
-- configured maximum size/page/image limits.
-
-Those checks belong to TZ-04.
+During acquisition AstraIndexator additionally validates source existence, size, content signature, supported format and configured resource limits.
 
 ---
 
 ## 25. Security requirements
 
-The job contract must not contain storage credentials, bearer tokens, passwords or other secrets.
+The job contract must not contain storage credentials, bearer tokens, passwords or secrets.
 
-AstraIndexator obtains SeaweedFS/PostgreSQL/Nexus/AstraVector credentials from runtime secret configuration, not per-job payload.
+Access-zone assignment comes from the trusted platform/business boundary and is never inferred from document text/OCR.
 
-Object keys must be treated as untrusted data and validated against storage policy.
+Missing/invalid/mismatched/disabled/deleted zones fail closed according to TZ-10.
 
-Original file names must never be used directly as unrestricted local filesystem paths.
-
-Detailed threat model belongs to TZ-16.
+Detailed trust/gateway/secret requirements belong to TZ-16.
 
 ---
 
 ## 26. Observability requirements
 
-Every processing log/event should be correlatable using bounded identifiers such as:
+Logs/events should be correlatable using bounded identifiers such as:
 
 ```text
 jobId
 documentId
 processingAttemptId
 workerId
-correlation/trace ID where available
+correlation/trace ID
 processingStage
+accessZoneCode or accessZoneId where security policy permits
+AstraVector ingestionSessionId where applicable
 ```
 
-High-cardinality identifiers should not be blindly used as metric labels.
-
-Useful metrics include:
-
-```text
-jobs_pending
-jobs_processing
-jobs_retry_wait
-jobs_failed
-job_claim_total
-job_recovery_total
-processing_duration_seconds
-ocr_duration_seconds
-source_download_bytes
-astravector_delivery_total
-```
-
-Detailed metrics/logging/tracing contract belongs to TZ-14.
+High-cardinality identifiers must not be blindly used as metric labels.
 
 ---
 
 ## 27. Non-functional requirements
 
-AstraIndexator 1.0 design SHALL support:
+AstraIndexator 1.0 SHALL support:
 
 - horizontal scaling with multiple active workers;
-- no static worker partition ownership;
-- bounded job concurrency per replica;
-- separate resource limits for heavy OCR work where necessary;
-- durable queue semantics through PostgreSQL;
-- crash recovery through lease expiration;
-- idempotent delivery to AstraVector;
-- large-document processing without unbounded memory use;
-- deterministic temporary workspace cleanup;
-- testable operation with real PostgreSQL and object storage;
-- versioned parser/OCR/splitter contracts;
-- no dependence on BGE-M3 tokenizer/model inside AstraIndexator.
+- bounded concurrency/resource use;
+- durable PostgreSQL queue semantics;
+- lease/fencing crash recovery;
+- idempotent AstraVector delivery;
+- large-document streaming/session ingestion;
+- deterministic prepared artifacts and temporary cleanup;
+- testability with real PostgreSQL/object storage/AstraVector contracts;
+- no BGE-M3 tokenizer/model dependency inside AstraIndexator.
 
 ---
 
 ## 28. Out of scope of TZ-01
 
-This specification deliberately does not define:
+TZ-01 does not define exact PostgreSQL DDL, SeaweedFS lifecycle, parser library, OCR model, exact canonical DTOs, exact AstraVector gRPC mapping/session hashes, document replacement/deletion or retrieval ranking.
 
-- exact PostgreSQL DDL;
-- exact indexes/constraints;
-- exact claim/update SQL transaction;
-- lease duration;
-- heartbeat interval;
-- retry backoff formula;
-- poison-job policy;
-- SeaweedFS directory/object lifecycle implementation;
-- precise file-size/page-count thresholds;
-- PDF parser library;
-- OCR engine/model selection;
-- OCR classifier implementation;
-- exact `ParsedDocument` DTO;
-- exact `DocumentBlock` DTO;
-- AstraVector wire transport/batching;
-- delete/reindex replacement algorithm;
-- retrieval endpoint implementation.
-
-These are intentionally delegated to TZ-02 through TZ-18.
+Those belong to TZ-02 through TZ-18.
 
 ---
 
 ## 29. End-to-end sequence
 
 ```text
-Spring Boot          SeaweedFS         PostgreSQL        Indexator-N        AstraVector
-    |                    |                  |                  |                  |
-    | resolve docId      |                  |                  |                  |
-    |------------------->| upload source    |                  |                  |
-    |<-------------------| object ref       |                  |                  |
-    |                                       |                  |                  |
-    |-------------------------------------->| INSERT PENDING   |                  |
-    |<--------------------------------------| committed        |                  |
-    |                                       |                  |                  |
-    |                                       |<-----------------| claim eligible   |
-    |                                       |----------------->| job + lease      |
-    |                                       |                  |                  |
-    |                    |<------------------------------------| download source  |
-    |                    |------------------------------------>| source bytes     |
-    |                                       |                  |                  |
-    |                                       |                  | parse/OCR/split  |
-    |                                       |                  |----------------->|
-    |                                       |                  | DocumentBlock[]  |
-    |                                       |                  |<-----------------|
-    |                                       |                  | durable ACK      |
-    |                                       |<-----------------| COMPLETED        |
+Spring Boot      SeaweedFS      PostgreSQL      Indexator-N      AstraVector
+    |                |              |                |                |
+    | upload source  |              |                |                |
+    |--------------->|              |                |                |
+    |<---------------| object ref   |                |                |
+    |                               |                |                |
+    |------------------------------>| INSERT PENDING |                |
+    |<------------------------------| committed      |                |
+    |                               |                |                |
+    |                               |<---------------| claim/lease    |
+    |                               |--------------->| job            |
+    |                |<------------------------------| download       |
+    |                |------------------------------>| bytes          |
+    |                               |                |                |
+    |                               |                | parse/OCR      |
+    |                               |                | normalize/split|
+    |                               |                | map blocks     |
+    |                               |                |--------------->|
+    |                               |                | facade/session |
+    |                               |                |<---------------|
+    |                               |                | status/result  |
+    |                               |<---------------| COMPLETED      |
 ```
+
+`FinalizeLogicalDocumentIngestion` success alone MUST NOT be assumed to mean searchable; TZ-11 defines status reconciliation with `GetLogicalDocumentIngestionStatus` and `GetDocumentVectorStatus`.
 
 ---
 
 ## 30. Acceptance criteria
 
-TZ-01 implementation is accepted when the following can be demonstrated.
-
 ### AC-01 — Durable producer submission
 
-After Spring Boot reports successful job creation, a committed `PENDING` job exists in PostgreSQL and references a successfully uploaded source object.
+A committed `PENDING` job references a successfully uploaded source object.
 
-### AC-02 — Stable document identity
+### AC-02 — Stable identity
 
-The same `documentId` is traceable from producer job through AstraIndexator output into AstraVector document metadata.
+The same `documentId`/`documentVersion` is traceable from producer through AstraIndexator into AstraVector.
 
-### AC-03 — Job/document separation
+### AC-03 — Multi-replica compatibility
 
-A single `documentId` can have multiple distinct jobs without identity collision.
+At least three replicas can compete without concurrently owning the same current lease.
 
-### AC-04 — Multi-replica compatibility
+### AC-04 — Crash recoverability
 
-At least three AstraIndexator replicas can compete for jobs without concurrently owning the same job lease.
+A worker crash cannot permanently orphan a job.
 
-### AC-05 — Worker crash recoverability
+### AC-05 — Idempotent downstream delivery
 
-A worker crash cannot permanently orphan a job; ownership can be recovered according to TZ-02 lease semantics.
+Replaying the same logical downstream operation does not create duplicate logical content.
 
-### AC-06 — Idempotent downstream delivery
+### AC-06 — Numeric access-zone code compatibility
 
-Replaying a logically identical AstraVector ingestion after an ambiguous failure does not create duplicate logical document content.
+Four-digit codes such as `0001`, `1500`, `9999` remain strings and survive without losing leading zeroes.
 
-### AC-07 — Access-zone losslessness
+### AC-07 — One-zone ingestion
 
-All supplied distinct `accessZoneId(s)` and `accessZoneCode(s)` values survive normalization and appear in the canonical downstream document context as required.
+Each processable job resolves to exactly one effective access zone. Multiple distinct zones are rejected rather than silently fanned out.
 
-### AC-08 — TTL stability
+### AC-08 — ID/code consistency
 
-A relative TTL is canonicalized once to absolute expiration and retries do not extend it.
+When both are supplied, access-zone IDs and codes must resolve to the same effective zone.
 
-### AC-09 — Source identity separation
+### AC-09 — TTL inherit semantics
 
-Changing SeaweedFS object location/version does not require changing the logical `documentId`.
+Session `ttl_days=0` is propagated/interpreted as inherit zone/platform policy, never unconditional never-expire.
 
-### AC-10 — Format detection
+### AC-10 — No duplicated TTL matrix
 
-AstraIndexator does not trust extension/MIME hint alone and validates actual content type before parser selection.
+AstraIndexator does not compute authoritative effective TTL from access-zone code; AstraVector registry/policy remains authoritative.
 
-### AC-11 — Tier 1 format coverage
+### AC-11 — No silent absolute-TTL approximation
 
-Automated integration tests demonstrate supported processing for native PDF, scanned PDF, mixed PDF, JPEG/PNG/TIFF, DOCX, TXT and Markdown.
+Unsupported absolute/second precision is not silently converted to approximate session days.
 
-### AC-12 — Embedded image preservation
+### AC-12 — Format detection
 
-A rich document containing an embedded image preserves that image as a document element/provenance record even when OCR is skipped.
+Parser selection uses detected content, not extension alone.
 
-### AC-13 — Conditional image OCR
+### AC-13 — Tier 1 format coverage
 
-A scanned page or useful screenshot/table image can produce OCR text while a repeated decorative/logo image can be skipped according to configured policy.
+Native/scanned/mixed PDF, JPEG/PNG/TIFF, DOCX, TXT and Markdown have integration fixtures.
 
-### AC-14 — OCR/native duplicate control
+### AC-14 — Embedded image preservation
 
-A mixed PDF test demonstrates that the same textual region is not blindly indexed twice when native extraction and OCR overlap.
+Embedded images retain provenance even when OCR is skipped.
 
-### AC-15 — Retrieve continuity
+### AC-15 — Conditional OCR and duplicate control
 
-After successful indexing, a downstream retrieval request constrained by the original producer `documentId` can target the indexed document and its OCR-derived blocks.
+Useful image text can be OCR'd while decorative images can be skipped, and native/OCR duplicates are controlled.
 
-### AC-16 — Ownership enforcement
+### AC-16 — Retrieve continuity
 
-Producer code cannot legitimately overwrite worker-owned lease/attempt/state fields through the normal submission contract.
+After successful indexing, retrieval can return the original document identity/provenance within the correct access-zone scope.
 
-### AC-17 — No tokenization leakage
+### AC-17 — Ownership enforcement
 
-AstraIndexator processing and splitting tests do not require the AstraVector BGE-M3 tokenizer or embedding model.
+Producer code cannot legitimately overwrite worker lease/attempt/runtime state through the normal submission contract.
+
+### AC-18 — No tokenization leakage
+
+AstraIndexator processing tests do not require AstraVector's BGE-M3 tokenizer/model.
 
 ---
 
 ## 31. Required verification evidence
 
-Implementation work based on TZ-01 should provide:
+Implementation should provide:
 
-- PostgreSQL integration tests for producer submission;
-- multi-worker contention test;
-- worker crash/recovery test;
-- duplicate/replayed delivery test;
-- access-zone normalization tests;
-- TTL canonicalization/retry tests;
+- PostgreSQL producer-submission tests;
+- multi-worker contention and crash/recovery tests;
+- access-zone format/leading-zero/one-zone/mismatch tests;
+- TTL inherit/positive-days/unsupported-absolute tests;
+- generated-protobuf or protocol-compatible AstraVector contract tests;
 - source/MIME mismatch tests;
-- Tier 1 format fixture tests;
-- scanned/native/mixed PDF fixtures;
-- DOCX embedded-image fixture;
-- image OCR candidate/skip fixtures;
-- provenance assertions;
-- retrieve-by-documentId E2E evidence against AstraVector-compatible integration;
-- evidence that no embedding/tokenizer dependency exists in AstraIndexator.
+- Tier 1 format fixtures;
+- OCR/image/provenance fixtures;
+- large-document session ingestion tests;
+- replay/idempotency tests;
+- retrieve continuity evidence.
 
 ---
 
 ## 32. Architectural invariants established by TZ-01
 
-The following are now normative for AstraIndexator 1.0:
-
-1. Spring Boot uploads the source object before submitting processable work.
+1. Spring Boot uploads the source before submitting processable work.
 2. PostgreSQL is the durable asynchronous job coordination boundary.
 3. AstraIndexator supports multiple active replicas.
-4. `documentId` is the stable cross-system document identity used later for retrieval.
-5. `jobId` and processing-attempt identity are separate from `documentId`.
-6. SeaweedFS physical object identity is separate from business document identity.
-7. Access-zone and expiration context are immutable processing intent once accepted.
-8. File type is detected from content rather than trusted from extension alone.
-9. Tier 1 format support includes PDF, images, DOCX, TXT and Markdown.
-10. Embedded images are first-class parsed elements with provenance.
-11. OCR is conditional by policy; OCR-all is not the default.
-12. OCR/native overlap must not create uncontrolled duplicate text.
-13. AstraIndexator produces logical document content only; AstraVector owns tokenization, embeddings and retrieval.
-14. Idempotency is required at producer, worker recovery and AstraVector delivery boundaries.
+4. `documentId` is the stable cross-system document identity.
+5. Job/attempt/storage identities remain separate from document identity.
+6. Access-zone code is a four-digit string `0000..9999` under the current AstraVector contract.
+7. One indexing job/document version resolves to one effective access zone.
+8. AstraIndexator does not silently fan-out one job across zones.
+9. AstraVector access-zone registry owns effective zone validation and TTL policy.
+10. Session `ttl_days=0` means inherit policy, not unconditional never-expire.
+11. Exact absolute-expiry behavior is not assumed until stabilized downstream.
+12. File type is detected from content rather than trusted from extension alone.
+13. Embedded images are first-class parsed elements with provenance.
+14. OCR is conditional; native/OCR overlap must not create uncontrolled duplicates.
+15. AstraIndexator owns structural/logical processing; AstraVector owns tokenizer-aware chunking, embeddings, vector lifecycle and retrieval.
+16. Idempotency is required at producer, recovery and AstraVector boundaries.
 
 ---
 
 ## 33. Next specification dependency
 
-The next mandatory specification is **TZ-02 — Job Coordinator & PostgreSQL**.
+TZ-02, TZ-08, TZ-09 and TZ-10 are now baseline prerequisites.
 
-TZ-02 must turn this logical job contract into an implementation-ready persistence/coordinator design covering:
+The next critical specification is **TZ-11 — AstraVector Integration**.
+
+TZ-11 must map AstraIndexator's canonical model to the actual public facade and define:
 
 ```text
-DDL
-constraints
-indexes
-producer/consumer ownership
-FOR UPDATE SKIP LOCKED claim transaction
-lease
-heartbeat
-lease renewal
-expired-lease recovery
-attempt history
-retry/backoff
-DEAD_LETTER
-cancellation races
-worker shutdown
-multi-replica contention tests
+IndexLogicalDocument vs session ingestion selection
+LogicalFragment/DocumentElement -> LogicalBlock mapping
+Start/Append/Finalize/Abort/Status flow
+idempotency_key
+batch_content_hash
+final_content_hash
+ingestion session recovery
+access_zone_id/access_zone_code mapping
+ttl_days/TtlPolicy mapping
+gRPC deadlines/retry classification
+operation status reconciliation
+GetDocumentVectorStatus readiness/searchability proof
 ```
 
-No production coordinator implementation should begin until TZ-02 resolves those concurrency semantics explicitly.
+No production AstraVector adapter should be implemented against an invented REST/DTO contract when the public protobuf facade already exists.
