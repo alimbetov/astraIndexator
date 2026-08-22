@@ -8,6 +8,16 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 
 No production implementation should introduce a contract that contradicts these specifications without first updating the relevant specification and recording the decision.
 
+## Implementation roadmap
+
+The approved implementation sequence is documented in:
+
+```text
+docs/IMPLEMENTATION-ROADMAP-1.0.md
+```
+
+It converts TZ-00..TZ-18 into milestone-based vertical slices with dependencies, implementation artifacts, Definition of Done and mandatory TZ-17 verification evidence.
+
 ## Technical specifications
 
 | ID | Subsystem | Primary responsibility | Status |
@@ -307,23 +317,24 @@ TZ-18 Deployment & Operations               ✅
 
 ## Next phase: implementation planning
 
-Documentation completion is not production readiness. The next phase SHALL convert the baseline into an implementation backlog and executable vertical slices.
+The implementation plan is now formalized in `IMPLEMENTATION-ROADMAP-1.0.md` and should be used as the execution sequence for development.
 
-Recommended implementation order:
+High-level order:
 
 ```text
-1. contracts + PostgreSQL schema/migrations
-2. coordinator claim/lease/fencing
-3. SeaweedFS acquisition + validation
-4. canonical parser model + PDF/DOCX baseline
-5. OCR CPU baseline + Nexus preload
-6. normalization + logical splitter
-7. prepared artifact publication/replay
-8. AstraVector integration + reconciliation
-9. Knowledge Inventory + health/smoke API
-10. multi-replica/recovery verification
-11. container/Kubernetes packaging
-12. performance/RAG-quality gates + production runbooks
+M0 project foundation
+M1 contracts + PostgreSQL schema/migrations
+M2 coordinator claim/lease/fencing
+M3 SeaweedFS acquisition + validation
+M4 canonical parser
+M5 OCR CPU + Nexus preload
+M6 normalization + logical splitter
+M7 prepared artifacts/replay
+M8 AstraVector integration + reconciliation
+M9 lifecycle + Knowledge Inventory
+M10 internal API + health/smoke/observability
+M11 multi-replica recovery + performance/RAG proof
+M12 container/Kubernetes production packaging
 ```
 
 Any implementation deviation that changes a baseline contract should update the relevant TZ before becoming the new canonical behavior.
