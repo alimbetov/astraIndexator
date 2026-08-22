@@ -24,7 +24,7 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 | TZ-00 | System Architecture | Overall boundaries, terminology, invariants, end-to-end flow | Baseline |
 | TZ-01 | Indexation Request & Job Contract | Spring Boot → PostgreSQL durable job contract and document identity propagation | Baseline |
 | TZ-02 | Job Coordinator & PostgreSQL | Durable queue, multi-replica claim/lease/fencing, retries, attempts, recovery checkpoints and state machine | Baseline |
-| TZ-03 | Object Storage / SeaweedFS | Source and prepared artifact lifecycle and object layout | Planned |
+| TZ-03 | Object Storage / SeaweedFS | Immutable source objects, sharded prepared artifacts, manifest publication, retention and recovery | Baseline |
 | TZ-04 | File Validation & Acquisition | Download, MIME/type validation, hashing, temporary workspace | Planned |
 | TZ-05 | Document Parser | Native PDF/text extraction, page/layout representation | Planned |
 | TZ-06 | OCR Pipeline | OCR decision rules, model acquisition/versioning, OCR results | Planned |
@@ -52,7 +52,7 @@ AstraIndexator owns document acquisition, parsing, OCR, normalization and **logi
 ```text
 Spring Boot
     |
-    +--> SeaweedFS source object
+    +--> SeaweedFS immutable source object
     |
     `--> PostgreSQL PENDING job
             |
@@ -63,7 +63,8 @@ Spring Boot
             |- parsing/layout
             |- conditional OCR
             |- normalization
-            `- multilingual logical splitting
+            |- multilingual logical splitting
+            `- prepared artifact publication
                     |
                     v
             canonical logical blocks
@@ -118,6 +119,37 @@ PENDING
 
 Large-document recovery requires prepared-artifact checkpoints plus persisted downstream/session checkpoints so a crash does not force blind full reprocessing or duplicate downstream ingestion.
 
+## Object storage invariant
+
+SeaweedFS is the durable binary/artifact store, while PostgreSQL remains the AstraIndexator coordination authority.
+
+Canonical storage model:
+
+```text
+SOURCE
+  -> immutable producer-uploaded bytes
+
+PREPARED
+  -> manifest.json
+  -> elements/part-xxxxx.jsonl
+  -> fragments/part-xxxxx.jsonl
+  -> optional bounded derived assets
+
+STAGING
+  -> temporary publication objects only
+
+LOCAL WORKSPACE
+  -> ephemeral attempt-scoped files only
+```
+
+Prepared data uses bounded sharded JSONL parts. AstraIndexator does not create one object per logical fragment and does not require one unbounded JSONL object for arbitrarily large documents.
+
+`manifest.json` is published last and acts as the prepared artifact-set commit marker. Recovery considers an artifact valid only when its manifest schema is supported and all required parts pass existence/size/hash validation.
+
+A prepared artifact becomes authoritative for a job only after its manifest reference is persisted in PostgreSQL through the current TZ-02 lease/fencing generation. A stale worker may leave orphan staging data but cannot replace the authoritative checkpoint.
+
+Source, prepared artifacts, staging objects and AstraVector vector state have independent retention lifecycles. Vector deletion/TTL expiry never implicitly deletes SeaweedFS source/prepared objects, and SeaweedFS cleanup never directly mutates AstraVector/Qdrant.
+
 ## Canonical document-model invariant
 
 The internal semantic data path is:
@@ -144,7 +176,7 @@ The canonical model must preserve:
 - `originalText` versus synthetic `contextPrefix` versus downstream embedding representation;
 - processing/schema versions needed for deterministic replay and diagnostics.
 
-Prepared artifacts are expected to use a manifest plus streaming-friendly element/fragment collections such as JSONL so downstream delivery can be replayed without reparsing the original binary when the canonical schema version is supported.
+Prepared artifacts are streamable through the TZ-03 manifest/parts contract so downstream delivery can be replayed without reparsing the original binary when the canonical schema and processing fingerprint are compatible.
 
 ## RAG fragmentation invariant
 
@@ -268,33 +300,34 @@ Finite retry budgets are mandatory. Poison work transitions to `DEAD_LETTER`, an
 
 ## Current critical design path
 
-The cross-service correctness/control-plane chain now has baseline specifications for:
+The control/cross-service and storage baselines now include:
 
 ```text
 TZ-02 Job Coordinator & PostgreSQL       ✅
+TZ-03 Object Storage / SeaweedFS          ✅
 TZ-10 Access Zones & TTL                 ✅
 TZ-11 AstraVector Integration            ✅
 TZ-12 Document Lifecycle                 ✅
 TZ-13 Reliability & Recovery             ✅
 ```
 
-Before production implementation, the processing-plane specifications still need to be completed:
+The remaining processing-plane specifications should now be completed in order:
 
 ```text
-TZ-03 Object Storage / SeaweedFS
 TZ-04 File Validation & Acquisition
-TZ-05 Document Parser
-TZ-06 OCR Pipeline
-TZ-07 Text Normalization
+  -> TZ-05 Document Parser
+  -> TZ-06 OCR Pipeline
+  -> TZ-07 Text Normalization
 ```
 
-Then the next cross-cutting specifications should close operability and proof:
+Then the cross-cutting specifications should close operability and proof:
 
 ```text
 TZ-14 Observability
+TZ-15 Configuration & Model Delivery
 TZ-16 Security
 TZ-17 Testing & Verification
 TZ-18 Deployment & Operations
 ```
 
-TZ-17 SHALL convert the golden failure scenarios from TZ-13 into executable multi-replica, lost-ACK, crash/reclaim and end-to-end retrieval evidence.
+TZ-17 SHALL convert the golden failure scenarios from TZ-13 and storage publication/recovery criteria from TZ-03 into executable multi-replica, lost-ACK, crash/reclaim, corruption and end-to-end retrieval evidence.
