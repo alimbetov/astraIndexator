@@ -8,7 +8,7 @@
 - **Status:** Consolidated design baseline
 - **Parent specification:** `TZ-00-system-architecture.md`
 - **Related specifications:** TZ-01, TZ-02, TZ-03, TZ-09, TZ-10, TZ-11, TZ-13, TZ-14, TZ-16, TZ-17
-- **Authoritative downstream contract:** AstraVector `AstraVectorIngestionFacade`, `AstraVectorRetrievalFacade`, current v007 facade semantics
+- **Authoritative downstream contract:** AstraVector `AstraVectorIngestionFacade`, `AstraVectorRetrievalFacade`, current public-facade semantics
 
 ---
 
@@ -47,7 +47,8 @@ AstraVector document/vector lifecycle
 ### 3.1 Spring Boot / platform owns
 
 - stable logical `documentId`;
-- producer-visible source revision intent;
+- positive numeric `documentVersion` for the immutable source revision;
+- optional opaque `externalRevision` metadata when the source system has its own revision string/hash;
 - source upload;
 - access-zone assignment;
 - optional TTL request;
@@ -85,13 +86,13 @@ The following identities remain distinct:
 
 ```text
 documentId
-!= producerDocumentVersion
-!= astraVectorDocumentVersion
+!= documentVersion
+!= externalRevision (optional metadata)
 != jobId
 != processingAttemptId
 != ingestionSessionId
 != fragmentId/blockId
-!= AstraVector chunk IDs
+!= AstraVector generated chunk IDs
 ```
 
 ### 4.1 `documentId`
@@ -101,33 +102,41 @@ Stable logical document identity across revisions.
 Example:
 
 ```text
-DOC-100
+20fd6906-cf10-4d2a-bdbf-31ae32316716
 ```
 
-### 4.2 `producerDocumentVersion`
+### 4.2 `documentVersion`
 
-Version/revision as seen by the producer. It may be opaque in AstraIndexator.
-
-Examples:
+AstraIndexator 1.0 canonical version is a **positive numeric immutable version**:
 
 ```text
-1
-rev-17
-sha256:...
+value > 0
+semantic domain = positive long/uint64
 ```
 
-### 4.3 `astraVectorDocumentVersion`
+The producer SHALL supply the canonical numeric version for direct interoperability. AstraIndexator SHALL NOT maintain a second opaque canonical version identity.
 
-Current AstraVector public facade uses a numeric document version (`uint32/uint64` depending on the specific message).
+The current `llm2` wire contract has a width difference that is handled only at the adapter boundary according to TZ-09/TZ-11:
 
-TZ-12 SHALL NOT silently coerce arbitrary producer strings into numeric versions.
+```text
+DocumentIdentity.document_version = uint64
+DocumentRef.document_version      = uint64
+session Start document_version    = uint32
+```
 
-Until a final mapping contract is frozen in TZ-11 implementation work, one of the following MUST be selected explicitly:
+Therefore a value outside the selected wire path's supported range is rejected explicitly; it is never truncated, wrapped or remapped ad hoc.
 
-1. producer contract restricts document version to positive integer; or
-2. AstraIndexator persists an authoritative mapping from opaque producer version to positive AstraVector numeric version.
+### 4.3 `externalRevision`
 
-This is a cross-service contract decision, not an implementation convenience.
+If a source system uses a value such as:
+
+```text
+rev-17
+sha256:...
+ERP-2026-08-22-A
+```
+
+it MAY be retained as immutable metadata named `externalRevision` (or equivalent). It is not a replacement for `documentVersion`, is not used as the AstraVector numeric version, and MUST NOT introduce a hidden numeric mapping lifecycle.
 
 ---
 
@@ -151,22 +160,35 @@ CANCELLED
 
 ### 5.2 Processing stage
 
-Examples:
+TZ-02 owns the canonical indexing-stage vocabulary. TZ-12 SHALL use the same names rather than define a competing enum:
 
 ```text
 ACQUIRING
+VALIDATING
 PARSING
 OCR_PROCESSING
 NORMALIZING
 SPLITTING
 PREPARING_ARTIFACTS
-STARTING_INGESTION
-UPLOADING_BLOCKS
-FINALIZING_INGESTION
-WAITING_VECTOR_READY
-DELETING_VECTORS
+DELIVERING / APPENDING_BLOCKS
 FINALIZING
+FINALIZING_VECTOR_STATE
 ```
+
+Interpretation for session ingestion:
+
+```text
+DELIVERING / APPENDING_BLOCKS
+  includes StartLogicalDocumentIngestion + AppendLogicalDocumentBlocks
+
+FINALIZING
+  includes FinalizeLogicalDocumentIngestion / session finalization
+
+FINALIZING_VECTOR_STATE
+  includes GetDocumentVectorStatus reconciliation until searchable=true
+```
+
+Lifecycle-only operations MAY expose an additional explicit stage such as `DELETING_VECTORS`, but the indexing pipeline MUST NOT introduce aliases such as `UPLOADING_BLOCKS` or `WAITING_VECTOR_READY` as a second canonical enum.
 
 ### 5.3 Downstream AstraVector state
 
@@ -205,7 +227,7 @@ AstraIndexator MUST preserve the raw downstream state for diagnostics and MUST N
 
 ## 6. Canonical business lifecycle
 
-A logical document may have multiple immutable versions:
+A logical document may have multiple immutable numeric versions:
 
 ```text
 DOC-100
@@ -252,15 +274,13 @@ Spring Boot
   -> job COMPLETED
 ```
 
-AstraIndexator SHALL mark the job `COMPLETED` only at the agreed completion level.
-
 Baseline completion definition for AstraIndexator 1.0:
 
 ```text
 COMPLETED == downstream vector status proves document searchable
 ```
 
-If a deployment later selects a weaker completion level, that must be explicit configuration and reflected in API/status semantics.
+A weaker completion level, if ever introduced, must use a different explicit producer-facing semantic and cannot silently redefine `COMPLETED`.
 
 ---
 
@@ -271,7 +291,7 @@ When source content changes, the preferred lifecycle is:
 ```text
 same documentId
 +
-new documentVersion
+new positive documentVersion
 +
 new jobId
 ```
@@ -284,8 +304,6 @@ DOC-100 / version 2 -> new build
 ```
 
 The old version SHALL remain untouched while the new version is still processing unless a separately approved policy says otherwise.
-
-This prevents retrieval downtime caused by partially built replacement versions.
 
 ---
 
@@ -326,11 +344,7 @@ A reindex means reprocessing already known logical content because processing/in
 - AstraVector chunking/model/indexing profile change;
 - recovery/rebuild after projection loss.
 
-A reindex SHALL be explicit and auditable.
-
-It MUST NOT silently overwrite historical processing provenance.
-
-Two baseline strategies are allowed:
+A reindex SHALL be explicit and auditable and MUST NOT silently overwrite historical processing provenance.
 
 ### 10.1 New document version
 
@@ -352,7 +366,7 @@ This strategy MUST NOT be used by default until exact runtime behavior and rollb
 
 ## 11. Same-content duplicate submission
 
-If the producer resubmits the exact same logical revision with the same content hash and same effective processing intent, AstraIndexator SHOULD treat the operation idempotently.
+If the producer resubmits the exact same logical revision with the same `documentId`, `documentVersion`, content hash and effective processing intent, AstraIndexator SHOULD treat the operation idempotently.
 
 Possible result:
 
@@ -361,8 +375,6 @@ existing successful version found
 → no duplicate vector document created
 → return/reuse known state
 ```
-
-The exact producer idempotency key and uniqueness constraints are defined by TZ-01/TZ-02/TZ-11.
 
 A different content hash under the same logical operation identity MUST be treated as a conflict, not as an idempotent retry.
 
@@ -395,25 +407,21 @@ On worker restart/reclaim, AstraIndexator SHALL reconcile session/vector state b
 
 ## 13. Session lifecycle mapping
 
-Large-document baseline:
+Large-document baseline using TZ-02 canonical processing stages:
 
 ```text
-STARTING_INGESTION
-    ↓
+DELIVERING / APPENDING_BLOCKS
+    ↓ StartLogicalDocumentIngestion
 ACTIVE session
-    ↓
-UPLOADING_BLOCKS
-    ↓
-FINALIZING_INGESTION
-    ↓
+    ↓ AppendLogicalDocumentBlocks x N
+FINALIZING
+    ↓ FinalizeLogicalDocumentIngestion
 FINALIZING session
     ↓
 COMPLETED session
     ↓
-WAITING_VECTOR_READY
-    ↓
-GetDocumentVectorStatus
-    ↓
+FINALIZING_VECTOR_STATE
+    ↓ GetDocumentVectorStatus
 searchable=true
     ↓
 job COMPLETED
@@ -502,9 +510,7 @@ DeleteDocumentVectorsFacade
 
 AstraIndexator SHALL NOT delete Qdrant points directly.
 
-Current downstream semantics are asynchronous.
-
-Conceptual lifecycle:
+Current downstream semantics are asynchronous:
 
 ```text
 DELETE REQUESTED
@@ -519,8 +525,6 @@ DELETED
 ```
 
 A successful delete RPC does not necessarily mean all search projection data has already been physically removed.
-
-AstraIndexator must reconcile downstream status before reporting final deletion if the business API promises completed deletion.
 
 ---
 
@@ -537,8 +541,6 @@ document_version
 AstraIndexator MUST NOT delete all versions of one `documentId` unless the producer explicitly requests document-wide deletion and the implementation enumerates/controls every affected version.
 
 Baseline v1 producer operation SHOULD be version-scoped.
-
-Document-wide delete may be introduced as an orchestration operation, not as an accidental wildcard.
 
 ---
 
@@ -583,7 +585,7 @@ AstraIndexator MAY project an expired state upstream but AstraVector remains aut
 
 ## 20. Session expiry vs document expiry
 
-These are distinct concepts.
+These are distinct concepts:
 
 ```text
 ingestion session expires_at
@@ -607,7 +609,7 @@ If an ingestion session becomes `EXPIRED` before finalization:
 2. query/reconcile document vector state where meaningful;
 3. classify the session as unusable;
 4. create/restart ingestion only using the same logical document/version identity and idempotency rules;
-5. do not increment business document version solely because the transport session expired.
+5. do not increment `documentVersion` solely because the transport session expired.
 
 Exact recovery orchestration belongs to TZ-13.
 
@@ -623,15 +625,13 @@ new version FAILED
 
 The previous successful/searchable version MUST remain unaffected unless business policy explicitly requested destructive replacement.
 
-This is the default availability-preserving behavior.
-
 A failed build must be diagnosable using:
 
 ```text
 jobId
 documentId
-producerDocumentVersion
-astraVectorDocumentVersion
+documentVersion
+externalRevision (optional)
 processingAttemptId
 ingestionSessionId
 error code/message
@@ -667,19 +667,11 @@ fragments.jsonl
 
 are processing/recovery artifacts, not the authoritative vector document state.
 
-They MAY be retained after successful indexing for:
-
-- replay;
-- debugging;
-- reindexing;
-- provenance audit;
-- parser/OCR/splitter comparison.
+They MAY be retained after successful indexing for replay, debugging, reindexing, provenance audit and parser/OCR/splitter comparison.
 
 Retention must be bounded and configurable.
 
 Deleting vectors from AstraVector does not automatically imply immediate deletion of original/prepared SeaweedFS objects unless the platform business retention policy explicitly links them.
-
-SeaweedFS retention belongs to TZ-03.
 
 ---
 
@@ -696,8 +688,6 @@ AstraVector document/vector state
 ```
 
 Therefore create/update/delete operations must state which resource classes are affected.
-
-AstraIndexator SHALL NOT infer business source deletion from vector deletion.
 
 ---
 
@@ -724,12 +714,12 @@ Each command must create or reference an auditable durable operation/job rather 
 
 ## 27. Version uniqueness
 
-For one effective access zone and logical document, AstraIndexator SHALL prevent uncontrolled duplicate concurrent builds of the same target downstream version.
+For one effective access zone and logical document, AstraIndexator SHALL prevent uncontrolled duplicate concurrent builds of the same target version.
 
 Conceptual uniqueness scope:
 
 ```text
-(accessZone, documentId, astraVectorDocumentVersion, active lifecycle operation)
+(accessZone, documentId, documentVersion, active lifecycle operation)
 ```
 
 Exactly how this is enforced belongs to TZ-02 PostgreSQL constraints/admission logic.
@@ -765,8 +755,6 @@ These strings are conceptual. Exact key format belongs to TZ-11/TZ-13 implementa
 
 A retry of one logical operation reuses the same key.
 
-A materially different command must not reuse the same idempotency key.
-
 ---
 
 ## 30. Searchability invariant
@@ -782,8 +770,6 @@ searchable
 ```
 
 The producer-facing term `INDEXED` or `COMPLETED` SHOULD mean `searchable=true` unless another completion contract is explicitly documented.
-
-This avoids false success when vectors are staged but not visible to retrieval.
 
 ---
 
@@ -852,9 +838,10 @@ Lifecycle events must be traceable using:
 ```text
 jobId
 documentId
-producerDocumentVersion
-astraVectorDocumentVersion
-accessZone
+documentVersion
+externalRevision (optional)
+accessZoneId
+accessZoneCode
 processingAttemptId
 ingestionSessionId
 operationId
@@ -884,17 +871,15 @@ High-cardinality identifiers MUST NOT be used blindly as metric labels.
 
 ---
 
-## 35. Security requirements
+## 35. Trust-boundary requirements
 
-Lifecycle commands are security-sensitive.
+Lifecycle commands are trust-sensitive internal operations.
 
-The system MUST NOT allow a producer to delete or mutate a document outside its authorized access-zone/document scope.
+The system MUST NOT allow a producer to delete or mutate a document outside its assigned access-zone/document scope.
 
 AstraIndexator must pass the exact resolved access-zone reference required by AstraVector and must not widen scope during delete/reindex operations.
 
-Document-wide delete, if introduced, requires explicit authorization and enumeration semantics.
-
-Detailed authorization/trust model belongs to TZ-16.
+Document-wide delete, if introduced, requires explicit trusted-platform authorization/enumeration semantics according to TZ-16.
 
 ---
 
@@ -904,7 +889,7 @@ Detailed authorization/trust model belongs to TZ-16.
 A new document version reaches `COMPLETED` only after AstraVector reports it searchable.
 
 ### AC-02 — Stable identity
-A source revision keeps the same `documentId` through processing, downstream ingestion and retrieval.
+A source revision keeps the same `documentId` and positive numeric `documentVersion` through processing, downstream ingestion and retrieval.
 
 ### AC-03 — New-version isolation
 A failing new version does not remove or corrupt the previous successful version.
@@ -960,12 +945,20 @@ An E2E test demonstrates `source -> index -> searchable -> retrieve` and verifie
 ### AC-20 — Delete proof
 An E2E test demonstrates `searchable -> DELETE_SCHEDULED/DELETING -> DELETED/non-searchable` without direct Qdrant manipulation.
 
+### AC-21 — Version contract
+Opaque external source revisions remain metadata only; no hidden opaque-to-numeric document-version mapping exists in AstraIndexator 1.0.
+
+### AC-22 — Stage vocabulary
+Indexing lifecycle status uses the TZ-02 canonical processing-stage vocabulary.
+
 ---
 
 ## 37. Required verification evidence
 
 Implementation based on TZ-12 must provide tests for:
 
+- positive numeric `documentVersion` validation and wire-range guards;
+- optional `externalRevision` persistence without identity substitution;
 - first document indexing;
 - second version build while first remains searchable;
 - failed second version build;
@@ -985,7 +978,8 @@ Implementation based on TZ-12 must provide tests for:
 - stale worker fencing during lifecycle mutation;
 - restart using prepared artifacts;
 - retrieve continuity across versions;
-- raw downstream-state preservation.
+- raw downstream-state preservation;
+- processing-stage enum consistency with TZ-02.
 
 ---
 
@@ -993,62 +987,39 @@ Implementation based on TZ-12 must provide tests for:
 
 The following remain explicit gates and MUST NOT be invented locally:
 
-1. final opaque producer-version -> AstraVector numeric-version strategy;
-2. byte-exact `batch_content_hash` and `final_content_hash` canonicalization;
-3. exact runtime guarantees of `replace_existing_version` before enabling destructive same-version replacement;
-4. typed session-state/error-reason contract if AstraVector later publishes one;
-5. exact platform rule for which document version retrieval considers effective/current when multiple versions coexist.
+1. byte-exact `batch_content_hash` and `final_content_hash` canonicalization;
+2. exact runtime guarantees of `replace_existing_version` before enabling destructive same-version replacement;
+3. typed session-state/error-reason contract if AstraVector later publishes one;
+4. exact platform rule for which document version retrieval considers effective/current when multiple versions coexist.
 
-Until these are resolved, the safest baseline is immutable new-version indexing plus status reconciliation and non-destructive replacement behavior.
+The opaque-version mapping issue is **closed for AstraIndexator 1.0**: canonical `documentVersion` is positive numeric; opaque source revisions are metadata only.
 
 ---
 
 ## 39. Architectural invariants established by TZ-12
 
 1. `documentId` is stable across document revisions.
-2. New source revisions normally create a new document version and a new job.
-3. AstraIndexator job state and AstraVector vector/document state are separate lifecycles.
-4. `COMPLETED` means searchable under the baseline completion contract.
-5. Partial/finalizing downstream state is not success.
-6. Lost mutation acknowledgements trigger reconciliation before replay/new operations.
-7. Previous successful versions remain intact while replacements build.
-8. Reindex is explicit, versioned and auditable.
-9. Deletion uses AstraVector facade and is asynchronous/reconcilable.
-10. AstraIndexator never deletes Qdrant directly.
-11. Session expiry and document TTL expiry are different conditions.
-12. AstraVector owns effective TTL expiration/search exclusion.
-13. Cancellation is cooperative and downstream-aware.
-14. Source objects, prepared artifacts and vector state have separate lifecycles.
-15. Destructive same-version replacement is not baseline until verified.
-16. Same-target concurrent destructive mutations must be serialized/rejected.
-17. Recovery preserves identity and reconciles downstream state.
+2. `documentVersion` is a positive numeric immutable version; external opaque revisions are metadata only.
+3. New source revisions normally create a new document version and a new job.
+4. AstraIndexator job state and AstraVector vector/document state are separate lifecycles.
+5. `COMPLETED` means searchable under the baseline completion contract.
+6. Partial/finalizing downstream state is not success.
+7. Lost mutation acknowledgements trigger reconciliation before replay/new operations.
+8. Previous successful versions remain intact while replacements build.
+9. Reindex is explicit, versioned and auditable.
+10. Deletion uses AstraVector facade and is asynchronous/reconcilable.
+11. AstraIndexator never deletes Qdrant directly.
+12. Session expiry and document TTL expiry are different conditions.
+13. AstraVector owns effective TTL expiration/search exclusion.
+14. Cancellation is cooperative and downstream-aware.
+15. Source objects, prepared artifacts and vector state have separate lifecycles.
+16. Destructive same-version replacement is not baseline until verified.
+17. Same-target concurrent destructive mutations must be serialized/rejected.
+18. Recovery preserves identity and reconciles downstream state.
+19. Indexing processing stages use the canonical TZ-02 vocabulary.
 
 ---
 
 ## 40. Next dependency
 
-After TZ-12 the next critical specification is:
-
-```text
-TZ-13 — Reliability & Recovery
-```
-
-TZ-13 must turn the lifecycle rules into concrete recovery algorithms for:
-
-```text
-worker crash
-lease loss
-PostgreSQL outage
-SeaweedFS outage
-AstraVector timeout/unavailable
-ambiguous Start/Append/Finalize/Delete
-stale session
-expired session
-poison job
-partial prepared artifact
-partial vector projection
-DEAD_LETTER reconciliation
-manual/operator repair
-```
-
-TZ-13 must use the actual lifecycle and idempotency semantics defined by TZ-02, TZ-10, TZ-11 and TZ-12 rather than introducing a separate recovery state model.
+TZ-13 Reliability & Recovery remains the authoritative recovery algorithm specification and SHALL consume the lifecycle/idempotency contracts from TZ-02, TZ-10, TZ-11 and this TZ without introducing a separate identity or stage model.

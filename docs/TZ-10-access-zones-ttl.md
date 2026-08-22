@@ -17,7 +17,7 @@
 
 This specification defines how AstraIndexator accepts, validates, normalizes and propagates access-zone and TTL intent while remaining contract-compatible with AstraVector.
 
-AstraIndexator SHALL NOT invent access-zone semantics and SHALL NOT duplicate AstraVector's authorization, zone-registry or TTL lifecycle implementation.
+AstraIndexator SHALL NOT invent downstream access-zone semantics and SHALL NOT duplicate AstraVector's authorization, zone-registry or TTL lifecycle implementation.
 
 The responsibility boundary is:
 
@@ -28,7 +28,7 @@ Spring Boot / platform
         v
 AstraIndexator
         |
-        | validate shape
+        | validate shape and platform catalog
         | normalize selectors
         | preserve original intent
         | require one effective ingestion zone
@@ -56,6 +56,8 @@ The authoritative runtime semantics are defined by AstraVector, specifically:
 The deployment/integration repository is a consumer-facing reference and must remain aligned with those sources.
 
 AstraIndexator SHALL NOT fork or independently evolve the code-to-TTL matrix.
+
+The **AstraIndexator canonical knowledge-zone catalog** defined below is a platform ingestion classification/allowlist layered on top of valid AstraVector codes. It does not replace AstraVector Registry authority and does not redefine TTL math.
 
 ---
 
@@ -137,6 +139,8 @@ internal integrations    -> accessZoneId / accessZoneIds allowed
 
 The producer SHOULD prefer one representation in normal requests. Sending IDs and codes together is primarily a consistency-check scenario.
 
+For the canonical AstraIndexator 1.0 knowledge catalog, the producer SHOULD assign one approved `accessZoneCode` at upload/job creation time. AstraIndexator preserves that code unchanged through the durable job and downstream ingestion.
+
 ---
 
 ## 6. Normalization rules
@@ -190,11 +194,11 @@ Therefore the producer compatibility surface may contain singular/plural forms, 
 Valid examples:
 
 ```json
-{"accessZoneCode":"1500"}
+{"accessZoneCode":"0600"}
 ```
 
 ```json
-{"accessZoneCodes":["1500","1500"]}
+{"accessZoneCodes":["0600","0600"]}
 ```
 
 The latter deduplicates to one effective code.
@@ -202,7 +206,7 @@ The latter deduplicates to one effective code.
 Invalid ingestion example:
 
 ```json
-{"accessZoneCodes":["1500","2500"]}
+{"accessZoneCodes":["0300","0600"]}
 ```
 
 because it represents two different effective zones.
@@ -214,8 +218,6 @@ MULTIPLE_INGESTION_ACCESS_ZONES_NOT_ALLOWED
 ```
 
 AstraIndexator SHALL NOT fan-out one document version into multiple zones as an implicit behavior.
-
-If business requirements later require the same source to exist in multiple access zones, the producer/platform must create explicit independent indexing intents according to a separately approved lifecycle contract.
 
 ---
 
@@ -265,7 +267,7 @@ access level -> visibility threshold inside trusted authorization context
 
 AstraIndexator SHALL NOT derive trusted access level from untrusted file content or arbitrary user input.
 
-Where caller/effective access level is required by a downstream contract, it must be derived by the authenticated platform/gateway policy defined in TZ-16.
+The canonical knowledge-zone catalog is also not a replacement for `AccessLevel`; e.g. `0800 SECURITY` is a retrieval/indexing zone classification, not an automatic `RESTRICTED` access-level assignment.
 
 ---
 
@@ -273,7 +275,7 @@ Where caller/effective access level is required by a downstream contract, it mus
 
 The following table mirrors the current AstraVector code-matrix behavior and is included for integration understanding and test compatibility.
 
-It is NOT an independent AstraIndexator policy table.
+It is NOT an independent AstraIndexator TTL policy table.
 
 | accessZoneCode range | Current default TTL behavior |
 |---|---:|
@@ -312,7 +314,117 @@ else:
 
 AstraIndexator MUST NOT calculate an authoritative TTL from this formula in runtime business logic.
 
-Reason: the registry/configuration is authoritative and may evolve. Duplicating the matrix would create cross-service policy drift.
+---
+
+## 10A. Canonical knowledge Access Zone catalog `0000–0999`
+
+AstraIndexator 1.0 reserves ten **knowledge-zone families** inside the AstraVector-valid `0000–0999` range. Each family owns a block of 100 codes for future controlled subdivisions; v1 defines one canonical root code per family.
+
+| Family range | Canonical code | `knowledgeType` | Intended knowledge scope |
+|---|---:|---|---|
+| `0000–0099` | `0000` | `GENERAL` | general/common platform knowledge |
+| `0100–0199` | `0100` | `CORPORATE` | corporate policies, internal general documents |
+| `0200–0299` | `0200` | `REGULATORY` | external/internal regulatory and normative materials |
+| `0300–0399` | `0300` | `LEGAL` | contracts, legal opinions, legal clauses and templates |
+| `0400–0499` | `0400` | `FINANCE` | financial procedures, reports and finance knowledge |
+| `0500–0599` | `0500` | `HR` | HR policies, personnel procedures and HR knowledge |
+| `0600–0699` | `0600` | `TECHNICAL` | technical documentation, software, infrastructure, API manuals |
+| `0700–0799` | `0700` | `OPERATIONS` | business operations, runbooks, process instructions |
+| `0800–0899` | `0800` | `SECURITY` | internal security standards, controls and security documentation |
+| `0900–0999` | `0900` | `ARCHIVE` | long-lived archive/reference knowledge |
+
+### 10A.1 Canonical upload rule
+
+For normal AstraIndexator 1.0 ingestion, Spring Boot/platform selects one canonical zone during source upload/job creation:
+
+```text
+knowledgeType
+    ↓ approved platform mapping
+accessZoneCode = one of
+0000 | 0100 | 0200 | 0300 | 0400 |
+0500 | 0600 | 0700 | 0800 | 0900
+    ↓
+SeaweedFS source upload
+    ↓
+IndexationJob(accessZoneCode)
+    ↓
+AstraIndexator validation/preservation
+    ↓
+AstraVector registry resolution
+```
+
+Example:
+
+```json
+{
+  "documentId": "20fd6906-cf10-4d2a-bdbf-31ae32316716",
+  "documentVersion": 3,
+  "knowledgeType": "TECHNICAL",
+  "accessZoneCode": "0600",
+  "ttlDays": 0
+}
+```
+
+`knowledgeType` is optional descriptive/business metadata. `accessZoneCode` is the integration identifier and is authoritative for downstream zone selection.
+
+### 10A.2 Allowlist semantics
+
+Syntax validity and platform ingestion approval are separate checks:
+
+```text
+FORMAT VALID:
+  any ^[0-9]{4}$ code
+
+CANONICAL V1 KNOWLEDGE CATALOG:
+  0000,0100,0200,0300,0400,
+  0500,0600,0700,0800,0900
+```
+
+A code such as `0473` is syntactically valid for AstraVector, but a canonical-catalog producer profile SHOULD reject it with `ACCESS_ZONE_NOT_APPROVED_FOR_INGESTION` unless deployment configuration explicitly enables that registered subdivision.
+
+This preserves future extensibility:
+
+```text
+06xx = TECHNICAL family
+0600 = canonical TECHNICAL root
+0601..0699 = reserved for future approved technical subdivisions
+```
+
+AstraIndexator MUST NOT infer the family by integer arithmetic as authorization/business policy. The approved catalog is explicit/versioned configuration.
+
+### 10A.3 Registry provisioning requirement
+
+A canonical catalog code is processable only if the corresponding zone is provisioned and ACTIVE in AstraVector Registry.
+
+```text
+catalog approved
++
+registry ACTIVE
+= eligible for ingestion
+```
+
+AstraIndexator does not create the zones and does not assume auto-create.
+
+### 10A.4 TTL behavior for canonical catalog
+
+All ten canonical root codes are inside `0000–0999`, therefore the current `llm2` registry default matrix yields:
+
+```text
+default_ttl_days = 0
+allow_never_expire = true (for auto-created equivalent policy)
+```
+
+However request semantics remain:
+
+```text
+ttl_days = 0 -> inherit effective registry/platform policy
+```
+
+AstraIndexator MUST NOT rewrite `ttl_days=0` to an invented expiration date or unconditional forever flag. A positive explicit `ttlDays` MAY be propagated when allowed by the downstream registry/policy contract.
+
+### 10A.5 Taxonomy vs access control
+
+The catalog provides durable retrieval/indexing scopes useful for organizing knowledge. It MUST NOT be treated as the only authorization dimension or as a substitute for `AccessLevel`/upstream authorization.
 
 ---
 
@@ -388,11 +500,7 @@ TTL_MODE_RELATIVE
 TTL_MODE_ABSOLUTE
 ```
 
-However contract availability and implementation support are not identical.
-
-Current consumer reference explicitly treats exact `TTL_MODE_ABSOLUTE` persistence semantics as not stable enough to promise externally.
-
-Therefore AstraIndexator 1.0 SHALL NOT rely on absolute-expiry semantics until the AstraVector contract explicitly stabilizes them.
+AstraIndexator 1.0 SHALL NOT rely on absolute-expiry semantics until the AstraVector contract explicitly stabilizes them end-to-end.
 
 ### 13.2 Session/chunked ingestion
 
@@ -410,9 +518,7 @@ ttl_days = 0 -> inherit effective zone/platform TTL policy
 ttl_days > 0 -> request an explicit relative finite lifetime in days
 ```
 
-`ttl_days = 0` MUST NOT be interpreted by AstraIndexator or Spring Boot as "never expire".
-
-Whether the eventual effective policy is non-expiring depends on the resolved zone/platform policy.
+`ttl_days = 0` MUST NOT be interpreted by AstraIndexator or Spring Boot as unconditional "never expire".
 
 ---
 
@@ -479,14 +585,6 @@ explicit positive ttlDays -> relative finite lifetime
 
 If the producer API supports seconds or absolute timestamps, the adapter SHALL reject or explicitly downgrade unsupported precision rather than silently changing semantics.
 
-No adapter may silently map:
-
-```text
-expiresAt -> approximate ttlDays
-```
-
-without an approved compatibility rule in TZ-11.
-
 ---
 
 ## 17. Persistence requirements in AstraIndexator
@@ -502,6 +600,8 @@ requested_access_zone_code
 requested_access_zone_codes
 normalized_access_zone_id
 normalized_access_zone_code
+knowledge_type                 optional descriptive classification
+catalog_version                optional catalog/config revision
 
 requested_ttl_mode
 requested_ttl_days
@@ -512,8 +612,6 @@ downstream_effective_expires_at   optional
 ```
 
 For ingestion, normalization must produce exactly one effective selector pair before downstream delivery.
-
-The physical PostgreSQL schema remains owned by TZ-02 and may be amended by migration when TZ-10 is implemented.
 
 ---
 
@@ -532,8 +630,6 @@ IndexationJob
   |- TtlIntent
   `- ParsedDocument / LogicalBlock tree
 ```
-
-A `LogicalBlock` does not need to become the policy authority. TZ-11 maps the document-level access/TTL envelope to the AstraVector ingestion facade.
 
 ---
 
@@ -564,8 +660,6 @@ StartLogicalDocumentIngestion
  -> GetDocumentVectorStatus
 ```
 
-Detailed transport/idempotency/error mapping belongs to TZ-11.
-
 ---
 
 ## 20. Error classification
@@ -577,6 +671,7 @@ ACCESS_ZONE_REQUIRED
 ACCESS_ZONE_CODE_INVALID
 ACCESS_ZONE_ID_INVALID
 ACCESS_ZONE_ID_CODE_MISMATCH
+ACCESS_ZONE_NOT_APPROVED_FOR_INGESTION
 MULTIPLE_INGESTION_ACCESS_ZONES_NOT_ALLOWED
 ACCESS_ZONE_NOT_FOUND
 ACCESS_ZONE_DISABLED
@@ -589,21 +684,18 @@ TTL_OUT_OF_RANGE
 
 Transient failures include registry/database/network unavailability and are handled through TZ-02/TZ-13 retry policy.
 
-AstraIndexator SHALL preserve the downstream error code/message for diagnostics and job history.
-
 ---
 
-## 21. Security rules
+## 21. Trust-boundary rules
 
 1. Access-zone assignment is supplied by the trusted platform/business boundary, not inferred from document contents.
 2. AstraIndexator MUST NOT broaden an access scope.
 3. Missing zone SHALL fail closed when downstream ingestion requires a zone.
 4. Code/ID mismatch SHALL fail closed.
 5. Unknown/disabled/deleted zones SHALL not be silently substituted.
-6. `callerAccessLevel` or equivalent trusted visibility context MUST NOT be trusted directly from an unauthenticated browser/user field.
-7. Secrets MUST NOT be stored in metadata, source links or access-zone values.
-
-Detailed authentication, gateway and secret requirements belong to TZ-16.
+6. Canonical catalog membership SHALL be validated for producer profiles that opt into the v1 catalog.
+7. `callerAccessLevel` remains separate from `accessZoneCode`/`knowledgeType`.
+8. Secrets MUST NOT be stored in metadata, source links or access-zone values.
 
 ---
 
@@ -620,7 +712,7 @@ ttl_days=0 means inherit policy, not forever
 AstraVector registry owns effective TTL policy
 ```
 
-Configuration values such as maximum retrieval zones, registry cache TTL, default TTL and finite TTL bounds SHALL NOT be hard-coded as eternal business constants in producer DTOs.
+The ten canonical v1 knowledge-zone root codes are a versioned platform catalog and may be extended only through explicit catalog/config evolution, not ad-hoc client invention.
 
 ---
 
@@ -641,73 +733,68 @@ Implementation SHALL include automated tests for at least:
 11. positive `ttl_days` propagation;
 12. rejection of unsupported absolute TTL behavior;
 13. retry classification for registry unavailable vs invalid zone;
-14. downstream response/effective-expiry capture where available.
-
-Contract tests SHOULD use generated AstraVector protobuf classes or protocol fixtures derived from the same proto revision.
+14. downstream response/effective-expiry capture where available;
+15. exact canonical root-code allowlist: `0000,0100,0200,0300,0400,0500,0600,0700,0800,0900`;
+16. `knowledgeType -> canonical accessZoneCode` mapping for all ten catalog entries;
+17. syntactically valid but unapproved code (e.g. `0473`) rejected by canonical-catalog profile;
+18. configured approved subdivision (e.g. future `0601`) accepted only when explicit catalog config and ACTIVE registry state both exist;
+19. `0000–0999` leading-zero round-trip through producer DTO, PostgreSQL and AstraVector adapter;
+20. canonical catalog with `ttl_days=0` preserves inherit semantics rather than computing local expiry.
 
 ---
 
 ## 24. Acceptance criteria
 
 ### AC-01 — Numeric code contract
-
 Only four-ASCII-digit access-zone codes are accepted.
 
 ### AC-02 — Leading zero preservation
-
 `0001` remains `0001` end-to-end and is never normalized to integer `1`.
 
 ### AC-03 — One-zone ingestion
-
 Every processable indexing job resolves to exactly one effective access zone before downstream ingestion.
 
 ### AC-04 — No implicit fan-out
-
 AstraIndexator does not silently duplicate one document version into multiple zones.
 
 ### AC-05 — Code/ID consistency
-
 When both selectors are present they must identify the same effective zone.
 
 ### AC-06 — Fail closed
-
 Missing, invalid, unknown, disabled, deleted or mismatched zone information cannot broaden access or proceed silently.
 
 ### AC-07 — Registry authority
-
-AstraIndexator does not independently create zones or become authoritative for zone policy.
+AstraIndexator does not independently create zones or become authoritative for downstream zone policy.
 
 ### AC-08 — Matrix compatibility
-
-The documented range matrix matches the current AstraVector implementation and is used for verification/reference only, not duplicated runtime policy logic.
+The documented range matrix matches the current AstraVector implementation and is used for verification/reference only, not duplicated runtime TTL policy logic.
 
 ### AC-09 — TTL inherit semantics
-
 For session ingestion, `ttl_days=0` means inherit effective zone/platform policy and is never documented as unconditional never-expire.
 
 ### AC-10 — Positive TTL propagation
-
 A positive explicit session `ttl_days` value is forwarded without unit conversion.
 
 ### AC-11 — No silent precision loss
-
 Unsupported `ttl_seconds`/`expires_at` semantics are rejected or handled only by an explicitly approved TZ-11 mapping.
 
 ### AC-12 — Effective lifecycle authority
-
 AstraVector remains authoritative for expiry, search exclusion, Qdrant cleanup and reconciliation.
 
 ### AC-13 — Retrieval distinction
-
 The design explicitly preserves multi-zone retrieval while keeping ingestion single-zone.
 
 ### AC-14 — Security independence
-
 Access-zone assignment is independent of parser/OCR/text content and cannot be inferred from document semantics.
 
-### AC-15 — Contract evidence
+### AC-15 — Canonical v1 catalog
+Normal catalog-mode ingestion accepts the ten canonical root codes and preserves them unchanged from upload/job creation through AstraVector delivery.
 
-Tests verify zone-code boundaries, mismatch behavior, one-zone ingestion and TTL inheritance against the current AstraVector facade/registry contract.
+### AC-16 — Catalog/registry dual validation
+Catalog approval does not bypass AstraVector Registry ACTIVE-state validation; registry validity does not automatically make an arbitrary code part of the canonical producer catalog.
+
+### AC-17 — Catalog extensibility
+Reserved family subdivisions are enabled only through explicit versioned catalog configuration and are never inferred by integer arithmetic.
 
 ---
 
@@ -725,3 +812,7 @@ The following decisions are frozen for downstream design unless AstraVector cont
 8. AstraVector owns effective expiry and vector lifecycle.
 9. AstraIndexator integrates through the public AstraVector facade and generated protobuf contract.
 10. Exact absolute-expiry behavior remains unsupported by AstraIndexator until the downstream contract guarantees it end-to-end.
+11. AstraIndexator 1.0 canonical knowledge root codes are `0000,0100,0200,0300,0400,0500,0600,0700,0800,0900`.
+12. Their families reserve `00xx` through `09xx` respectively for future explicit subdivisions.
+13. The canonical knowledge catalog is a platform ingestion allowlist/taxonomy layered over, not replacing, AstraVector Registry authority.
+14. Producer assigns the canonical access zone at upload/job creation time; parser/OCR/splitter do not infer it.
