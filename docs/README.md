@@ -28,7 +28,7 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 | TZ-04 | File Validation & Acquisition | Bounded source acquisition, SHA-256, trusted type detection, container/image safety and parser admission | Baseline |
 | TZ-05 | Document Parser | Structure reconstruction, reading order, native extraction, tables/images and OCR-candidate handoff | Baseline |
 | TZ-06 | OCR Pipeline | Page/region-aware OCR policy, multilingual recognition, native/OCR reconciliation and versioned model/runtime contract | Baseline |
-| TZ-07 | Text Normalization | Canonical cleanup while preserving provenance and structure | Planned |
+| TZ-07 | Text Normalization | Deterministic multilingual-safe representation cleanup with protected spans, provenance and structure preservation | Baseline |
 | TZ-08 | Multilingual Logical Splitter | Structure-aware, tokenizer-calibrated logical fragmentation before AstraVector | Baseline |
 | TZ-09 | Canonical Document Model | ParsedDocument, DocumentElement, LogicalFragment, provenance, deterministic IDs, prepared artifacts | Baseline |
 | TZ-10 | Access Zones & TTL | AstraVector-compatible access-zone selectors, one-zone ingestion scope, registry-owned TTL semantics | Baseline |
@@ -62,7 +62,7 @@ Spring Boot
             |- bounded source acquisition + validation
             |- structure-aware parsing/layout
             |- conditional page/region-aware OCR
-            |- normalization
+            |- deterministic normalization
             |- multilingual logical splitting
             `- prepared artifact publication
                     |
@@ -115,7 +115,7 @@ PENDING
       -> CANCELLED
 ```
 
-`processing_stage` carries progress details such as acquisition/parsing/OCR/splitting/delivery while top-level status remains stable.
+`processing_stage` carries progress details such as acquisition/parsing/OCR/normalization/splitting/delivery while top-level status remains stable.
 
 Large-document recovery requires prepared-artifact checkpoints plus persisted downstream/session checkpoints so a crash does not force blind full reprocessing or duplicate downstream ingestion.
 
@@ -142,19 +142,13 @@ LOCAL WORKSPACE
   -> ephemeral attempt-scoped files only
 ```
 
-Prepared data uses bounded sharded JSONL parts. AstraIndexator does not create one object per logical fragment and does not require one unbounded JSONL object for arbitrarily large documents.
+Prepared data uses bounded sharded JSONL parts. `manifest.json` is published last and acts as the prepared artifact-set commit marker. A prepared artifact becomes authoritative only after its manifest reference is persisted in PostgreSQL through the current TZ-02 lease/fencing generation.
 
-`manifest.json` is published last and acts as the prepared artifact-set commit marker. Recovery considers an artifact valid only when its manifest schema is supported and all required parts pass existence/size/hash validation.
-
-A prepared artifact becomes authoritative for a job only after its manifest reference is persisted in PostgreSQL through the current TZ-02 lease/fencing generation. A stale worker may leave orphan staging data but cannot replace the authoritative checkpoint.
-
-Source, prepared artifacts, staging objects and AstraVector vector state have independent retention lifecycles. Vector deletion/TTL expiry never implicitly deletes SeaweedFS source/prepared objects, and SeaweedFS cleanup never directly mutates AstraVector/Qdrant.
+Source, prepared artifacts, staging objects and AstraVector vector state have independent retention lifecycles.
 
 ## File validation & acquisition invariant
 
-A producer file name, extension, declared MIME type, object content-type and object metadata are hints rather than trusted parser-routing evidence.
-
-Canonical acquisition boundary:
+Producer file name, extension, declared MIME type, object content-type and metadata are hints rather than trusted parser-routing evidence.
 
 ```text
 immutable SeaweedFS source reference
@@ -167,18 +161,9 @@ immutable SeaweedFS source reference
         -> supported-format admission
         -> attempt-local source.validated
         -> AcquiredSource
-        -> TZ-05/TZ-06
 ```
 
-The actual byte stream is authoritative for size and integrity. Metadata size is checked early but the hard source-size limit is also enforced continuously while reading. Partial downloads never become parser input.
-
-Parser routing uses the detected canonical format, not the extension alone. Declared MIME, extension and detected type remain distinct evidence and mismatches are explicit. Unknown, ambiguous, executable-masquerading or unsupported content fails closed.
-
-ZIP-based Office formats are admitted only through bounded container inspection. Generic archive ingestion remains disabled by default. Container admission protects against excessive entry count, expansion size, compression ratio, nesting and path traversal; image admission applies dimensions/pixel/page guards before OCR decoding.
-
-Source acquisition computes the SHA-256 used by TZ-03 prepared-artifact identity and TZ-13 recovery. A retry of the same immutable source under the same validation profile is expected to reproduce size, hash, detected format and admission result.
-
-Local source files are attempt-scoped and non-authoritative. A reclaimed worker reacquires the source unless a later compatible prepared checkpoint makes reacquisition unnecessary.
+Actual source bytes are authoritative for size and integrity. Partial downloads never become parser input. ZIP-based Office formats require bounded container inspection; generic archive ingestion remains disabled by default.
 
 ## Document parser invariant
 
@@ -194,21 +179,15 @@ AcquiredSource
   -> OCR candidates for TZ-06
 ```
 
-The parser preserves headings, paragraphs, lists, tables, images, captions, page/section provenance and coordinates when available. Native text is preferred over OCR; embedded images remain first-class elements even when OCR is not performed.
+The parser preserves headings, paragraphs, lists, tables, images, captions, page/section provenance and coordinates when available. PDF processing is page-aware and may classify pages independently as `NATIVE_TEXT`, `SCANNED_IMAGE`, `MIXED`, `LOW_SIGNAL` or `EMPTY`.
 
-PDF processing is page-aware and may classify pages independently as `NATIVE_TEXT`, `SCANNED_IMAGE`, `MIXED`, `LOW_SIGNAL` or `EMPTY`. One mixed PDF is therefore not forced into an all-native or all-OCR mode.
+Multi-column and bilingual layouts must be spatially reconstructed before logical splitting. Tables remain structured. Repeated headers/footers/page numbers are page-furniture candidates for TZ-07 rather than blindly indexed or irreversibly deleted.
 
-Multi-column and bilingual layouts must be spatially reconstructed before logical splitting. The parser must not naïvely interleave RU/KK columns or other parallel reading flows. Reading-order rules are versioned because they influence deterministic element/fragment identity and RAG quality.
-
-Tables are preserved structurally rather than immediately flattened to pipe-delimited prose. Repeated headers/footers/page numbers are classified as page-furniture candidates for TZ-07 rather than blindly indexed or irreversibly deleted.
-
-`alimbetov/llm-indexator` remains a source of implementation lessons (parser versioning, low-signal/OCR-required diagnostics, table-aware extraction and smoke fixtures), but its old flat extraction, local embeddings/chunking and vector ownership are not normative for AstraIndexator.
-
-Parser-core is independent from OCR model delivery. TZ-06/TZ-15 may obtain approved OCR/ML artifacts from the internal Nexus service at `https://nexus.astrabase.asia`; TZ-05 only emits deterministic OCR candidates and provenance.
+`alimbetov/llm-indexator` remains an implementation-learning source but its old flat extraction, local embeddings/chunking and vector ownership are not normative.
 
 ## OCR invariant
 
-OCR is a conditional enrichment stage after native parsing, not a replacement for the parser.
+OCR is a conditional enrichment stage after native parsing.
 
 ```text
 ParsedDocument + OcrCandidate[]
@@ -220,15 +199,54 @@ ParsedDocument + OcrCandidate[]
   -> canonical DocumentElement[]
 ```
 
-`OCR_IF_NEEDED` is the production default. Mixed PDFs are handled page/region-wise: good native text is retained, OCR fills missing visual regions, and overlapping OCR copies are deterministically suppressed rather than concatenated.
+`OCR_IF_NEEDED` is the production default. Mixed PDFs are handled page/region-wise and overlapping native/OCR copies are deterministically suppressed rather than concatenated.
 
-The baseline OCR language capability is `ru/kk/en`; language switching inside a page/document is allowed, while translation and transliteration are excluded from the OCR stage.
+The baseline OCR language capability is `ru/kk/en`. Models are versioned deployment artifacts supplied by TZ-15 from the internal Nexus target `https://nexus.astrabase.asia` into a local manifest/checksum-verified cache. Runtime model downloads and silent model/engine fallbacks are forbidden.
 
-OCR models are versioned deployment artifacts. The target internal registry is `https://nexus.astrabase.asia`, but document-time OCR uses only locally available, manifest/checksum-verified bundles supplied by TZ-15. Runtime internet/Nexus downloads and silent model/engine fallbacks are forbidden.
+CPU OCR is the portable baseline; GPU OCR is optional and explicitly profiled. OCR resource use is bounded by page count, pixels, memory, concurrency and timeouts.
 
-OCR resource use is bounded by page count, pixels, rendering scale/DPI, memory, concurrency and timeouts. PDF rasterization is page-wise rather than accumulating every rendered page in memory. Model, preprocessing and decision-policy versions participate in the processing fingerprint so model upgrades do not silently alter replay semantics.
+## Text normalization invariant
 
-CPU OCR is the portable baseline; GPU OCR is optional and explicitly profiled. Missing models/devices/checksum mismatches fail closed according to worker capability/readiness policy.
+TZ-07 is a deterministic, non-destructive representation-cleanup stage between parser/OCR reconciliation and TZ-08 logical fragmentation.
+
+```text
+native/OCR evidence
+      -> originalText
+      -> NFC + structure-aware safe cleanup
+      -> normalizedText
+      -> TZ-08
+      -> contextPrefix + normalized source text
+      -> embeddingText
+```
+
+The governing rule is **normalize representation, not meaning**.
+
+Baseline rules:
+
+- Unicode normalization is `NFC`; global NFKC/NFKD is not the default;
+- Kazakh letters `ә ғ қ ң ө ұ ү һ і` and their uppercase forms remain distinct and unchanged;
+- `ё` is not converted to `е`;
+- translation, transliteration, stemming, lemmatization, spell correction and LLM rewriting are out of scope;
+- prose whitespace/line-wrap cleanup is element-aware and deterministic;
+- code/preformatted indentation and punctuation are preserved;
+- dehyphenation is conservative and requires line/paragraph continuity evidence;
+- URLs, UUIDs, IPs, package/method names, versions, access-zone codes, hashes, dates, amounts and clause numbers are protected spans;
+- page headers/footers/page numbers are suppressed from index text only after layout/repetition evidence and remain auditable in provenance;
+- TABLE/LIST/CODE structure is never flattened merely by normalization;
+- low-confidence OCR characters are not guessed (`0/O`, `1/l`, dictionary correction are not baseline rules);
+- normalizer version/profile participates in `processingFingerprint`;
+- large-document normalization is bounded-memory and may use a deterministic two-pass evidence/normalization flow.
+
+Canonical representations remain semantically distinct:
+
+```text
+originalText     = accepted parser/OCR source evidence before TZ-07 cleanup
+normalizedText   = deterministic source representation used by TZ-08
+contextPrefix    = synthetic structural context added by TZ-08
+embeddingText    = downstream materialization of context + normalized source text
+```
+
+Ambiguity defaults to preserving the recovered source form plus diagnostics, rather than making an irreversible lexical guess.
 
 ## Canonical document-model invariant
 
@@ -239,105 +257,65 @@ IndexationJob
   -> AcquiredSource
   -> ParsedDocument
   -> DocumentElement[]
+  -> normalized DocumentElement[]
   -> LogicalFragment[] / AstraVector LogicalBlock mapping
   -> AstraVector public ingestion facade
 ```
 
-`LogicalFragment` is the stable AstraIndexator semantic source container. It MUST NOT be confused with AstraVector-generated tokenizer-aware chunks or their internal IDs.
+`LogicalFragment` is the stable AstraIndexator semantic source container and MUST NOT be confused with AstraVector-generated tokenizer-aware chunks or internal chunk IDs.
 
-The canonical model must preserve:
-
-- `documentId/documentVersion`;
-- deterministic `elementId/fragmentId`;
-- multilingual content and language metadata;
-- page/slide/sheet/layout provenance where available;
-- image/OCR origin relationships;
-- structured tables/lists;
-- `originalText` versus synthetic `contextPrefix` versus downstream embedding representation;
-- processing/schema versions needed for deterministic replay and diagnostics.
-
-Prepared artifacts are streamable through the TZ-03 manifest/parts contract so downstream delivery can be replayed without reparsing the original binary when the canonical schema and processing fingerprint are compatible.
+The canonical model preserves document identity/version, deterministic element/fragment IDs, multilingual content, layout provenance, OCR origin, structured tables/lists and processing/schema versions required for deterministic replay.
 
 ## RAG fragmentation invariant
 
-AstraIndexator MUST NOT duplicate AstraVector's embedding-size chunking. Its splitter is structure-first and tokenizer-free at runtime, using deterministic size guards calibrated against the real AstraVector model/tokenizer during verification.
-
-Canonical path:
+AstraIndexator MUST NOT duplicate AstraVector embedding-size chunking. Its splitter is structure-first and tokenizer-free at runtime, using deterministic size guards calibrated against the real AstraVector tokenizer/model contract during verification.
 
 ```text
-ParsedDocument
+normalized ParsedDocument
   -> LogicalFragment[]
   -> AstraVector LogicalBlock[]
   -> AstraVector tokenizer-aware chunking
   -> searchable parent/child representations
 ```
 
-For multilingual content, language switching alone is not a split boundary. Original language content is preserved; automatic translation/transliteration is not part of the indexing pipeline.
+Language switching alone is not a split boundary. Original multilingual source content is preserved.
 
 ## Access-zone and TTL invariant
 
-AstraIndexator mirrors the current AstraVector contract instead of inventing a parallel security/lifecycle model.
+AstraIndexator mirrors the current AstraVector contract.
 
 ```text
 accessZoneCode = exactly four ASCII digits: 0000..9999
 accessZoneId   = UUID-backed zone identity
 ```
 
-One indexed document version belongs to exactly one effective access zone. Plural zone selectors are retained for producer/retrieval compatibility, but a single indexing job MUST normalize to one distinct effective zone; AstraIndexator does not silently fan-out one job into multiple zones.
+One indexed document version belongs to exactly one effective access zone. Plural selectors are retained for producer/retrieval compatibility but a single indexing job normalizes to one distinct effective zone.
 
-The current AstraVector code-to-default-TTL matrix is documented in TZ-10 for compatibility and verification, but the Access Zone Registry remains the runtime authority. AstraIndexator MUST NOT independently implement the matrix as business policy.
-
-For session ingestion:
-
-```text
-ttl_days = 0 -> inherit effective zone/platform policy
-
-ttl_days > 0 -> explicit relative finite lifetime in days
-```
-
-`0` MUST NOT be interpreted as unconditional never-expire. AstraVector owns effective expiry, search exclusion, cleanup and Qdrant reconciliation.
+The code-to-default-TTL matrix in TZ-10 is compatibility/reference data; AstraVector Access Zone Registry remains the runtime authority. For session ingestion `ttl_days=0` means inherit effective zone/platform policy and does not mean unconditional never-expire.
 
 ## AstraVector integration invariant
 
-AstraIndexator uses the generated client for:
-
-```text
-astravector.embedding.v1.AstraVectorIngestionFacade
-```
-
-and does not introduce a parallel custom ingestion API.
-
-Canonical integration model:
+AstraIndexator uses the generated `astravector.embedding.v1.AstraVectorIngestionFacade` client and does not introduce a parallel custom ingestion API.
 
 ```text
 canonical AstraIndexator model
         -> anti-corruption mapping
         -> LogicalBlock[]
-        -> single-call IndexLogicalDocument
-           OR
-           StartLogicalDocumentIngestion
-             -> AppendLogicalDocumentBlocks x N
-             -> FinalizeLogicalDocumentIngestion
+        -> IndexLogicalDocument
+           OR session Start/Append/Finalize
         -> GetLogicalDocumentIngestionStatus
         -> GetDocumentVectorStatus
         -> searchable=true
         -> AstraIndexator job COMPLETED
 ```
 
-Mutating RPC timeouts are ambiguous outcomes. Start retries reuse the same logical idempotency key, Append retries reuse the same batch index/hash, and Finalize timeout is reconciled through status before any replacement operation is considered.
+Mutating RPC timeouts are ambiguous outcomes and are reconciled before unsafe replay/replacement. Session delivery is deterministic, bounded-memory and checkpointed.
 
-Session delivery is deterministic, bounded-memory and checkpointed durably so a reclaimed job can continue without blind full re-ingestion.
-
-Two P0 integration decisions remain explicit rather than guessed:
-
-1. exact cross-language canonicalization/golden vectors for `batch_content_hash` and `final_content_hash`;
-2. deterministic mapping of producer-visible `documentVersion` to AstraVector numeric `uint64 document_version` when the producer version is not already numeric.
+Two P0 integration decisions remain explicit: byte-exact cross-language hashing fixtures and deterministic mapping from opaque producer `documentVersion` to AstraVector numeric version where necessary.
 
 ## Document lifecycle invariant
 
 AstraIndexator separates local job lifecycle from AstraVector document/vector lifecycle.
-
-Baseline rules:
 
 ```text
 new source revision -> same documentId + new immutable version + new job
@@ -347,67 +325,54 @@ COMPLETED -> downstream searchable=true
 lost mutation ACK -> reconcile before replay/new operation
 ```
 
-Reindex is explicit and auditable. Destructive same-version replacement is not the default until AstraVector `replace_existing_version` behavior is verified end-to-end.
-
-Deletion uses `DeleteDocumentVectorsFacade` and is treated as asynchronous/reconcilable (`DELETE_SCHEDULED -> DELETING -> DELETED`). AstraIndexator never deletes Qdrant points directly.
-
-Session expiry and document TTL expiry are distinct lifecycle events. AstraVector remains authoritative for effective TTL expiration/search exclusion.
-
-Source objects, prepared canonical artifacts and AstraVector vector state are separate resources and therefore have separate retention/deletion policies.
+Reindex is explicit/auditable. Delete is asynchronous and uses AstraVector facade; AstraIndexator never deletes Qdrant points directly. Source, prepared artifacts and vector state have independent lifecycles.
 
 ## Reliability and recovery invariant
 
-Recovery is **state-driven**, not a blind restart of the whole pipeline.
-
-Canonical recovery model:
+Recovery is state-driven rather than a blind whole-pipeline restart.
 
 ```text
 reclaim expired lease
   -> validate fencing generation
   -> load durable checkpoints
-  -> validate source/prepared artifact compatibility
-  -> reconcile downstream ingestion/vector state
+  -> validate source/prepared compatibility
+  -> reconcile downstream state
   -> resume from earliest safe stage
   -> execute idempotently
   -> prove searchable or enter terminal failure/dead-letter
 ```
 
-A mutating RPC timeout is an ambiguous outcome, not proof of failure. Start/Append/Finalize/Delete are reconciled before unsafe replacement or replay. Compatible prepared artifacts and deterministic session checkpoints are reused across worker crashes.
-
-AstraIndexator never repairs Qdrant directly; AstraVector PostgreSQL remains the downstream canonical state and Qdrant is a rebuildable search projection.
-
-Finite retry budgets are mandatory. Poison work transitions to `DEAD_LETTER`, and requeue is explicit, auditable and history-preserving.
+AstraIndexator never repairs Qdrant directly. Finite retry budgets are mandatory and dead-letter requeue is explicit/auditable.
 
 ## Current critical design path
 
-The processing/control baselines now include:
+The complete processing/control baseline now includes:
 
 ```text
-TZ-02 Job Coordinator & PostgreSQL       ✅
-TZ-03 Object Storage / SeaweedFS          ✅
-TZ-04 File Validation & Acquisition       ✅
-TZ-05 Document Parser                     ✅
-TZ-06 OCR Pipeline                        ✅
-TZ-10 Access Zones & TTL                  ✅
-TZ-11 AstraVector Integration             ✅
-TZ-12 Document Lifecycle                  ✅
-TZ-13 Reliability & Recovery              ✅
+TZ-00 System Architecture                  ✅
+TZ-01 Indexation Request & Job Contract    ✅
+TZ-02 Job Coordinator & PostgreSQL         ✅
+TZ-03 Object Storage / SeaweedFS            ✅
+TZ-04 File Validation & Acquisition         ✅
+TZ-05 Document Parser                       ✅
+TZ-06 OCR Pipeline                          ✅
+TZ-07 Text Normalization                    ✅
+TZ-08 Multilingual Logical Splitter         ✅
+TZ-09 Canonical Document Model              ✅
+TZ-10 Access Zones & TTL                    ✅
+TZ-11 AstraVector Integration               ✅
+TZ-12 Document Lifecycle                    ✅
+TZ-13 Reliability & Recovery                ✅
 ```
 
-The remaining processing-plane specification is now:
-
-```text
-TZ-07 Text Normalization
-```
-
-Then the cross-cutting specifications should close operability and proof:
+The remaining specifications are now cross-cutting operability/proof layers:
 
 ```text
 TZ-14 Observability
-TZ-15 Configuration & Model Delivery
-TZ-16 Security
-TZ-17 Testing & Verification
-TZ-18 Deployment & Operations
+  -> TZ-15 Configuration & Model Delivery
+  -> TZ-16 Security
+  -> TZ-17 Testing & Verification
+  -> TZ-18 Deployment & Operations
 ```
 
-TZ-17 SHALL convert the golden failure scenarios from TZ-13, storage publication/recovery criteria from TZ-03, hostile-input criteria from TZ-04, structure/reading-order criteria from TZ-05 and multilingual/mixed-mode/resource/model-supply OCR criteria from TZ-06 into executable evidence.
+TZ-17 SHALL convert the golden failure scenarios from TZ-13, storage publication/recovery criteria from TZ-03, hostile-input criteria from TZ-04, structure/reading-order criteria from TZ-05, OCR criteria from TZ-06 and multilingual/structural/RAG-quality normalization criteria from TZ-07 into executable evidence.
