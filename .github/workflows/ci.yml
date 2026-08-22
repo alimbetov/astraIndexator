@@ -1,4 +1,4 @@
-name: M1 Persistence Foundation
+name: AstraIndexator CI
 
 on:
   pull_request:
