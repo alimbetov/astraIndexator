@@ -33,7 +33,7 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 | TZ-09 | Canonical Document Model | ParsedDocument, DocumentElement, LogicalFragment, provenance, deterministic IDs, prepared artifacts | Baseline |
 | TZ-10 | Access Zones & TTL | AstraVector-compatible access-zone selectors, one-zone ingestion scope, registry-owned TTL semantics | Baseline |
 | TZ-11 | AstraVector Integration | Public ingestion facade, LogicalBlock mapping, single/session ingestion, batching, idempotency, reconciliation and readiness | Baseline |
-| TZ-12 | Document Lifecycle | Create/update/reindex/delete/version replacement semantics | Planned |
+| TZ-12 | Document Lifecycle | Create/new-version/reindex/delete, cancellation, TTL expiry, replacement and searchability semantics | Baseline |
 | TZ-13 | Reliability & Recovery | Crash recovery, poison jobs, dead-letter, reconciliation | Planned |
 | TZ-14 | Observability | Logs, metrics, tracing, health/readiness, audit fields | Planned |
 | TZ-15 | Configuration & Model Delivery | Nexus model delivery, config schema, startup validation | Planned |
@@ -221,22 +221,44 @@ Two P0 integration decisions remain explicit rather than guessed:
 1. exact cross-language canonicalization/golden vectors for `batch_content_hash` and `final_content_hash`;
 2. deterministic mapping of producer-visible `documentVersion` to AstraVector numeric `uint64 document_version` when the producer version is not already numeric.
 
+## Document lifecycle invariant
+
+AstraIndexator separates local job lifecycle from AstraVector document/vector lifecycle.
+
+Baseline rules:
+
+```text
+new source revision -> same documentId + new immutable version + new job
+new version builds while previous searchable version remains intact
+partial/finalizing downstream state != COMPLETED
+COMPLETED -> downstream searchable=true
+lost mutation ACK -> reconcile before replay/new operation
+```
+
+Reindex is explicit and auditable. Destructive same-version replacement is not the default until AstraVector `replace_existing_version` behavior is verified end-to-end.
+
+Deletion uses `DeleteDocumentVectorsFacade` and is treated as asynchronous/reconcilable (`DELETE_SCHEDULED -> DELETING -> DELETED`). AstraIndexator never deletes Qdrant points directly.
+
+Session expiry and document TTL expiry are distinct lifecycle events. AstraVector remains authoritative for effective TTL expiration/search exclusion.
+
+Source objects, prepared canonical artifacts and AstraVector vector state are separate resources and therefore have separate retention/deletion policies.
+
 ## Current critical design path
 
-The cross-service contract chain now has baseline specifications for coordination, access/lifecycle and downstream ingestion:
+The cross-service correctness chain now has baseline specifications for:
 
 ```text
 TZ-02 Job Coordinator & PostgreSQL       ✅
 TZ-10 Access Zones & TTL                 ✅
 TZ-11 AstraVector Integration            ✅
+TZ-12 Document Lifecycle                 ✅
 ```
 
 The next critical design work is:
 
 ```text
-TZ-12 Document Lifecycle
-  -> TZ-13 Reliability & Recovery
+TZ-13 Reliability & Recovery
   -> TZ-17 failure/recovery E2E verification
 ```
 
-TZ-12 should define create/new-version/reindex/delete/replacement semantics against the public AstraVector facade. TZ-13 must then combine TZ-02 fencing, TZ-09 prepared artifacts, TZ-11 session checkpoints and downstream status reconciliation into deterministic crash recovery.
+TZ-13 must combine TZ-02 fencing, TZ-09 prepared artifacts, TZ-11 session checkpoints and TZ-12 lifecycle reconciliation into deterministic recovery for worker/dependency crashes and ambiguous downstream mutations.
