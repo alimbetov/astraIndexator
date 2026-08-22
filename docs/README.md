@@ -28,7 +28,7 @@ No production implementation should introduce a contract that contradicts these 
 | TZ-13 | Reliability & Recovery | Crash recovery, replay, reconciliation, dead-letter and fencing | Baseline |
 | TZ-14 | Observability & Knowledge Inventory | Logs, metrics, traces, health, audit, loaded-knowledge inventory and lifetime visibility | Baseline |
 | TZ-15 | Configuration & Model Delivery | Typed config, Nexus artifact supply, model manifests/checksums, offline runtime, rollout/rollback | Baseline |
-| TZ-16 | Security | Trust boundary, secrets, storage/network policies, authorization | Planned |
+| TZ-16 | Internal Trust Boundary & Secrets | Internal-service trust model, approved storage/network boundaries, secret handling and no privilege broadening | Baseline |
 | TZ-17 | Testing & Verification | Unit/integration/E2E/recovery/performance/RAG-quality proof | Planned |
 | TZ-18 | Deployment & Operations | Docker/Kubernetes readiness, scaling and runbooks | Planned |
 
@@ -235,9 +235,39 @@ Exact remaining lifetime is computed only from authoritative downstream `effecti
 
 Knowledge Inventory is a denormalized operational projection, not a lifecycle source of truth. It exposes freshness and reconciles against supported AstraVector APIs. Prometheus labels remain bounded-cardinality and raw document/OCR/embedding text is excluded from normal telemetry.
 
+## Internal trust-boundary invariant
+
+TZ-16 intentionally keeps AstraIndexator simple as an internal service.
+
+AstraIndexator 1.0 does **not** implement end-user OAuth2/OIDC/JWT/RBAC and does not require a public upload API for normal processing. Caller/user authentication belongs to upstream platform/gateway boundaries if ever required.
+
+The minimal trust model is:
+
+```text
+trusted internal producer/platform
+  -> PostgreSQL + SeaweedFS
+  -> AstraIndexator internal worker
+  -> AstraVector
+```
+
+Baseline controls are limited to:
+
+- approved internal source/storage adapters; arbitrary external URL fetching is disabled;
+- externalized least-privilege service secrets;
+- separation of model-preload/Nexus credentials from runtime worker credentials where practical;
+- no access-zone broadening or inference from content;
+- no direct AstraVector PostgreSQL or Qdrant access from AstraIndexator;
+- internal-only Knowledge Inventory/admin exposure;
+- model integrity verification;
+- no secret/raw-document leakage in normal telemetry.
+
+NetworkPolicy/firewall/TLS/mTLS remain deployment capabilities for TZ-18 rather than reasons to add application user-authentication machinery.
+
+If AstraIndexator is ever exposed directly to untrusted/public clients, TZ-16 MUST be revised before such deployment is allowed.
+
 ## Current design status
 
-The full functional/control/observability/configuration baseline is now:
+The full architecture/cross-cutting baseline is now:
 
 ```text
 TZ-00 System Architecture                  ✅
@@ -256,14 +286,14 @@ TZ-12 Document Lifecycle                    ✅
 TZ-13 Reliability & Recovery                ✅
 TZ-14 Observability & Knowledge Inventory  ✅
 TZ-15 Configuration & Model Delivery       ✅
+TZ-16 Internal Trust Boundary & Secrets    ✅
 ```
 
-Remaining cross-cutting specifications:
+Only verification and operations specifications remain:
 
 ```text
-TZ-16 Security
-  -> TZ-17 Testing & Verification
+TZ-17 Testing & Verification
   -> TZ-18 Deployment & Operations
 ```
 
-TZ-17 SHALL turn the acceptance criteria and golden failure/quality/TTL/observability/configuration/model-supply scenarios from TZ-03..TZ-15 into executable evidence.
+TZ-17 SHALL convert the acceptance criteria and golden failure/quality/TTL/observability/configuration/trust-boundary scenarios from TZ-03..TZ-16 into executable evidence.
