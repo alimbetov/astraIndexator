@@ -27,7 +27,7 @@ No production implementation should introduce a contract that contradicts these 
 | TZ-12 | Document Lifecycle | New versions/reindex/delete/cancel/expiry/searchability semantics | Baseline |
 | TZ-13 | Reliability & Recovery | Crash recovery, replay, reconciliation, dead-letter and fencing | Baseline |
 | TZ-14 | Observability & Knowledge Inventory | Logs, metrics, traces, health, audit, loaded-knowledge inventory and lifetime visibility | Baseline |
-| TZ-15 | Configuration & Model Delivery | Nexus model delivery, config schema, startup validation | Planned |
+| TZ-15 | Configuration & Model Delivery | Typed config, Nexus artifact supply, model manifests/checksums, offline runtime, rollout/rollback | Baseline |
 | TZ-16 | Security | Trust boundary, secrets, storage/network policies, authorization | Planned |
 | TZ-17 | Testing & Verification | Unit/integration/E2E/recovery/performance/RAG-quality proof | Planned |
 | TZ-18 | Deployment & Operations | Docker/Kubernetes readiness, scaling and runbooks | Planned |
@@ -144,6 +144,34 @@ Normalization follows **normalize representation, not meaning**: Unicode NFC, Ka
 
 Logical splitting is multilingual, structure-first and tokenizer-free at runtime. AstraVector remains responsible for model/tokenizer-aware chunking.
 
+## Configuration & model-delivery invariant
+
+TZ-15 separates typed application configuration, secret configuration and immutable model artifacts.
+
+Production OCR model flow is:
+
+```text
+approved immutable model revision
+  -> https://nexus.astrabase.asia
+  -> explicit image-build / init-container / preload step
+  -> manifest + SHA-256 verification
+  -> immutable local model directory
+  -> startup/readiness capability validation
+  -> document-time offline inference
+```
+
+Nexus is an artifact source, not a document-time inference dependency. Runtime workers SHALL NOT download models on demand and SHALL NOT silently fall back to a different model, runtime or device.
+
+Production model identity includes `modelId`, `artifactRevision`, engine/runtime/device compatibility and checksum/manifest evidence. OCR model revision and preprocessing profile participate in the processing fingerprint so reindex/recovery can distinguish outputs created by different model revisions.
+
+CPU OCR remains the portable baseline; GPU capability is an explicit deployment profile with compatible CUDA/runtime and bounded GPU memory/concurrency. Missing GPU capability cannot silently degrade to CPU inside the same worker profile.
+
+Model artifacts SHOULD be supplied through immutable revision paths rather than mutable `latest` references. Rollback selects a previously approved revision; it does not rewrite files under an existing revision.
+
+Configuration has deterministic precedence and startup validation. Mandatory safety limits, model registry entries and cross-field invariants such as `heartbeat < lease` are validated before readiness. Effective non-secret configuration may be fingerprinted (`effectiveConfigSha256`) for diagnostics, while secret values never enter logs or ordinary manifests.
+
+Nexus credentials SHOULD be scoped to image-build/init/preload components where possible; document-processing workers SHOULD consume verified model directories read-only without holding Nexus credentials.
+
 ## Access-zone and TTL invariant
 
 ```text
@@ -201,41 +229,15 @@ Finite retry budgets are mandatory. Compatible prepared artifacts and session ch
 
 TZ-14 makes loaded knowledge queryable as an operational read model rather than relying only on logs/Prometheus.
 
-A support/operator view must answer:
+A support/operator view must answer what is loaded, where it is scoped, whether it is searchable, how many fragments/vectors exist, when it became usable, and how long it remains valid.
 
-```text
-WHAT is loaded?
-  -> document/version/source hash/format/processing fingerprint
+Exact remaining lifetime is computed only from authoritative downstream `effectiveExpiresAt`; inherited/unknown lifetime is shown honestly as unresolved rather than reconstructed from the local access-zone matrix.
 
-WHERE is it scoped?
-  -> accessZoneId/accessZoneCode
-
-IS it usable?
-  -> AstraVector operation state + searchable + sync evidence
-
-HOW MUCH was produced?
-  -> pages/elements/fragments/blocks/bindings/vectors
-
-WHEN was it loaded?
-  -> accepted/searchable/completed/last-verified timestamps
-
-HOW LONG does it remain?
-  -> authoritative effectiveExpiresAt - now
-     OR authoritative NEVER_EXPIRES
-     OR honest UNKNOWN / INHERITED_UNRESOLVED
-```
-
-The current AstraVector `GetDocumentVectorStatus` exposes operation state, progress, `searchable` and vector/outbox/Qdrant synchronization evidence, but not authoritative document effective expiry. Therefore exact remaining-lifetime display requires a stable AstraVector service-level `effective_expires_at`/never-expire lifecycle field. AstraIndexator MUST NOT solve this by querying AstraVector PostgreSQL directly or by recalculating the access-zone TTL matrix locally.
-
-`GetLogicalDocumentIngestionStatus.expires_at` is session lifetime and MUST NOT be displayed as knowledge TTL.
-
-Knowledge Inventory is a denormalized operational projection, not a lifecycle source of truth. It exposes freshness (`lastVerifiedAt`, `FRESH/STALE/UNVERIFIED/DOWNSTREAM_UNAVAILABLE`) and reconciles against supported AstraVector APIs.
-
-Prometheus labels remain bounded-cardinality; document/job/session IDs belong in structured logs/traces/Inventory rather than metric labels. Raw document/OCR/embedding text and credentials are excluded from normal telemetry.
+Knowledge Inventory is a denormalized operational projection, not a lifecycle source of truth. It exposes freshness and reconciles against supported AstraVector APIs. Prometheus labels remain bounded-cardinality and raw document/OCR/embedding text is excluded from normal telemetry.
 
 ## Current design status
 
-The full functional/control/observability baseline is now:
+The full functional/control/observability/configuration baseline is now:
 
 ```text
 TZ-00 System Architecture                  ✅
@@ -248,20 +250,20 @@ TZ-06 OCR Pipeline                         ✅
 TZ-07 Text Normalization                   ✅
 TZ-08 Multilingual Logical Splitter        ✅
 TZ-09 Canonical Document Model             ✅
-TZ-10 Access Zones & TTL                   ✅
-TZ-11 AstraVector Integration              ✅
-TZ-12 Document Lifecycle                   ✅
-TZ-13 Reliability & Recovery               ✅
+TZ-10 Access Zones & TTL                    ✅
+TZ-11 AstraVector Integration               ✅
+TZ-12 Document Lifecycle                    ✅
+TZ-13 Reliability & Recovery                ✅
 TZ-14 Observability & Knowledge Inventory  ✅
+TZ-15 Configuration & Model Delivery       ✅
 ```
 
 Remaining cross-cutting specifications:
 
 ```text
-TZ-15 Configuration & Model Delivery
-  -> TZ-16 Security
+TZ-16 Security
   -> TZ-17 Testing & Verification
   -> TZ-18 Deployment & Operations
 ```
 
-TZ-17 SHALL turn the acceptance criteria and golden failure/quality/TTL/observability scenarios from TZ-03..TZ-14 into executable evidence.
+TZ-17 SHALL turn the acceptance criteria and golden failure/quality/TTL/observability/configuration/model-supply scenarios from TZ-03..TZ-15 into executable evidence.
