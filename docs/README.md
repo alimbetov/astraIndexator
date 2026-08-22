@@ -4,7 +4,7 @@ This directory contains the canonical architecture and technical specifications 
 
 ## Design principle
 
-The system is decomposed by responsibility and contract boundary. Each subsystem specification must define purpose/ownership, inputs/outputs, persistence and DTO contracts, concurrency/idempotency, recovery, observability, security/access scope and testable acceptance criteria.
+The system is decomposed by responsibility and contract boundary. Each subsystem specification must define purpose/ownership, inputs/outputs, persistence and DTO contracts, concurrency/idempotency, recovery, observability, trust scope and testable acceptance criteria.
 
 No production implementation should introduce a contract that contradicts these specifications without first updating the relevant specification and recording the decision.
 
@@ -30,7 +30,7 @@ No production implementation should introduce a contract that contradicts these 
 | TZ-15 | Configuration & Model Delivery | Typed config, Nexus artifact supply, model manifests/checksums, offline runtime, rollout/rollback | Baseline |
 | TZ-16 | Internal Trust Boundary & Secrets | Internal-service trust model, approved storage/network boundaries, secret handling and no privilege broadening | Baseline |
 | TZ-17 | Testing & Verification | Executable architecture proof: unit/integration/E2E/recovery/RAG quality plus internal Smoke Test API | Baseline |
-| TZ-18 | Deployment & Operations | Docker/Kubernetes readiness, scaling and runbooks | Planned |
+| TZ-18 | Deployment & Operations | Portable/Kubernetes topology, probes, model preload, resource classes, scaling, migrations, rollout/rollback, DR and runbooks | Baseline |
 
 ## Canonical system boundary
 
@@ -65,11 +65,13 @@ Spring Boot
 
 AstraIndexator owns acquisition, parsing, OCR, normalization and semantic logical fragmentation. AstraVector owns tokenizer/model execution, searchable chunking, embeddings, vector state, Qdrant projection, effective TTL and retrieval.
 
-## Core runtime invariants
-
-### Coordinator
+## Core correctness model
 
 ```text
+immutable source
++
+durable PostgreSQL coordination
++
 at-least-once processing
 +
 FOR UPDATE SKIP LOCKED
@@ -78,36 +80,20 @@ renewable lease
 +
 monotonic lease_generation fencing
 +
-idempotent/reconcilable downstream effects
-```
-
-Canonical local lifecycle:
-
-```text
-PENDING
-  -> PROCESSING
-      -> COMPLETED
-      -> RETRY_WAIT -> PROCESSING
-      -> FAILED
-      -> DEAD_LETTER
-      -> CANCELLED
+replayable prepared artifacts
++
+versioned processing/model identity
++
+idempotent/reconcilable AstraVector delivery
++
+observable knowledge lifecycle
++
+executable verification
 ```
 
 A stale worker whose lease generation was superseded cannot authoritatively finalize or overwrite current state.
 
-### Storage and acquisition
-
-SeaweedFS stores immutable source and replayable prepared artifacts; PostgreSQL is coordinator authority.
-
-```text
-SOURCE -> immutable bytes
-PREPARED -> manifest.json + bounded JSONL parts
-LOCAL WORKSPACE -> ephemeral attempt-scoped files
-```
-
-`manifest.json` is the prepared-artifact commit marker. Source acquisition is bounded/streaming and establishes actual byte count plus SHA-256 before parser admission.
-
-### Processing plane
+## Processing plane
 
 ```text
 AcquiredSource
@@ -116,11 +102,12 @@ AcquiredSource
   -> TZ-07 Normalization
   -> TZ-08 Logical Splitter
   -> TZ-09 Canonical LogicalFragment/LogicalBlock mapping
+  -> TZ-11 AstraVector
 ```
 
 Parser reconstructs structure/reading order rather than flat text. OCR defaults to `OCR_IF_NEEDED`, supports baseline `ru/kk/en`, suppresses native/OCR duplication and uses locally verified model bundles. Normalization follows **normalize representation, not meaning**. AstraVector remains responsible for tokenizer/model-aware searchable chunking.
 
-### Configuration and model delivery
+## Configuration and model delivery
 
 Production OCR model flow:
 
@@ -136,7 +123,7 @@ approved immutable revision
 
 Runtime workers do not download models on demand and do not silently fall back to a different model/runtime/device. Model identity participates in processing fingerprint.
 
-### Access zone and TTL
+## Access zone, TTL and knowledge visibility
 
 ```text
 accessZoneCode = exactly four ASCII digits 0000..9999
@@ -145,21 +132,9 @@ accessZoneId   = UUID-backed identity
 
 One indexed document version belongs to exactly one effective ingestion zone. AstraVector Access Zone Registry owns authoritative zone resolution and effective TTL. `ttl_days=0` means inherit effective zone/platform policy; session expiry is not document expiry.
 
-### AstraVector integration/lifecycle
+Knowledge Inventory exposes what is loaded, document/version/source identity, processing fingerprint, access zone, counts, AstraVector state, `searchable`, freshness and lifecycle visibility. Exact remaining knowledge lifetime is shown only from authoritative downstream effective expiry/never-expire state.
 
-```text
-LogicalBlock stream
-  -> IndexLogicalDocument
-     OR Start / Append x N / Finalize
-  -> GetLogicalDocumentIngestionStatus
-  -> GetDocumentVectorStatus
-  -> searchable=true
-  -> local COMPLETED
-```
-
-Mutating RPC timeouts are ambiguous outcomes and are reconciled before replay/replacement. New versions build without destroying the previous searchable version. Delete is asynchronous through AstraVector facade; AstraIndexator never mutates Qdrant directly.
-
-### Reliability
+## Reliability and lifecycle
 
 ```text
 reclaim expired lease
@@ -171,23 +146,15 @@ reclaim expired lease
   -> prove searchable or enter terminal failure/dead-letter
 ```
 
-Finite retry budgets are mandatory.
+Mutating AstraVector RPC timeouts are ambiguous outcomes and are reconciled before replay/replacement. New versions build without destroying the previous searchable version. Delete is asynchronous through AstraVector facade; AstraIndexator never mutates Qdrant directly.
 
-### Observability and Knowledge Inventory
-
-TZ-14 makes loaded knowledge queryable: document/version/source hash, processing fingerprint, access zone, counts, AstraVector state, `searchable`, freshness and lifecycle visibility.
-
-Exact remaining knowledge lifetime is shown only from authoritative downstream effective expiry/never-expire state. `GetLogicalDocumentIngestionStatus.expires_at` is session lifetime and is never presented as document TTL.
-
-### Internal trust boundary
+## Internal trust boundary
 
 AstraIndexator is an internal service and intentionally does not implement end-user OAuth2/OIDC/JWT/RBAC in 1.0. It accepts only approved internal storage/network paths, externalizes least-privilege secrets, does not broaden access zones, and has no direct AstraVector PostgreSQL/Qdrant dependency.
 
-## Testing & verification invariant
+## Testing and smoke proof
 
-TZ-17 converts the architectural baseline into executable evidence.
-
-Verification layers are:
+TZ-17 converts the architecture into executable evidence:
 
 ```text
 unit
@@ -200,24 +167,7 @@ unit
  -> deployed smoke proof
 ```
 
-The minimum production proof is not merely that a worker is alive. It is:
-
-```text
-known immutable fixture
-  -> normal durable PostgreSQL job
-  -> normal worker claim/lease path
-  -> acquisition/parser/OCR/normalization/splitting
-  -> prepared artifact
-  -> AstraVector ingestion
-  -> searchable=true
-  -> RetrieveContext returns expected marker/citation
-  -> Knowledge Inventory reflects the result
-  -> normal lifecycle cleanup succeeds or remains reconcilably pending
-```
-
-### Internal Smoke Test API
-
-The approved control surface is conceptually:
+The internal Smoke Test API is conceptually:
 
 ```http
 POST /internal/v1/smoke-tests
@@ -225,17 +175,41 @@ GET  /internal/v1/smoke-tests/{smokeTestId}
 POST /internal/v1/smoke-tests/{smokeTestId}/cleanup
 ```
 
-Smoke profiles include `DEPENDENCIES`, `PIPELINE`, `E2E_RETRIEVAL`, `OCR_E2E` and test-environment-only `RECOVERY_E2E`.
+Smoke profiles include `DEPENDENCIES`, `PIPELINE`, `E2E_RETRIEVAL`, `OCR_E2E` and test-environment-only `RECOVERY_E2E`. Smoke is not a second ingestion API; it drives the normal durable production path using reserved immutable fixtures and performs cleanup through normal lifecycle APIs.
 
-The Smoke API is **not** a second ingestion API. It uses allowlisted immutable fixtures, a configured dedicated smoke access zone and reserved document namespace, creates a normal durable job, waits/reconciles through normal production states and performs cleanup through normal AstraVector lifecycle APIs. It does not accept arbitrary caller-provided URLs, zones, models or document text.
+## Deployment and operations invariant
 
-Full E2E smoke is mutating/expensive and MUST NOT be used as Kubernetes liveness/readiness. Ordinary health probes remain non-mutating.
+TZ-18 keeps correctness independent of deployment technology. The same contracts apply to standalone, Docker and Kubernetes execution.
 
-TZ-17 also makes shared Rust/Python golden vectors for AstraVector session hashing and deterministic document-version mapping explicit production gates where those contracts are required.
+Recommended production topology separates roles when scale requires it:
 
-## Current design status
+```text
+astra-indexator-control
+astra-indexator-worker-cpu x N
+astra-indexator-worker-gpu x N   # optional
+```
 
-The architecture and verification baseline is now complete through TZ-17:
+PostgreSQL, SeaweedFS, Nexus and AstraVector remain external dependencies. Model artifacts are provisioned before worker readiness and mounted/consumed as verified local state.
+
+Kubernetes probes are role-aware:
+
+```text
+liveness  -> process health only
+readiness -> ability to accept the configured role/capability
+smoke     -> explicit post-deploy verification, never liveness/readiness
+```
+
+Horizontal scale uses PostgreSQL claim/lease/fencing for correctness. Autoscaling should prefer backlog age/depth and capacity/latency signals rather than CPU alone. SIGTERM first stops new claims, then drains/checkpoints; unfinished work remains recoverable through lease expiry/reclaim.
+
+Database migrations are controlled/serialized before compatible rollout. Release identity includes image digest, config revision/fingerprint, DB schema compatibility and immutable model revision. Rollback selects known immutable revisions and is followed by reconciliation/smoke.
+
+Production operations require bounded workspace/resources, dependency-aware readiness, dashboards/alerts, backup/restore verification, housekeeping and runbooks for critical dependency, recovery, model, migration, resource and smoke failures.
+
+Kubernetes is a scheduling/scaling mechanism; it is not the source of indexing correctness.
+
+## Design baseline complete
+
+The AstraIndexator 1.0 specification set is now complete:
 
 ```text
 TZ-00 System Architecture                  ✅
@@ -256,12 +230,28 @@ TZ-14 Observability & Knowledge Inventory  ✅
 TZ-15 Configuration & Model Delivery       ✅
 TZ-16 Internal Trust Boundary & Secrets    ✅
 TZ-17 Testing & Verification                ✅
+TZ-18 Deployment & Operations               ✅
 ```
 
-Only the operational packaging/deployment specification remains:
+## Next phase: implementation planning
+
+Documentation completion is not production readiness. The next phase SHALL convert the baseline into an implementation backlog and executable vertical slices.
+
+Recommended implementation order:
 
 ```text
-TZ-18 Deployment & Operations
+1. contracts + PostgreSQL schema/migrations
+2. coordinator claim/lease/fencing
+3. SeaweedFS acquisition + validation
+4. canonical parser model + PDF/DOCX baseline
+5. OCR CPU baseline + Nexus preload
+6. normalization + logical splitter
+7. prepared artifact publication/replay
+8. AstraVector integration + reconciliation
+9. Knowledge Inventory + health/smoke API
+10. multi-replica/recovery verification
+11. container/Kubernetes packaging
+12. performance/RAG-quality gates + production runbooks
 ```
 
-TZ-18 SHALL turn these contracts into Docker/Kubernetes topology, probes, resource classes, worker pools, init/preload model flow, scaling, migrations, rollout/rollback and operational runbooks without weakening TZ-17 verification gates.
+Any implementation deviation that changes a baseline contract should update the relevant TZ before becoming the new canonical behavior.
