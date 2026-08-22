@@ -26,7 +26,7 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 | TZ-02 | Job Coordinator & PostgreSQL | Durable queue, multi-replica claim/lease/fencing, retries, attempts, recovery checkpoints and state machine | Baseline |
 | TZ-03 | Object Storage / SeaweedFS | Immutable source objects, sharded prepared artifacts, manifest publication, retention and recovery | Baseline |
 | TZ-04 | File Validation & Acquisition | Bounded source acquisition, SHA-256, trusted type detection, container/image safety and parser admission | Baseline |
-| TZ-05 | Document Parser | Native PDF/text extraction, page/layout representation | Planned |
+| TZ-05 | Document Parser | Structure reconstruction, reading order, native extraction, tables/images and OCR-candidate handoff | Baseline |
 | TZ-06 | OCR Pipeline | OCR decision rules, model acquisition/versioning, OCR results | Planned |
 | TZ-07 | Text Normalization | Canonical cleanup while preserving provenance and structure | Planned |
 | TZ-08 | Multilingual Logical Splitter | Structure-aware, tokenizer-calibrated logical fragmentation before AstraVector | Baseline |
@@ -60,7 +60,7 @@ Spring Boot
       AstraIndexator replicas
             |- atomic claim/lease/fencing
             |- bounded source acquisition + validation
-            |- parsing/layout
+            |- structure-aware parsing/layout
             |- conditional OCR
             |- normalization
             |- multilingual logical splitting
@@ -179,6 +179,32 @@ ZIP-based Office formats are admitted only through bounded container inspection.
 Source acquisition computes the SHA-256 used by TZ-03 prepared-artifact identity and TZ-13 recovery. A retry of the same immutable source under the same validation profile is expected to reproduce size, hash, detected format and admission result.
 
 Local source files are attempt-scoped and non-authoritative. A reclaimed worker reacquires the source unless a later compatible prepared checkpoint makes reacquisition unnecessary.
+
+## Document parser invariant
+
+TZ-05 defines parsing as **canonical structure reconstruction**, not flat text extraction.
+
+```text
+AcquiredSource
+  -> FileTypeHandlerRegistry
+  -> format-specific parser
+  -> structure/layout reconstruction
+  -> deterministic logical reading order
+  -> ParsedDocument / DocumentElement[]
+  -> OCR candidates for TZ-06
+```
+
+The parser preserves headings, paragraphs, lists, tables, images, captions, page/section provenance and coordinates when available. Native text is preferred over OCR; embedded images remain first-class elements even when OCR is not performed.
+
+PDF processing is page-aware and may classify pages independently as `NATIVE_TEXT`, `SCANNED_IMAGE`, `MIXED`, `LOW_SIGNAL` or `EMPTY`. One mixed PDF is therefore not forced into an all-native or all-OCR mode.
+
+Multi-column and bilingual layouts must be spatially reconstructed before logical splitting. The parser must not naïvely interleave RU/KK columns or other parallel reading flows. Reading-order rules are versioned because they influence deterministic element/fragment identity and RAG quality.
+
+Tables are preserved structurally rather than immediately flattened to pipe-delimited prose. Repeated headers/footers/page numbers are classified as page-furniture candidates for TZ-07 rather than blindly indexed or irreversibly deleted.
+
+`alimbetov/llm-indexator` remains a source of implementation lessons (parser versioning, low-signal/OCR-required diagnostics, table-aware extraction and smoke fixtures), but its old flat extraction, local embeddings/chunking and vector ownership are not normative for AstraIndexator.
+
+Parser-core is independent from OCR model delivery. TZ-06/TZ-15 may obtain approved OCR/ML artifacts from the internal Nexus service at `https://nexus.astrabase.asia`; TZ-05 only emits deterministic OCR candidates and provenance.
 
 ## Canonical document-model invariant
 
@@ -330,23 +356,23 @@ Finite retry budgets are mandatory. Poison work transitions to `DEAD_LETTER`, an
 
 ## Current critical design path
 
-The control/cross-service, storage and acquisition baselines now include:
+The processing/control baselines now include:
 
 ```text
 TZ-02 Job Coordinator & PostgreSQL       ✅
 TZ-03 Object Storage / SeaweedFS          ✅
 TZ-04 File Validation & Acquisition       ✅
-TZ-10 Access Zones & TTL                 ✅
-TZ-11 AstraVector Integration            ✅
-TZ-12 Document Lifecycle                 ✅
-TZ-13 Reliability & Recovery             ✅
+TZ-05 Document Parser                     ✅
+TZ-10 Access Zones & TTL                  ✅
+TZ-11 AstraVector Integration             ✅
+TZ-12 Document Lifecycle                  ✅
+TZ-13 Reliability & Recovery              ✅
 ```
 
 The remaining processing-plane specifications should now be completed in order:
 
 ```text
-TZ-05 Document Parser
-  -> TZ-06 OCR Pipeline
+TZ-06 OCR Pipeline
   -> TZ-07 Text Normalization
 ```
 
@@ -360,4 +386,4 @@ TZ-17 Testing & Verification
 TZ-18 Deployment & Operations
 ```
 
-TZ-17 SHALL convert the golden failure scenarios from TZ-13, storage publication/recovery criteria from TZ-03 and hostile-input/acquisition criteria from TZ-04 into executable multi-replica, lost-ACK, crash/reclaim, corruption, resource-limit and end-to-end retrieval evidence.
+TZ-17 SHALL convert the golden failure scenarios from TZ-13, storage publication/recovery criteria from TZ-03, hostile-input criteria from TZ-04 and structure/reading-order/RAG-quality criteria from TZ-05 into executable evidence.
