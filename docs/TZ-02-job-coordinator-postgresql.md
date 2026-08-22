@@ -31,10 +31,11 @@ It formalizes:
 - crash recovery hooks;
 - indexing and query requirements;
 - transactional boundaries;
+- downstream delivery checkpoints;
 - operator/reconciliation queries;
 - acceptance and verification criteria.
 
-The design intentionally provides **at-least-once processing**, not distributed exactly-once execution. Correctness is achieved through deterministic identity, renewable leases, fencing, idempotent downstream effects and reconciliation.
+The design intentionally provides **at-least-once processing**, not distributed exactly-once execution. Correctness is achieved through deterministic identity, renewable leases, fencing, idempotent/reconcilable downstream effects and reconciliation.
 
 ---
 
@@ -67,8 +68,9 @@ PostgreSQL acts as:
 
 1. the durable queue of accepted work;
 2. the distributed coordination point for active workers;
-3. the authoritative source of job/attempt state;
-4. the recovery source after worker crashes.
+3. the authoritative source of AstraIndexator job/attempt state;
+4. the recovery source after worker crashes;
+5. the checkpoint store for prepared-artifact and AstraVector delivery progress.
 
 It MUST NOT be used to hold a transaction open for the full duration of parsing/OCR/indexation.
 
@@ -81,7 +83,7 @@ AstraIndexator SHALL implement:
 ```text
 at-least-once processing
 +
-idempotent side effects
+idempotent/reconcilable side effects
 +
 deterministic identities
 +
@@ -101,10 +103,10 @@ worker A -> AstraVector SUCCESS
 worker A loses ACK / crashes
 lease expires
 worker B reclaims job
-worker B repeats downstream operation
+worker B reconciles/repeats downstream operation
 ```
 
-This is correct only if the downstream operation is idempotent according to TZ-11.
+This is correct only if the downstream operation is replayed according to TZ-11 idempotency/reconciliation rules.
 
 ---
 
@@ -118,6 +120,8 @@ documentId
 != jobId
 != processingAttemptId
 ```
+
+`documentVersion` is a positive numeric value for direct AstraVector interoperability. If an upstream producer starts with an opaque revision string, the authoritative mapping to this numeric version is a separate persisted concern defined by TZ-01/TZ-11 and MUST NOT be derived ad hoc in worker memory.
 
 ### 5.1 Job ownership
 
@@ -207,10 +211,9 @@ OCR_PROCESSING
 NORMALIZING
 SPLITTING
 PREPARING_ARTIFACTS
-REGISTERING_DOCUMENT
-DELIVERING_FRAGMENTS
-ACTIVATING_DOCUMENT
+DELIVERING / APPENDING_BLOCKS
 FINALIZING
+FINALIZING_VECTOR_STATE
 ```
 
 Exact stage names MAY evolve without changing top-level lifecycle semantics.
@@ -276,7 +279,7 @@ CREATE TABLE astra_indexator.indexation_job (
     job_id                  uuid PRIMARY KEY,
 
     document_id             text NOT NULL,
-    document_version        text NOT NULL,
+    document_version        bigint NOT NULL CHECK (document_version > 0),
 
     source_storage          text NOT NULL,
     source_bucket           text NULL,
@@ -313,6 +316,19 @@ CREATE TABLE astra_indexator.indexation_job (
     prepared_manifest_ref   text NULL,
     prepared_schema_version text NULL,
 
+    ingestion_mode          text NULL,
+    ingestion_idempotency_key text NULL,
+    ingestion_session_id    text NULL,
+    next_batch_index        integer NULL,
+    last_accepted_batch_index integer NULL,
+    final_content_hash      text NULL,
+    session_status_raw      text NULL,
+    vector_state_raw        text NULL,
+    searchable              boolean NULL,
+    last_downstream_check_at timestamptz NULL,
+    last_downstream_error_code text NULL,
+    last_downstream_error_message text NULL,
+
     accepted_at             timestamptz NOT NULL,
     started_at              timestamptz NULL,
     completed_at            timestamptz NULL,
@@ -328,7 +344,9 @@ CREATE TABLE astra_indexator.indexation_job (
 );
 ```
 
-`request_payload` is the immutable accepted producer intent. Mutable execution state SHALL use dedicated columns/tables and MUST NOT rewrite accepted request semantics.
+`request_payload` is the immutable accepted producer intent. Mutable execution/downstream state SHALL use dedicated columns/tables and MUST NOT rewrite accepted request semantics.
+
+`document_version bigint` intentionally matches the positive numeric AstraVector public-facade version domain. Deployments that must preserve an upstream opaque revision string SHALL store that producer revision separately in immutable request/business identity data and use the authoritative mapping defined by TZ-01/TZ-11.
 
 ### 9.2 `indexation_attempt`
 
@@ -360,34 +378,48 @@ CREATE TABLE astra_indexator.indexation_attempt (
 
 Attempt history SHALL be append-oriented and SHOULD NOT be overwritten after completion.
 
-### 9.3 Delivery ledger
+### 9.3 AstraVector session/batch delivery ledger
 
-TZ-02 requires a durable delivery/checkpoint concept for large documents. The exact AstraVector protocol belongs to TZ-11, but the persistence surface SHOULD support a table such as:
+The old conceptual `fragment_delivery/root_chunk_id` shape is not the canonical AstraVector v007 integration model. TZ-11 uses either a single-call facade request or, for large documents, a session with deterministic batches.
+
+For session mode, AstraIndexator SHOULD persist batch-level delivery evidence such as:
 
 ```sql
-CREATE TABLE astra_indexator.fragment_delivery (
-    job_id                  uuid NOT NULL,
-    fragment_id             text NOT NULL,
-    document_id             text NOT NULL,
-    document_version        text NOT NULL,
+CREATE TABLE astra_indexator.astravector_batch_delivery (
+    job_id                  uuid NOT NULL REFERENCES astra_indexator.indexation_job(job_id),
+    batch_index             integer NOT NULL,
+    batch_content_hash      text NOT NULL,
+    block_count             integer NOT NULL,
+    serialized_bytes        bigint NOT NULL,
 
-    idempotency_key         text NOT NULL,
     status                  text NOT NULL,
     attempt_count           integer NOT NULL DEFAULT 0,
+    accepted_at             timestamptz NULL,
 
-    root_chunk_id           text NULL,
     last_error_code         text NULL,
     last_error_message      text NULL,
-
-    delivered_at            timestamptz NULL,
     updated_at              timestamptz NOT NULL,
 
-    PRIMARY KEY(job_id, fragment_id),
-    UNIQUE(idempotency_key)
+    PRIMARY KEY(job_id, batch_index),
+    UNIQUE(job_id, batch_index, batch_content_hash)
 );
 ```
 
-This table MAY be introduced physically in TZ-11, but TZ-02 reserves the coordinator contract for persisted fragment-level checkpoints.
+The job-level fields hold session identity/current progress; the batch ledger proves deterministic Append replay identity:
+
+```text
+ingestion_session_id
++
+batch_index
++
+batch_content_hash
+```
+
+A same `batch_index` with a different content hash is an integrity conflict and MUST NOT be treated as a harmless retry.
+
+Single-call ingestion does not require artificial fragment-level rows merely to imitate the session path.
+
+The byte-exact canonical hashing algorithm/golden vectors remain governed by TZ-11/TZ-17 and MUST NOT be guessed independently in this coordinator specification.
 
 ---
 
@@ -411,14 +443,18 @@ request_payload
 normalized_access/lifecycle context where contract requires
 ```
 
-Producer SHALL NOT set:
+Producer SHALL NOT set runtime/downstream fields such as:
 
 ```text
 worker_id
 lease_generation
 lease_until
 processing_stage
-attempt outcome
+processing attempt outcome
+ingestion_session_id
+last_accepted_batch_index
+vector_state_raw
+searchable
 completed_at
 ```
 
@@ -548,7 +584,7 @@ If zero rows are updated, the worker SHALL treat ownership as lost.
 
 After ownership loss, a worker MUST stop authoritative state mutations for that job.
 
-It MAY finish local cleanup, but MUST NOT mark the job `COMPLETED`, `FAILED`, `RETRY_WAIT` or overwrite current attempt state.
+It MAY finish local cleanup, but MUST NOT mark the job `COMPLETED`, `FAILED`, `RETRY_WAIT` or overwrite current attempt/downstream checkpoint state.
 
 ---
 
@@ -571,7 +607,7 @@ Representative completion:
 UPDATE astra_indexator.indexation_job
 SET
     status = 'COMPLETED',
-    processing_stage = 'FINALIZING',
+    processing_stage = 'FINALIZING_VECTOR_STATE',
     completed_at = now(),
     lease_until = NULL,
     worker_id = NULL,
@@ -580,10 +616,11 @@ SET
 WHERE job_id = :job_id
   AND lease_generation = :lease_generation
   AND worker_id = :worker_id
-  AND status = 'PROCESSING';
+  AND status = 'PROCESSING'
+  AND searchable = true;
 ```
 
-Zero updated rows means the worker is fenced out and SHALL NOT retry completion as if it still owned the job.
+Zero updated rows means the worker is fenced out or downstream searchability has not been proven. The worker SHALL NOT retry completion as if it still owned the job.
 
 ---
 
@@ -600,39 +637,29 @@ However, heartbeat MUST stop if:
 - the attempt is cancelled;
 - the process no longer has confidence it owns the job.
 
-Loss of PostgreSQL connectivity SHALL be treated conservatively: after the lease cannot be renewed, the worker must assume another replica may reclaim the job.
+Loss of PostgreSQL connectivity SHALL be treated conservatively: after the lease cannot be renewed, the worker must assume another replica may reclaim the job and MUST stop authoritative downstream mutations whose ownership cannot be proven.
 
 ---
 
 ## 16. Retry classification
 
-Errors SHALL be classified as at least:
+Errors SHALL be classified consistently with TZ-13, including at least:
 
 ```text
 TRANSIENT
-PERMANENT
-CANCELLED
+PERMANENT_INPUT
+PERMANENT_POLICY
 RESOURCE_LIMIT
 DOWNSTREAM_AMBIGUOUS
+OWNERSHIP_LOST
+CANCELLED
+INTERNAL_BUG
+DEPENDENCY_UNAVAILABLE
 ```
 
-Representative transient errors:
+`DOWNSTREAM_AMBIGUOUS` means a side effect may have succeeded but acknowledgement is uncertain. Such outcomes SHALL reconcile/retry only through the deterministic TZ-11 contract.
 
-- temporary PostgreSQL/network failure after claim;
-- SeaweedFS timeout;
-- AstraVector unavailable;
-- Nexus transient download failure;
-- retryable OCR runtime failure.
-
-Representative permanent errors:
-
-- unsupported/corrupt file after validated acquisition;
-- invalid immutable job contract;
-- parser rejects malformed format where retries cannot help;
-- security policy violation;
-- deterministic downstream contract rejection.
-
-`DOWNSTREAM_AMBIGUOUS` means a side effect may have succeeded but acknowledgement is uncertain. Such errors SHALL retry only through an idempotent downstream contract.
+Deterministic input/policy failures SHALL NOT be blindly retried.
 
 ---
 
@@ -656,695 +683,302 @@ Conceptual formula:
 delay = min(max_delay, base_delay * 2^(attempt_no - 1)) + jitter
 ```
 
-Example defaults:
+Exact values are deployment configuration, not protocol constants.
 
-```text
-base_delay = 5s
-max_delay  = 15m
-max_attempts = configurable, baseline 8
+After the retry budget is exhausted, policy SHALL move the job to `FAILED` or `DEAD_LETTER` according to the deterministic failure/dead-letter rules in TZ-13.
+
+---
+
+## 18. Retry transition
+
+A retry transition MUST be fenced:
+
+```sql
+UPDATE astra_indexator.indexation_job
+SET
+    status = 'RETRY_WAIT',
+    processing_stage = NULL,
+    worker_id = NULL,
+    lease_until = NULL,
+    next_retry_at = :next_retry_at,
+    last_error_class = :error_class,
+    last_error_code = :error_code,
+    last_error_message = :error_message,
+    last_error_retryable = true,
+    updated_at = now(),
+    row_version = row_version + 1
+WHERE job_id = :job_id
+  AND worker_id = :worker_id
+  AND lease_generation = :lease_generation
+  AND status = 'PROCESSING';
 ```
 
-Exact defaults belong to configuration TZ-15/TZ-18, but the persisted model MUST support them.
-
-Retries MUST NOT reset accepted TTL semantics from TZ-10.
+Zero rows updated means ownership was lost and the worker MUST NOT overwrite the newer owner state.
 
 ---
 
-## 18. Attempt accounting
+## 19. Cancellation
 
-`attempt_count` SHALL count claimed processing attempts, not individual internal operations.
+Cancellation is cooperative and follows TZ-12 lifecycle rules.
 
-If one processing attempt retries an HTTP/gRPC call internally within a bounded local retry policy, that does not necessarily increment job `attempt_count`.
-
-However, once the job transitions back to `RETRY_WAIT` and is reclaimed later, a new attempt is counted.
-
-This distinction keeps job-level attempt history meaningful.
-
----
-
-## 19. Exhausted attempts and dead-letter behavior
-
-When retryable work exceeds `max_attempts`, the job SHALL transition to `DEAD_LETTER` unless an explicit policy maps the failure to `FAILED`.
-
-Recommended distinction:
-
-```text
-FAILED      = deterministic/permanent processing failure
-DEAD_LETTER = retryable/ambiguous work exhausted its retry budget or was quarantined as poison
-```
-
-Both are terminal until explicit administrative action.
-
-The full dead-letter operational workflow belongs to TZ-13.
-
----
-
-## 20. Poison-job detection
-
-A poison job is a job that repeatedly fails in a deterministic or resource-destructive way.
-
-Detection signals MAY include:
-
-- same normalized error code across multiple attempts;
-- repeated worker crash/OOM during the same stage;
-- repeated hard resource-limit violation;
-- parser/OCR deterministic failure signature.
-
-The coordinator SHALL allow policy-driven early transition to `DEAD_LETTER` rather than exhausting all retries when repeated execution is demonstrably unsafe/useless.
-
-Automatic poison classification MUST be evidence-based and observable.
-
----
-
-## 21. Cancellation
-
-Cancellation SHALL use an intent flag rather than blind state overwrite.
-
-Producer/operator requests:
+A producer/operator cancellation request SHALL set:
 
 ```text
 cancel_requested = true
 cancel_requested_at = now()
 ```
 
-### 21.1 Pending/retry-wait job
+without pretending an in-flight external operation instantly disappeared.
 
-If no active worker owns the job, coordinator MAY atomically transition directly to `CANCELLED`.
-
-### 21.2 Processing job
-
-The current worker SHOULD observe `cancel_requested` during heartbeat/stage boundaries and perform cooperative cancellation.
-
-After safe cleanup it SHALL transition to `CANCELLED` using the same fencing predicates as any other terminal transition.
-
-Cancellation MUST NOT cause a stale worker to overwrite a newer generation.
-
-### 21.3 Downstream side effects
-
-If cancellation occurs after partial AstraVector delivery, cleanup/visibility semantics belong to TZ-11/TZ-12/TZ-13. Coordinator cancellation alone does not imply that all downstream side effects were rolled back.
+The current owner observes cancellation at safe boundaries. If an AstraVector session is active, the owner follows TZ-11/TZ-12 Abort/reconciliation rules. If downstream state is already FINALIZING/ambiguous, the worker reconciles before declaring a final local outcome.
 
 ---
 
-## 22. Stage checkpointing
+## 20. Poison jobs and dead-letter
 
-`processing_stage` is for durable progress/diagnostics, but stage changes SHALL NOT imply exactly-once stage execution.
+Jobs that repeatedly fail with the same deterministic defect SHALL not consume unbounded retries.
 
-After crash, the next attempt MAY:
-
-- replay a stage idempotently;
-- resume from a prepared artifact checkpoint;
-- resume fragment delivery using the delivery ledger;
-- restart from source if checkpoints are invalid.
-
-The choice depends on TZ-03/TZ-09/TZ-11/TZ-13.
-
-A stage marker is not by itself proof that every side effect in the stage completed.
-
----
-
-## 23. Prepared artifact recovery hook
-
-When canonical prepared artifacts exist, the job MAY persist:
+Dead-letter entry SHALL preserve:
 
 ```text
-prepared_manifest_ref
-prepared_schema_version
+job identity
+attempt history
+last failure class/code/message
+source/prepared references
+processing fingerprint
+AstraVector checkpoint/status evidence where available
 ```
 
-A reclaimed attempt may use them only if:
-
-- manifest is readable;
-- content hash/integrity is valid;
-- schema version is supported;
-- source/document identity matches;
-- relevant parser/OCR/normalizer/splitter versions are compatible with the intended replay contract.
-
-Otherwise the job falls back to earlier stages.
-
-This allows recovery without re-running expensive parsing/OCR when safe.
+Requeue from `DEAD_LETTER` is explicit and auditable according to TZ-13/TZ-14.
 
 ---
 
-## 24. Fragment delivery checkpointing
+## 21. Processing attempts
 
-Large documents SHALL NOT require all fragments to be redelivered after one failed fragment or worker restart.
+A new `indexation_attempt` row is created for each successful claim generation.
 
-Coordinator persistence SHALL support fragment-level status such as:
+Attempt lifecycle is append-oriented:
 
 ```text
-PENDING
-IN_FLIGHT
-DELIVERED
-RETRY_WAIT
-FAILED
+claim/reclaim
+  -> insert attempt(job_id, attempt_no, lease_generation, worker_id)
+  -> process
+  -> finish outcome if still authoritative
 ```
 
-The exact transition protocol is TZ-11, but core requirements are:
-
-- stable `fragmentId`;
-- deterministic idempotency key;
-- bounded in-flight concurrency;
-- persisted delivery acknowledgement (`root_chunk_id` when available);
-- retry only for incomplete/ambiguous fragments;
-- ability to calculate expected vs delivered fragment counts before activation.
+If a worker is fenced out before it can close the attempt row, reconciliation MAY close/annotate the stale attempt without rewriting historical identity.
 
 ---
 
-## 25. Completion invariant
+## 22. Processing-stage checkpoint semantics
 
-A job SHALL transition to `COMPLETED` only after all mandatory conditions are proven.
+`processing_stage` is operational progress, not proof that every side effect before that label is durable.
 
-At minimum, when AstraVector integration is enabled:
+Durable recovery proof comes from the specific authoritative checkpoint for the stage:
 
 ```text
-canonical preparation complete
-+
-all required LogicalFragments delivered/acknowledged
-+
-document version activation succeeded
-+
-required durable coordinator state persisted
+source acquired         -> source identity/hash evidence
+prepared artifact       -> validated manifest + fenced prepared_manifest_ref
+session started         -> persisted ingestion_session_id
+batch accepted          -> batch ledger accepted state/hash
+finalize ambiguous      -> session status reconciliation
+vector ready            -> GetDocumentVectorStatus evidence/searchable=true
 ```
 
-`COMPLETED` MUST NOT be set merely because local parsing/splitting finished.
-
-This protects retrieval from partially indexed documents.
+Recovery SHALL use those durable checkpoints rather than infer correctness from a stage name alone.
 
 ---
 
-## 26. Partial indexing invariant
+## 23. Prepared artifact reuse
 
-AstraIndexator SHALL treat document indexation as a build-then-activate workflow.
+A reclaimed worker MAY reuse prepared artifacts only when TZ-03/TZ-09 compatibility checks succeed, including source/content identity, schema/processing fingerprint and manifest part/hash validation.
 
-Conceptually:
+If any required compatibility check fails:
 
-```text
-RegisterDocumentVersion
-        ↓
-BUILDING
-        ↓
-fragment 1 ... fragment N delivery
-        ↓
-verify expected == delivered
-        ↓
-ActivateDocumentVersion
-        ↓
-ACTIVE
-        ↓
-job COMPLETED
-```
-
-If a worker crashes after some fragments are delivered, the next attempt resumes delivery from persisted checkpoints and MUST NOT expose a partial version as successfully completed.
+- the prepared artifact SHALL NOT be trusted for replay;
+- the worker SHALL regenerate from the earliest safe durable source stage if the immutable source is still valid;
+- the incompatible/corrupt artifact remains diagnostic/orphan data until housekeeping policy removes it safely;
+- the job is not failed solely because a regenerable prepared artifact is unusable, unless the source itself is unavailable/corrupt or policy forbids regeneration.
 
 ---
 
-## 27. Scheduling fairness and priority
+## 24. Downstream mutation ownership
 
-Claim ordering SHALL be deterministic enough for operations.
+Before starting a new authoritative AstraVector mutation, a worker MUST still have confidence in current lease ownership.
 
-Baseline:
+If PostgreSQL connectivity is lost such that ownership cannot be proven/renewed, the worker SHALL stop initiating new authoritative downstream mutations.
 
-```text
-priority DESC,
-accepted_at ASC
-```
-
-Priority values SHOULD be bounded to prevent arbitrary producer starvation of normal work.
-
-Future fairness controls MAY include per-source-system quotas or aging, but the 1.0 coordinator MUST at minimum prevent one extremely old/retrying job from globally locking the queue.
-
-`SKIP LOCKED` combined with short claim transactions prevents head-of-line blocking at row-lock level.
+If an already-started network call returns after ownership is lost, the result is observational evidence only for the stale worker. The current owner/reconciliation path determines authoritative next action.
 
 ---
 
-## 28. Claim batch size and worker concurrency
+## 25. AstraVector single/session checkpoint semantics
 
-`claim_limit` SHALL be configurable and MUST be coordinated with local worker capacity.
+TZ-11 is normative.
 
-A worker SHOULD NOT claim substantially more jobs than it can actively heartbeat/process.
+### Single-call
 
-Recommended rule:
+Persist deterministic idempotency identity and response/status evidence. A successful mutation response is not automatically equivalent to `searchable=true` unless the downstream state contract guarantees it.
 
-```text
-claim_limit <= available local job slots
-```
+### Session
 
-Local resource controls are stage-specific and belong to TZ-18, but TZ-02 requires bounded active job ownership.
-
-Example:
+Persist at minimum:
 
 ```text
-MAX_ACTIVE_JOBS=4
+ingestion_session_id
+next_batch_index
+last_accepted_batch_index
+session_status_raw
+final_content_hash
+last_downstream_check_at
 ```
 
-A worker must not lease 100 jobs while only being able to execute 4, because that causes unfairness and avoidable lease churn.
+and batch-level `batch_index + batch_content_hash` evidence.
+
+Lost ACK handling:
+
+```text
+Start timeout    -> retry/reconcile with same idempotency key
+Append timeout   -> retry only same batch_index + same batch_content_hash
+Finalize timeout -> GetLogicalDocumentIngestionStatus before unsafe recreation
+```
 
 ---
 
-## 29. PostgreSQL indexes
+## 26. Completion rule
 
-Minimum useful indexes SHOULD include:
+AstraIndexator SHALL set local `COMPLETED` only when:
 
-```sql
-CREATE INDEX ix_job_claim_pending
-ON astra_indexator.indexation_job (priority DESC, accepted_at ASC)
-WHERE status = 'PENDING' AND cancel_requested = false;
+1. current lease/fencing ownership is still valid for the final local mutation;
+2. required prepared/delivery state is durable;
+3. AstraVector `GetDocumentVectorStatus` or an equivalent stabilized public contract proves the target document/version is `searchable=true` according to TZ-11/TZ-12.
 
-CREATE INDEX ix_job_retry_ready
-ON astra_indexator.indexation_job (next_retry_at, priority DESC, accepted_at ASC)
-WHERE status = 'RETRY_WAIT' AND cancel_requested = false;
-
-CREATE INDEX ix_job_expired_lease
-ON astra_indexator.indexation_job (lease_until)
-WHERE status = 'PROCESSING';
-
-CREATE INDEX ix_job_document
-ON astra_indexator.indexation_job (document_id, document_version);
-
-CREATE INDEX ix_job_worker
-ON astra_indexator.indexation_job (worker_id)
-WHERE status = 'PROCESSING';
-
-CREATE INDEX ix_attempt_job
-ON astra_indexator.indexation_attempt (job_id, attempt_no);
-```
-
-Final index selection MUST be validated using representative queue cardinality and `EXPLAIN (ANALYZE, BUFFERS)`.
+`FinalizeLogicalDocumentIngestion` transport success alone is insufficient.
 
 ---
 
-## 30. Database constraints
+## 27. Indexing and constraints
 
-Implementation SHOULD use CHECK constraints or equivalent application/DB enforcement for invariants such as:
+Implementation SHALL create indexes supporting at least:
 
 ```text
+claimable jobs by status/next_retry_at/priority/accepted_at
+expired PROCESSING leases
+job attempts by job_id/attempt_no
+batch deliveries by job_id/batch_index/status
+operator filtering by document_id/document_version/status
+reconciliation candidates by downstream/session state and last_downstream_check_at
+```
+
+Recommended integrity constraints include:
+
+```text
+document_version > 0
+lease_generation >= 0
 attempt_count >= 0
 max_attempts > 0
-priority within configured range
-COMPLETED => completed_at IS NOT NULL
-PROCESSING => worker_id IS NOT NULL
-PROCESSING => lease_until IS NOT NULL
-non-PROCESSING terminal state => active lease fields cleared
-RETRY_WAIT => next_retry_at IS NOT NULL
+next_batch_index >= 0 when not null
+last_accepted_batch_index >= 0 when not null
 ```
 
-PostgreSQL constraints are preferred for invariants that protect data integrity independently of application bugs.
+Status/stage enumerations SHOULD be constrained through CHECK/domain/enums or application+persistence validation so illegal durable states cannot be silently written.
 
 ---
 
-## 31. Transaction boundaries
+## 28. Transaction isolation assumptions
 
-Transactions SHALL be short and limited to coordinator state changes.
+The claim algorithm relies on PostgreSQL row locks under normal `READ COMMITTED` semantics unless implementation evidence requires stronger isolation for a specific operation.
 
-Good transaction examples:
+Long-running parser/OCR/network operations MUST execute outside the claim transaction.
 
-- insert accepted job;
-- claim/reclaim N jobs;
-- renew heartbeat;
-- persist retry outcome;
-- persist fragment-delivery acknowledgement;
-- finalize job.
+No requirement exists for global SERIALIZABLE transactions across the pipeline.
 
-Bad transaction:
+---
+
+## 29. Operator and reconciliation queries
+
+Operators/reconciliation workers must be able to identify at least:
 
 ```text
-BEGIN
-claim job
-Download 2 GB PDF
-OCR 500 pages
-call AstraVector
-COMMIT
+PENDING backlog and oldest age
+RETRY_WAIT due jobs
+PROCESSING jobs with expired leases
+jobs near/exceeding max attempts
+DEAD_LETTER jobs
+cancel_requested jobs
+jobs with prepared_manifest_ref but incomplete downstream delivery
+active/stuck ingestion sessions
+local COMPLETED but searchable != true inconsistencies
+stale downstream checks
+failed/pending batch deliveries
 ```
 
-Long business processing MUST occur outside database transactions.
+These views feed TZ-14 Knowledge Inventory/observability and TZ-13 reconciliation.
 
 ---
 
-## 32. Isolation level
+## 30. Data retention
 
-`READ COMMITTED` is expected to be sufficient for the baseline claim algorithm when using `FOR UPDATE SKIP LOCKED` and guarded updates.
+Job, attempt and delivery-checkpoint retention is operational/audit state and is independent from source/prepared/vector TTL.
 
-The implementation MUST NOT rely on implicit serial execution between workers.
+Deleting/expiring vectors in AstraVector MUST NOT implicitly delete coordinator history.
 
-If a stronger isolation level is introduced, its deadlock/retry impact must be explicitly proven.
-
----
-
-## 33. Clock semantics
-
-Lease/retry decisions SHOULD use PostgreSQL `now()` as the authoritative coordinator clock rather than worker-local timestamps.
-
-This reduces cross-node clock-skew effects.
-
-Application logs may use local UTC time, but ownership expiry decisions SHALL be based on database time.
+Retention policy and housekeeping belong to TZ-14/TZ-18.
 
 ---
 
-## 34. Database outage behavior
+## 31. Multi-replica invariants
 
-If PostgreSQL is unavailable:
+For N active replicas:
 
-- workers cannot safely claim new jobs;
-- workers cannot safely renew leases;
-- workers SHOULD stop acquiring new side-effectful work;
-- an active worker may finish local computation only if it understands that ownership may be lost before it can persist results;
-- once lease validity cannot be confirmed, worker SHALL assume it can be fenced out;
-- downstream side effects after uncertain lease ownership SHOULD be minimized and must be idempotent if performed.
-
-After database recovery, expired jobs become reclaimable.
-
----
-
-## 35. Graceful shutdown
-
-On shutdown a worker SHALL:
-
-1. stop claiming new work;
-2. signal active attempts to reach safe cancellation/checkpoint boundaries;
-3. continue heartbeat only while it intends and is able to finish safely;
-4. persist outcomes where possible;
-5. avoid artificially extending leases for abandoned work.
-
-If graceful completion is impossible, allowing the lease to expire is acceptable; recovery then occurs through another replica.
+1. two workers may examine the queue concurrently;
+2. row locking prevents simultaneous claim of the same row in one generation;
+3. reclaim increments `lease_generation`;
+4. stale generations are fenced from authoritative local updates;
+5. downstream ambiguous side effects are reconciled through deterministic identities;
+6. increasing/decreasing replicas does not change document/job identity;
+7. pod death does not destroy durable job/prepared/session checkpoint state.
 
 ---
 
-## 36. Race-condition scenarios that MUST be tested
+## 32. Failure scenarios required for TZ-17
 
-### 36.1 Two workers claim same PENDING job
-
-Expected: exactly one receives ownership for a given lease generation.
-
-### 36.2 Worker pauses beyond lease
-
-Worker B reclaims with generation N+1. Worker A resumes and attempts completion.
-
-Expected: worker A updates zero authoritative rows and is fenced out.
-
-### 36.3 ACK lost after AstraVector success
-
-Expected: job/fragment retries through deterministic idempotency; no duplicate logical downstream data.
-
-### 36.4 Worker crashes after prepared artifacts
-
-Expected: next worker can validate and reuse prepared artifacts when compatible.
-
-### 36.5 Worker crashes during fragment delivery
-
-Expected: delivered fragments remain checkpointed; next worker resumes incomplete set.
-
-### 36.6 Cancellation races with claim
-
-Expected: either cancellation wins before claim, or current worker sees cancel intent and cooperatively cancels. No future normal claim after terminal CANCELLED.
-
-### 36.7 Retry becomes ready while another worker scans queue
-
-Expected: normal `SKIP LOCKED`/predicate behavior; no duplicate active owner.
-
-### 36.8 PostgreSQL outage during heartbeat
-
-Expected: worker eventually treats ownership as uncertain/lost and does not commit stale terminal state.
-
----
-
-## 37. Operator/reconciliation queries
-
-Operations SHALL be able to identify at least:
-
-- oldest PENDING jobs;
-- RETRY_WAIT jobs ready/overdue;
-- PROCESSING jobs with expired leases;
-- active jobs by worker;
-- jobs close to/exceeding max attempts;
-- FAILED/DEAD_LETTER counts by error code/stage;
-- long-running jobs by stage;
-- jobs with prepared artifacts but incomplete delivery;
-- jobs where expected fragment count differs from delivered count.
-
-These queries form inputs to TZ-13 reconciliation and TZ-14 observability.
-
----
-
-## 38. Metrics required from the coordinator
-
-TZ-14 owns the full metrics specification, but TZ-02 requires at least the semantic availability of:
+Executable evidence SHALL cover at least:
 
 ```text
-jobs_pending
-jobs_processing
-jobs_retry_wait
-jobs_failed
-jobs_dead_letter
-claim_rate
-claim_conflict_or_empty_rate
-lease_renew_success
-lease_renew_failure
-expired_lease_reclaims
-attempts_per_job
-retry_rate
-job_age_seconds
-processing_duration_seconds
-stage_duration_seconds
+concurrent claim race
+worker crash before/after claim
+lease expiry and reclaim
+stale worker resumes after reclaim
+DB loss during heartbeat
+DB loss after downstream mutation
+prepared artifact compatible reuse
+prepared artifact corruption/regeneration
+Start lost ACK
+Append lost ACK
+same batch index + different hash conflict
+Finalize lost ACK
+cancellation during active/finalizing session
+retry exhaustion / dead-letter / auditable requeue
+local completion blocked while searchable=false
 ```
 
-High-cardinality identifiers such as `jobId` or `documentId` MUST NOT be metric labels.
-
 ---
 
-## 39. Error persistence
-
-Persisted error data SHALL be bounded.
-
-The coordinator SHOULD store:
-
-```text
-error_class
-error_code
-sanitized message
-retryable flag
-stage
-attempt id
-```
-
-Full stack traces SHOULD go to structured logs/tracing, not unbounded database columns.
-
-Secrets, credentials and raw sensitive document content MUST NOT be written into error messages.
-
----
-
-## 40. Schema migration requirements
-
-PostgreSQL schema SHALL be migration-controlled.
-
-Requirements:
-
-- forward migrations are versioned;
-- rolling deployments MUST define compatibility expectations;
-- nullable/additive changes are preferred during rolling upgrade windows;
-- destructive enum/status changes require explicit migration strategy;
-- indexes that may lock large production tables SHOULD use an operationally safe migration method where applicable.
-
-Exact migration tooling belongs to implementation/deployment design.
-
----
-
-## 41. Multi-replica invariant
-
-AstraIndexator SHALL support scaling from one to N active replicas without changing business semantics.
-
-Correctness MUST NOT depend on:
-
-- sticky assignment of documents to workers;
-- in-memory exclusive locks;
-- local filesystem state as the only checkpoint;
-- a leader-only worker for normal job processing.
-
-PostgreSQL durable state is the shared coordination authority.
-
----
-
-## 42. Security/access/lifecycle boundary
-
-TZ-02 persists normalized access/lifecycle context but SHALL NOT invent access semantics.
-
-Specifically:
-
-- access-zone normalization/meaning belongs to TZ-10;
-- TTL/expiresAt semantics belong to TZ-10;
-- retries MUST preserve original accepted lifecycle intent;
-- coordinator state changes MUST NOT reset TTL clocks;
-- access/lifecycle data MUST remain available to all later attempts.
-
----
-
-## 43. Downstream integration boundary
-
-TZ-02 does not define AstraVector protobuf field mapping, but it requires TZ-11 to provide:
-
-- deterministic idempotency keys;
-- safe repeat after ambiguous ACK;
-- persisted fragment-level delivery checkpoints;
-- document registration/build/activation semantics;
-- final activation before job completion;
-- reconciliation APIs/queries sufficient to determine downstream truth.
-
-If TZ-11 cannot satisfy these, `COMPLETED` semantics in this specification must not be weakened silently.
-
----
-
-## 44. Acceptance criteria
-
-TZ-02 implementation is accepted only when all mandatory criteria pass.
-
-### AC-01 Multi-replica exclusive claim
-
-With at least 3 concurrent workers and a shared queue, no job has more than one current lease generation owner.
-
-### AC-02 Claim scalability
-
-Concurrent claim uses `FOR UPDATE SKIP LOCKED` (or an explicitly proven equivalent) and does not serialize all workers behind the first locked row.
-
-### AC-03 Short transaction proof
-
-No claim transaction includes external I/O or long processing.
-
-### AC-04 Lease renewal
-
-A healthy worker renews ownership before expiry and retains the same generation.
-
-### AC-05 Expired lease reclaim
-
-A crashed/stalled worker's job is reclaimable after lease expiry with incremented generation and new attempt record.
-
-### AC-06 Stale worker fencing
-
-A previous-generation worker cannot mark a reclaimed job complete/fail/retry/cancel.
-
-### AC-07 Attempt history
-
-Every claim/reclaim creates a unique attempt history record tied to worker and lease generation.
-
-### AC-08 Retry persistence
-
-Retryable errors persist classification, next retry time and preserve the original accepted lifecycle/access contract.
-
-### AC-09 Backoff
-
-Repeated retryable failures follow bounded backoff with jitter and do not form an uncontrolled tight retry loop.
-
-### AC-10 Permanent failure
-
-Non-retryable deterministic errors become terminal without useless automatic retries.
-
-### AC-11 Dead-letter exhaustion
-
-Retry budget exhaustion produces a terminal dead-letter/quarantine result that is operator-visible.
-
-### AC-12 Cooperative cancellation
-
-Cancellation is race-safe for PENDING, RETRY_WAIT and PROCESSING jobs.
-
-### AC-13 Database outage safety
-
-Loss of PostgreSQL heartbeat capability cannot allow stale workers to later overwrite current ownership state.
-
-### AC-14 Prepared artifact recovery
-
-A worker crash after canonical artifact creation can resume from validated compatible prepared artifacts without mandatory reparsing/OCR.
-
-### AC-15 Fragment checkpoint recovery
-
-A crash after partial fragment delivery does not require successful fragments to be logically duplicated or blindly redelivered.
-
-### AC-16 Ambiguous downstream ACK
-
-An operation that may have succeeded downstream is safely repeatable using deterministic idempotency semantics from TZ-11.
-
-### AC-17 Partial version protection
-
-Job cannot become `COMPLETED` until all mandatory fragments are acknowledged and document activation succeeds.
-
-### AC-18 Queue indexing
-
-Representative claim/retry/expired-lease queries are verified with `EXPLAIN (ANALYZE, BUFFERS)` against production-like row counts.
-
-### AC-19 Bounded ownership
-
-A worker does not lease materially more jobs than its configured active job capacity.
-
-### AC-20 Clock consistency
-
-Lease and retry eligibility are calculated from PostgreSQL time rather than depending on synchronized worker clocks.
-
-### AC-21 State-transition validation
-
-Illegal state transitions are rejected and covered by tests.
-
-### AC-22 Terminal immutability
-
-Terminal jobs cannot return to active processing without explicit administrative requeue semantics.
-
-### AC-23 Recovery golden scenario
-
-The following E2E scenario passes:
-
-```text
-producer creates PENDING job
--> one of N workers claims
--> worker processes and creates checkpoints
--> worker is killed at an injected failure point
--> lease expires
--> another worker reclaims
--> already durable work is reused/reconciled
--> downstream effects are safely retried
--> all fragments become acknowledged
--> document version activates
--> job becomes COMPLETED
-```
-
-### AC-24 No exactly-once false claim
-
-Documentation and implementation consistently state at-least-once processing plus idempotency/fencing/reconciliation rather than claiming distributed exactly-once execution.
-
----
-
-## 45. Required verification evidence
-
-Implementation SHALL provide automated evidence including:
-
-- PostgreSQL integration tests using real PostgreSQL/Testcontainers or equivalent;
-- concurrent claim stress test with at least 3 workers;
-- lease expiry/reclaim test;
-- stale-generation fencing test;
-- retry/backoff test with deterministic clock control where practical;
-- cancellation race tests;
-- worker-kill recovery tests;
-- database outage/heartbeat-loss test;
-- prepared-artifact resume test;
-- fragment-delivery resume test;
-- downstream ambiguous-ACK/idempotency test;
-- state-transition property/table tests;
-- query-plan evidence for queue indexes;
-- E2E golden failure-recovery scenario.
-
----
-
-## 46. Decisions deferred to child specifications
-
-TZ-02 deliberately does not finalize:
-
-- exact access-zone representation and fan-out: TZ-10;
-- AstraVector protobuf mapping and delivery protocol: TZ-11;
-- document version replacement/delete semantics: TZ-12;
-- reconciliation/dead-letter operator procedures: TZ-13;
-- full metrics/log/tracing schema: TZ-14;
-- configuration values and deployment sizing: TZ-15/TZ-18;
-- end-to-end test matrix and performance gates: TZ-17.
-
----
-
-## 47. Final coordinator invariant
-
-The AstraIndexator control plane SHALL remain correct under concurrent replicas, retries, worker crashes, delayed acknowledgements and temporary dependency failures.
-
-The coordinator is considered correct when work may be replayed, but **authoritative ownership cannot be replayed by a stale worker**, and all externally visible side effects are either idempotent or reconcilable.
+## 33. Acceptance criteria
+
+TZ-02 is accepted when:
+
+1. top-level status matches TZ-00/TZ-01 and does not require durable `CLAIMED`;
+2. `document_version` is a positive numeric value compatible with AstraVector public ingestion;
+3. atomic claim uses short `FOR UPDATE SKIP LOCKED` transactions;
+4. every claim/reclaim increments a monotonic fencing generation;
+5. authoritative worker updates are fenced by current job/worker/generation;
+6. processing attempts are append-oriented and auditable;
+7. retry/cancellation/dead-letter transitions are finite and explicit;
+8. prepared reuse is based on durable compatibility evidence, not stage labels;
+9. large-document downstream progress is checkpointed by AstraVector session/batch semantics rather than obsolete fragment/root-chunk assumptions;
+10. ambiguous downstream ACKs reconcile before unsafe replay/recreation;
+11. local `COMPLETED` requires downstream `searchable=true` proof;
+12. PostgreSQL loss prevents unsafe new authoritative mutations when ownership cannot be proven;
+13. multi-replica crash/reclaim/stale-worker scenarios are executable TZ-17 evidence.
