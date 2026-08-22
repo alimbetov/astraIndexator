@@ -29,7 +29,7 @@ No production implementation should introduce a contract that contradicts these 
 | TZ-14 | Observability & Knowledge Inventory | Logs, metrics, traces, health, audit, loaded-knowledge inventory and lifetime visibility | Baseline |
 | TZ-15 | Configuration & Model Delivery | Typed config, Nexus artifact supply, model manifests/checksums, offline runtime, rollout/rollback | Baseline |
 | TZ-16 | Internal Trust Boundary & Secrets | Internal-service trust model, approved storage/network boundaries, secret handling and no privilege broadening | Baseline |
-| TZ-17 | Testing & Verification | Unit/integration/E2E/recovery/performance/RAG-quality proof | Planned |
+| TZ-17 | Testing & Verification | Executable architecture proof: unit/integration/E2E/recovery/RAG quality plus internal Smoke Test API | Baseline |
 | TZ-18 | Deployment & Operations | Docker/Kubernetes readiness, scaling and runbooks | Planned |
 
 ## Canonical system boundary
@@ -65,7 +65,9 @@ Spring Boot
 
 AstraIndexator owns acquisition, parsing, OCR, normalization and semantic logical fragmentation. AstraVector owns tokenizer/model execution, searchable chunking, embeddings, vector state, Qdrant projection, effective TTL and retrieval.
 
-## Coordinator invariant
+## Core runtime invariants
+
+### Coordinator
 
 ```text
 at-least-once processing
@@ -93,39 +95,19 @@ PENDING
 
 A stale worker whose lease generation was superseded cannot authoritatively finalize or overwrite current state.
 
-## Storage and acquisition invariant
+### Storage and acquisition
 
-SeaweedFS stores immutable source and replayable prepared artifacts; PostgreSQL is the coordinator authority.
-
-```text
-SOURCE
-  -> immutable bytes
-
-PREPARED
-  -> manifest.json
-  -> elements/part-xxxxx.jsonl
-  -> fragments/part-xxxxx.jsonl
-
-LOCAL WORKSPACE
-  -> ephemeral attempt-scoped files
-```
-
-`manifest.json` is the commit marker and is published last. A prepared artifact becomes authoritative only after a fenced PostgreSQL checkpoint.
-
-Source acquisition is bounded and streaming:
+SeaweedFS stores immutable source and replayable prepared artifacts; PostgreSQL is coordinator authority.
 
 ```text
-source ref
- -> HEAD/preflight
- -> streamed byte limit + SHA-256
- -> trusted format/container validation
- -> source.validated
- -> AcquiredSource
+SOURCE -> immutable bytes
+PREPARED -> manifest.json + bounded JSONL parts
+LOCAL WORKSPACE -> ephemeral attempt-scoped files
 ```
 
-Producer filename/MIME/extension are hints, not parser-routing authority.
+`manifest.json` is the prepared-artifact commit marker. Source acquisition is bounded/streaming and establishes actual byte count plus SHA-256 before parser admission.
 
-## Processing-plane invariant
+### Processing plane
 
 ```text
 AcquiredSource
@@ -136,66 +118,34 @@ AcquiredSource
   -> TZ-09 Canonical LogicalFragment/LogicalBlock mapping
 ```
 
-Parser reconstructs document structure and reading order rather than flattening documents to plain text. Mixed PDFs are page-aware. Tables/lists/images remain first-class structures.
+Parser reconstructs structure/reading order rather than flat text. OCR defaults to `OCR_IF_NEEDED`, supports baseline `ru/kk/en`, suppresses native/OCR duplication and uses locally verified model bundles. Normalization follows **normalize representation, not meaning**. AstraVector remains responsible for tokenizer/model-aware searchable chunking.
 
-OCR defaults to `OCR_IF_NEEDED`, supports baseline `ru/kk/en`, uses page/region candidates, suppresses native/OCR duplication and consumes only locally verified model bundles. Target internal model registry: `https://nexus.astrabase.asia` through TZ-15; runtime model downloads are forbidden.
+### Configuration and model delivery
 
-Normalization follows **normalize representation, not meaning**: Unicode NFC, Kazakh letters and `ё` preserved, technical/legal identifiers protected, conservative dehyphenation, no translation/transliteration/spell rewriting.
-
-Logical splitting is multilingual, structure-first and tokenizer-free at runtime. AstraVector remains responsible for model/tokenizer-aware chunking.
-
-## Configuration & model-delivery invariant
-
-TZ-15 separates typed application configuration, secret configuration and immutable model artifacts.
-
-Production OCR model flow is:
+Production OCR model flow:
 
 ```text
-approved immutable model revision
+approved immutable revision
   -> https://nexus.astrabase.asia
-  -> explicit image-build / init-container / preload step
+  -> explicit image-build/init-container/preload
   -> manifest + SHA-256 verification
   -> immutable local model directory
-  -> startup/readiness capability validation
+  -> startup/readiness validation
   -> document-time offline inference
 ```
 
-Nexus is an artifact source, not a document-time inference dependency. Runtime workers SHALL NOT download models on demand and SHALL NOT silently fall back to a different model, runtime or device.
+Runtime workers do not download models on demand and do not silently fall back to a different model/runtime/device. Model identity participates in processing fingerprint.
 
-Production model identity includes `modelId`, `artifactRevision`, engine/runtime/device compatibility and checksum/manifest evidence. OCR model revision and preprocessing profile participate in the processing fingerprint so reindex/recovery can distinguish outputs created by different model revisions.
-
-CPU OCR remains the portable baseline; GPU capability is an explicit deployment profile with compatible CUDA/runtime and bounded GPU memory/concurrency. Missing GPU capability cannot silently degrade to CPU inside the same worker profile.
-
-Model artifacts SHOULD be supplied through immutable revision paths rather than mutable `latest` references. Rollback selects a previously approved revision; it does not rewrite files under an existing revision.
-
-Configuration has deterministic precedence and startup validation. Mandatory safety limits, model registry entries and cross-field invariants such as `heartbeat < lease` are validated before readiness. Effective non-secret configuration may be fingerprinted (`effectiveConfigSha256`) for diagnostics, while secret values never enter logs or ordinary manifests.
-
-Nexus credentials SHOULD be scoped to image-build/init/preload components where possible; document-processing workers SHOULD consume verified model directories read-only without holding Nexus credentials.
-
-## Access-zone and TTL invariant
+### Access zone and TTL
 
 ```text
 accessZoneCode = exactly four ASCII digits 0000..9999
 accessZoneId   = UUID-backed identity
 ```
 
-One indexed document version belongs to exactly one effective ingestion zone. AstraIndexator does not silently fan-out one indexing job across zones.
+One indexed document version belongs to exactly one effective ingestion zone. AstraVector Access Zone Registry owns authoritative zone resolution and effective TTL. `ttl_days=0` means inherit effective zone/platform policy; session expiry is not document expiry.
 
-AstraVector Access Zone Registry owns authoritative code resolution and effective TTL. The TZ-10 code→TTL matrix is compatibility/reference information and MUST NOT be duplicated as runtime policy in AstraIndexator.
-
-For session ingestion:
-
-```text
-ttl_days = 0 -> inherit AstraVector zone/platform policy
-
-ttl_days > 0 -> explicit finite relative lifetime
-```
-
-Session expiry and document TTL expiry are different concepts.
-
-## AstraVector integration and lifecycle invariant
-
-AstraIndexator uses generated `astravector.embedding.v1.AstraVectorIngestionFacade` clients.
+### AstraVector integration/lifecycle
 
 ```text
 LogicalBlock stream
@@ -207,79 +157,97 @@ LogicalBlock stream
   -> local COMPLETED
 ```
 
-Mutating RPC timeouts are ambiguous outcomes and are reconciled before replay/replacement. A new document version builds while the previous searchable version remains intact. Delete is asynchronous and goes through AstraVector facade; AstraIndexator never mutates Qdrant directly.
+Mutating RPC timeouts are ambiguous outcomes and are reconciled before replay/replacement. New versions build without destroying the previous searchable version. Delete is asynchronous through AstraVector facade; AstraIndexator never mutates Qdrant directly.
 
-## Reliability invariant
-
-Recovery is state-driven:
+### Reliability
 
 ```text
 reclaim expired lease
   -> validate fencing generation
   -> load durable checkpoints
-  -> validate prepared/source compatibility
+  -> validate source/prepared compatibility
   -> reconcile AstraVector state
   -> resume earliest safe stage
   -> prove searchable or enter terminal failure/dead-letter
 ```
 
-Finite retry budgets are mandatory. Compatible prepared artifacts and session checkpoints are reused across crashes.
+Finite retry budgets are mandatory.
 
-## Observability & Knowledge Inventory invariant
+### Observability and Knowledge Inventory
 
-TZ-14 makes loaded knowledge queryable as an operational read model rather than relying only on logs/Prometheus.
+TZ-14 makes loaded knowledge queryable: document/version/source hash, processing fingerprint, access zone, counts, AstraVector state, `searchable`, freshness and lifecycle visibility.
 
-A support/operator view must answer what is loaded, where it is scoped, whether it is searchable, how many fragments/vectors exist, when it became usable, and how long it remains valid.
+Exact remaining knowledge lifetime is shown only from authoritative downstream effective expiry/never-expire state. `GetLogicalDocumentIngestionStatus.expires_at` is session lifetime and is never presented as document TTL.
 
-Exact remaining lifetime is computed only from authoritative downstream `effectiveExpiresAt`; inherited/unknown lifetime is shown honestly as unresolved rather than reconstructed from the local access-zone matrix.
+### Internal trust boundary
 
-Knowledge Inventory is a denormalized operational projection, not a lifecycle source of truth. It exposes freshness and reconciles against supported AstraVector APIs. Prometheus labels remain bounded-cardinality and raw document/OCR/embedding text is excluded from normal telemetry.
+AstraIndexator is an internal service and intentionally does not implement end-user OAuth2/OIDC/JWT/RBAC in 1.0. It accepts only approved internal storage/network paths, externalizes least-privilege secrets, does not broaden access zones, and has no direct AstraVector PostgreSQL/Qdrant dependency.
 
-## Internal trust-boundary invariant
+## Testing & verification invariant
 
-TZ-16 intentionally keeps AstraIndexator simple as an internal service.
+TZ-17 converts the architectural baseline into executable evidence.
 
-AstraIndexator 1.0 does **not** implement end-user OAuth2/OIDC/JWT/RBAC and does not require a public upload API for normal processing. Caller/user authentication belongs to upstream platform/gateway boundaries if ever required.
-
-The minimal trust model is:
+Verification layers are:
 
 ```text
-trusted internal producer/platform
-  -> PostgreSQL + SeaweedFS
-  -> AstraIndexator internal worker
-  -> AstraVector
+unit
+ -> component
+ -> PostgreSQL/SeaweedFS integration
+ -> multi-replica race tests
+ -> crash/recovery/fault injection
+ -> real AstraVector E2E
+ -> retrieval/RAG-quality proof
+ -> deployed smoke proof
 ```
 
-Baseline controls are limited to:
+The minimum production proof is not merely that a worker is alive. It is:
 
-- approved internal source/storage adapters; arbitrary external URL fetching is disabled;
-- externalized least-privilege service secrets;
-- separation of model-preload/Nexus credentials from runtime worker credentials where practical;
-- no access-zone broadening or inference from content;
-- no direct AstraVector PostgreSQL or Qdrant access from AstraIndexator;
-- internal-only Knowledge Inventory/admin exposure;
-- model integrity verification;
-- no secret/raw-document leakage in normal telemetry.
+```text
+known immutable fixture
+  -> normal durable PostgreSQL job
+  -> normal worker claim/lease path
+  -> acquisition/parser/OCR/normalization/splitting
+  -> prepared artifact
+  -> AstraVector ingestion
+  -> searchable=true
+  -> RetrieveContext returns expected marker/citation
+  -> Knowledge Inventory reflects the result
+  -> normal lifecycle cleanup succeeds or remains reconcilably pending
+```
 
-NetworkPolicy/firewall/TLS/mTLS remain deployment capabilities for TZ-18 rather than reasons to add application user-authentication machinery.
+### Internal Smoke Test API
 
-If AstraIndexator is ever exposed directly to untrusted/public clients, TZ-16 MUST be revised before such deployment is allowed.
+The approved control surface is conceptually:
+
+```http
+POST /internal/v1/smoke-tests
+GET  /internal/v1/smoke-tests/{smokeTestId}
+POST /internal/v1/smoke-tests/{smokeTestId}/cleanup
+```
+
+Smoke profiles include `DEPENDENCIES`, `PIPELINE`, `E2E_RETRIEVAL`, `OCR_E2E` and test-environment-only `RECOVERY_E2E`.
+
+The Smoke API is **not** a second ingestion API. It uses allowlisted immutable fixtures, a configured dedicated smoke access zone and reserved document namespace, creates a normal durable job, waits/reconciles through normal production states and performs cleanup through normal AstraVector lifecycle APIs. It does not accept arbitrary caller-provided URLs, zones, models or document text.
+
+Full E2E smoke is mutating/expensive and MUST NOT be used as Kubernetes liveness/readiness. Ordinary health probes remain non-mutating.
+
+TZ-17 also makes shared Rust/Python golden vectors for AstraVector session hashing and deterministic document-version mapping explicit production gates where those contracts are required.
 
 ## Current design status
 
-The full architecture/cross-cutting baseline is now:
+The architecture and verification baseline is now complete through TZ-17:
 
 ```text
 TZ-00 System Architecture                  ✅
 TZ-01 Indexation Request & Job Contract    ✅
 TZ-02 Job Coordinator & PostgreSQL         ✅
 TZ-03 Object Storage / SeaweedFS           ✅
-TZ-04 File Validation & Acquisition        ✅
-TZ-05 Document Parser                      ✅
-TZ-06 OCR Pipeline                         ✅
-TZ-07 Text Normalization                   ✅
-TZ-08 Multilingual Logical Splitter        ✅
-TZ-09 Canonical Document Model             ✅
+TZ-04 File Validation & Acquisition         ✅
+TZ-05 Document Parser                       ✅
+TZ-06 OCR Pipeline                          ✅
+TZ-07 Text Normalization                    ✅
+TZ-08 Multilingual Logical Splitter         ✅
+TZ-09 Canonical Document Model              ✅
 TZ-10 Access Zones & TTL                    ✅
 TZ-11 AstraVector Integration               ✅
 TZ-12 Document Lifecycle                    ✅
@@ -287,13 +255,13 @@ TZ-13 Reliability & Recovery                ✅
 TZ-14 Observability & Knowledge Inventory  ✅
 TZ-15 Configuration & Model Delivery       ✅
 TZ-16 Internal Trust Boundary & Secrets    ✅
+TZ-17 Testing & Verification                ✅
 ```
 
-Only verification and operations specifications remain:
+Only the operational packaging/deployment specification remains:
 
 ```text
-TZ-17 Testing & Verification
-  -> TZ-18 Deployment & Operations
+TZ-18 Deployment & Operations
 ```
 
-TZ-17 SHALL convert the acceptance criteria and golden failure/quality/TTL/observability/configuration/trust-boundary scenarios from TZ-03..TZ-16 into executable evidence.
+TZ-18 SHALL turn these contracts into Docker/Kubernetes topology, probes, resource classes, worker pools, init/preload model flow, scaling, migrations, rollout/rollback and operational runbooks without weakening TZ-17 verification gates.
