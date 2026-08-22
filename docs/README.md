@@ -20,11 +20,11 @@ No production implementation should introduce a contract that contradicts these 
 | TZ-05 | Document Parser | Structure reconstruction, reading order, native extraction, tables/images and OCR handoff | Baseline |
 | TZ-06 | OCR Pipeline | Page/region-aware OCR, ru/kk/en, native/OCR reconciliation, versioned model contract | Baseline |
 | TZ-07 | Text Normalization | Deterministic multilingual-safe cleanup with protected spans and provenance | Baseline |
-| TZ-08 | Multilingual Logical Splitter | Structure-aware, tokenizer-calibrated logical fragmentation | Baseline |
-| TZ-09 | Canonical Document Model | ParsedDocument, DocumentElement, LogicalFragment, provenance, deterministic IDs | Baseline |
-| TZ-10 | Access Zones & TTL | AstraVector-compatible zone selectors and registry-owned TTL semantics | Baseline |
+| TZ-08 | Multilingual Logical Splitter | Structure-aware, tokenizer-calibrated logical fragmentation mapped through TZ-09 `LogicalBlock[]` | Baseline |
+| TZ-09 | Canonical Document Model | ParsedDocument, DocumentElement, LogicalFragment, LogicalBlock mapping, provenance, deterministic IDs | Baseline |
+| TZ-10 | Access Zones & TTL | AstraVector-compatible zone selectors, canonical `0000–0999` knowledge catalog and registry-owned TTL semantics | Baseline |
 | TZ-11 | AstraVector Integration | Public ingestion facade, LogicalBlock mapping, sessions, idempotency/readiness | Baseline |
-| TZ-12 | Document Lifecycle | New versions/reindex/delete/cancel/expiry/searchability semantics | Baseline |
+| TZ-12 | Document Lifecycle | Numeric versions, reindex/delete/cancel/expiry/searchability semantics | Baseline |
 | TZ-13 | Reliability & Recovery | Crash recovery, replay, reconciliation, dead-letter and fencing | Baseline |
 | TZ-14 | Observability & Knowledge Inventory | Logs, metrics, traces, health, audit, loaded-knowledge inventory and lifetime visibility | Baseline |
 | TZ-15 | Configuration & Model Delivery | Typed config, Nexus artifact supply, model manifests/checksums, offline runtime, rollout/rollback | Baseline |
@@ -49,6 +49,7 @@ Spring Boot
             |- conditional page/region OCR
             |- deterministic normalization
             |- multilingual logical splitting
+            |- LogicalFragment -> LogicalBlock mapping
             |- prepared artifact publication
             |- AstraVector delivery/reconciliation
             `- Knowledge Inventory projection
@@ -63,7 +64,25 @@ Spring Boot
             `- retrieval
 ```
 
-AstraIndexator owns acquisition, parsing, OCR, normalization and semantic logical fragmentation. AstraVector owns tokenizer/model execution, searchable chunking, embeddings, vector state, Qdrant projection, effective TTL and retrieval.
+AstraIndexator owns acquisition, parsing, OCR, normalization, semantic logical fragmentation and deterministic mapping into the public `LogicalBlock[]` ingestion tree. AstraVector owns tokenizer/model execution, searchable chunking, embeddings, vector state, Qdrant projection, effective TTL and retrieval.
+
+## Canonical identity contract
+
+AstraIndexator 1.0 uses one positive numeric immutable `documentVersion` end-to-end:
+
+```text
+documentId
+!= documentVersion (>0, numeric)
+!= externalRevision (optional metadata)
+!= jobId
+!= processingAttemptId
+!= fragmentId
+!= LogicalBlock.blockId
+!= ingestionSessionId
+!= AstraVector generated chunk IDs
+```
+
+Current AstraVector wire widths differ by message (`uint64` for DocumentIdentity/DocumentRef, `uint32` for session Start), therefore range validation belongs at the adapter boundary. Opaque source revisions such as `rev-17` are stored as metadata and are not a second canonical version identity.
 
 ## Core correctness model
 
@@ -101,11 +120,15 @@ AcquiredSource
   -> TZ-06 OCR enrichment
   -> TZ-07 Normalization
   -> TZ-08 Logical Splitter
-  -> TZ-09 Canonical LogicalFragment/LogicalBlock mapping
-  -> TZ-11 AstraVector
+  -> LogicalFragment[]
+  -> TZ-09 LogicalBlockMapper
+  -> LogicalBlock[]
+  -> TZ-11 AstraVectorIngestionFacade
 ```
 
 Parser reconstructs structure/reading order rather than flat text. OCR defaults to `OCR_IF_NEEDED`, supports baseline `ru/kk/en`, suppresses native/OCR duplication and uses locally verified model bundles. Normalization follows **normalize representation, not meaning**. AstraVector remains responsible for tokenizer/model-aware searchable chunking.
+
+Legacy `CreateMultiGranularityChunks`, `SOURCE`, `PARENT`, `SUB_180` and `SUB_260` vocabulary is not the AstraIndexator 1.0 public integration boundary.
 
 ## Configuration and model delivery
 
@@ -125,14 +148,49 @@ Runtime workers do not download models on demand and do not silently fall back t
 
 ## Access zone, TTL and knowledge visibility
 
+Wire/registry code contract:
+
 ```text
 accessZoneCode = exactly four ASCII digits 0000..9999
 accessZoneId   = UUID-backed identity
 ```
 
-One indexed document version belongs to exactly one effective ingestion zone. AstraVector Access Zone Registry owns authoritative zone resolution and effective TTL. `ttl_days=0` means inherit effective zone/platform policy; session expiry is not document expiry.
+Leading zeroes are significant; `0001` is a string code and MUST NOT become integer `1`.
 
-Knowledge Inventory exposes what is loaded, document/version/source identity, processing fingerprint, access zone, counts, AstraVector state, `searchable`, freshness and lifecycle visibility. Exact remaining knowledge lifetime is shown only from authoritative downstream effective expiry/never-expire state.
+AstraIndexator 1.0 additionally defines ten canonical knowledge-zone root codes inside the valid `0000–0999` range:
+
+```text
+0000 GENERAL
+0100 CORPORATE
+0200 REGULATORY
+0300 LEGAL
+0400 FINANCE
+0500 HR
+0600 TECHNICAL
+0700 OPERATIONS
+0800 SECURITY
+0900 ARCHIVE
+```
+
+Each root reserves its `xx00–xx99` family for future explicit subdivisions. Normal catalog-mode ingestion assigns exactly one approved root/subdivision at producer upload/job-creation time. AstraIndexator validates and preserves the code but does not infer it from document contents.
+
+Catalog approval and AstraVector Registry validity are separate requirements:
+
+```text
+catalog-approved
++
+AstraVector Registry ACTIVE
+=
+eligible ingestion zone
+```
+
+The catalog is an ingestion taxonomy/allowlist, not a replacement for AstraVector Registry or `AccessLevel`.
+
+All ten canonical roots currently fall inside the real `llm2` `0000–0999` matrix. `ttl_days=0` still means **inherit effective zone/platform policy**, never a locally computed forever/expiration decision. AstraVector Access Zone Registry owns authoritative zone resolution and effective TTL.
+
+One indexed document version belongs to exactly one effective ingestion zone. Retrieval may use multiple zones according to AstraVector read contracts.
+
+Knowledge Inventory exposes what is loaded, document/version/source identity, processing fingerprint, access zone, optional knowledge type/catalog version, counts, AstraVector state, `searchable`, freshness and lifecycle visibility. Exact remaining knowledge lifetime is shown only from authoritative downstream effective expiry/never-expire state.
 
 ## Reliability and lifecycle
 
@@ -147,6 +205,8 @@ reclaim expired lease
 ```
 
 Mutating AstraVector RPC timeouts are ambiguous outcomes and are reconciled before replay/replacement. New versions build without destroying the previous searchable version. Delete is asynchronous through AstraVector facade; AstraIndexator never mutates Qdrant directly.
+
+Canonical indexing processing stages are owned by TZ-02 and reused by TZ-12/TZ-14/TZ-17 rather than duplicated as competing enums.
 
 ## Internal trust boundary
 
@@ -167,6 +227,18 @@ unit
  -> deployed smoke proof
 ```
 
+Mandatory consistency proofs now include:
+
+```text
+positive numeric documentVersion + wire range guards
+LogicalFragment[] -> deterministic LogicalBlock[] mapping
+all ten canonical Access Zone roots
+leading-zero preservation
+catalog approval + Registry ACTIVE dual validation
+0000–0999 ttl_days=0 inheritance without local expiry calculation
+canonical TZ-02 processing-stage vocabulary
+```
+
 The internal Smoke Test API is conceptually:
 
 ```http
@@ -175,7 +247,7 @@ GET  /internal/v1/smoke-tests/{smokeTestId}
 POST /internal/v1/smoke-tests/{smokeTestId}/cleanup
 ```
 
-Smoke profiles include `DEPENDENCIES`, `PIPELINE`, `E2E_RETRIEVAL`, `OCR_E2E` and test-environment-only `RECOVERY_E2E`. Smoke is not a second ingestion API; it drives the normal durable production path using reserved immutable fixtures and performs cleanup through normal lifecycle APIs.
+Smoke profiles include `DEPENDENCIES`, `PIPELINE`, `E2E_RETRIEVAL`, `OCR_E2E` and test-environment-only `RECOVERY_E2E`. Smoke is not a second ingestion API; it drives the normal durable production path using reserved immutable fixtures and performs cleanup through normal lifecycle APIs. Mutating smoke endpoints are internal-only and should be enabled explicitly.
 
 ## Deployment and operations invariant
 
