@@ -30,7 +30,7 @@ The system is decomposed by responsibility and contract boundary. Each subsystem
 | TZ-06 | OCR Pipeline | OCR decision rules, model acquisition/versioning, OCR results | Planned |
 | TZ-07 | Text Normalization | Canonical cleanup while preserving provenance and structure | Planned |
 | TZ-08 | Multilingual Logical Splitter | Structure-aware, tokenizer-calibrated logical fragmentation before AstraVector | Baseline |
-| TZ-09 | Canonical Document Model | DocumentContext, LogicalFragment/DocumentBlock, provenance, deterministic IDs | Planned |
+| TZ-09 | Canonical Document Model | ParsedDocument, DocumentElement, LogicalFragment, provenance, deterministic IDs, prepared artifacts | Baseline |
 | TZ-10 | Access Zones & TTL | accessZone normalization/propagation and expiration semantics | Planned |
 | TZ-11 | AstraVector Integration | Ingestion DTO, fragment/source-group identity, batching, idempotency, ACK/error handling | Planned |
 | TZ-12 | Document Lifecycle | Create/update/reindex/delete/version replacement semantics | Planned |
@@ -77,6 +77,34 @@ Spring Boot
                     |- PostgreSQL/Qdrant
                     `- retrieval
 ```
+
+## Canonical document-model invariant
+
+The internal semantic data path is:
+
+```text
+IndexationJob
+  -> SourceObject
+  -> ParsedDocument
+  -> DocumentElement[]
+  -> LogicalFragment[]
+  -> AstraVector source-group ingestion
+```
+
+`LogicalFragment` is the stable AstraIndexator semantic source container. It MUST NOT be confused with AstraVector-generated `SOURCE`, `PARENT`, `SUB_180`, `SUB_260` chunks or their IDs.
+
+The canonical model must preserve:
+
+- `documentId/documentVersion`;
+- deterministic `elementId/fragmentId`;
+- multilingual content and language metadata;
+- page/slide/sheet/layout provenance where available;
+- image/OCR origin relationships;
+- structured tables/lists;
+- `originalText` versus synthetic `contextPrefix` versus downstream `embeddingText`;
+- processing/schema versions needed for deterministic replay and diagnostics.
+
+Prepared artifacts are expected to use a manifest plus streaming-friendly element/fragment collections such as JSONL so downstream delivery can be replayed without reparsing the original binary when the canonical schema version is supported.
 
 ## RAG fragmentation invariant
 
