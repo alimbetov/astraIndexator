@@ -1,11 +1,21 @@
 # AstraIndexator
 
-AstraIndexator is a document indexing service responsible for acquiring source documents, parsing and OCR, logical document segmentation, preparation of canonical `DocumentBlock` data, and delivery to AstraVector for vectorization and indexing.
+AstraIndexator is an internal document indexing service responsible for acquiring immutable source documents, parsing and OCR, multilingual normalization and logical segmentation, deterministic `LogicalBlock[]` preparation, and delivery to AstraVector for tokenizer-aware vectorization and retrieval.
 
 ## Current phase
 
-The repository is currently in the architecture and technical specification phase. Implementation will begin only after the core subsystem contracts, lifecycle, DTOs, persistence model, recovery semantics, and integration boundaries are documented and reviewed.
+The TZ-00..TZ-18 architecture/specification baseline is complete and implementation is underway.
 
-## Planned documentation
+Current implementation status:
 
-Architecture and subsystem technical specifications will be maintained under `docs/` in a dedicated design branch before implementation work starts.
+```text
+M1 Persistence Foundation   ✅ merged
+M2 Job Coordinator          ✅ merged
+M3 SeaweedFS & Acquisition  next
+```
+
+The implementation roadmap is maintained in [`docs/IMPLEMENTATION-ROADMAP-1.0.md`](docs/IMPLEMENTATION-ROADMAP-1.0.md).
+
+## Documentation
+
+Canonical architecture and subsystem technical specifications are maintained under [`docs/`](docs/). Implementation changes must preserve those contracts or update the relevant TZ in the same reviewed change.
