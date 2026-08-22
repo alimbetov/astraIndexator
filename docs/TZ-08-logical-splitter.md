@@ -5,10 +5,10 @@
 - **System:** AstraIndexator 1.0
 - **Specification:** TZ-08
 - **Title:** Multilingual Structure-Aware Logical Splitter
-- **Status:** Design baseline
+- **Status:** Consolidated design baseline
 - **Parent specification:** `TZ-00-system-architecture.md`
 - **Related specifications:** TZ-01, TZ-05, TZ-06, TZ-07, TZ-09, TZ-11, TZ-17
-- **Primary downstream contract:** AstraVector `CreateMultiGranularityChunks`
+- **Primary downstream boundary:** TZ-09 `LogicalBlockMapper` → AstraVector `AstraVectorIngestionFacade`
 
 ---
 
@@ -16,7 +16,7 @@
 
 This specification defines how AstraIndexator converts a parsed multilingual document into stable logical fragments suitable for downstream ingestion by AstraVector.
 
-The Logical Splitter is responsible for preserving document semantics and structure while bounding fragment size. It MUST NOT implement BGE-M3 tokenization, embedding generation, sparse encoding or AstraVector multi-granularity chunk generation.
+The Logical Splitter is responsible for preserving document semantics and structure while bounding fragment size. It MUST NOT implement BGE-M3 tokenization, embedding generation, sparse encoding or AstraVector model-aware searchable chunk generation.
 
 The target design is:
 
@@ -24,15 +24,16 @@ The target design is:
 Document
   -> Parser / OCR
   -> ParsedDocument
-  -> normalization
-  -> structure reconstruction
-  -> atomic semantic units
+  -> TZ-07 normalization
+  -> structure-aware atomic semantic units
   -> LogicalFragment[]
-  -> AstraVector CreateMultiGranularityChunks(source_text)
-  -> SOURCE / PARENT / SUB_180 / SUB_260
+  -> TZ-09 LogicalBlockMapper
+  -> AstraVector LogicalBlock[]
+  -> AstraVectorIngestionFacade
+  -> AstraVector tokenizer/model-aware searchable chunks
 ```
 
-AstraIndexator owns semantic containerization. AstraVector owns model-aware searchable chunking.
+AstraIndexator owns semantic containerization and deterministic source structure. AstraVector owns model-aware searchable chunking, embeddings and vector lifecycle.
 
 ---
 
@@ -57,23 +58,28 @@ The splitter SHALL NOT use a fixed token count as its primary runtime boundary.
 
 ## 4. Relationship with AstraVector
 
-AstraVector already owns multi-granularity chunk generation. The current downstream integration path uses `CreateMultiGranularityChunks`, which accepts a source text container and creates its internal SOURCE/PARENT/searchable sub-chunk structure.
-
-Therefore AstraIndexator SHALL NOT pre-create `SUB_180`, `SUB_260` or equivalent embedding-sized chunks.
-
-Canonical responsibility boundary:
+The normative integration boundary is defined by TZ-09/TZ-11:
 
 ```text
 AstraIndexator
-  LogicalFragment (~semantic container)
+  LogicalFragment[]
         |
         v
-AstraVector
-  SOURCE
-    -> PARENT
-       -> SUB_180
-       -> SUB_260
+  LogicalBlockMapper
+        |
+        v
+  AstraVector LogicalBlock[]
+        |
+        v
+AstraVectorIngestionFacade
+        |
+        v
+AstraVector tokenizer/model-aware searchable chunking
 ```
+
+AstraIndexator SHALL NOT pre-create embedding-sized/model-sized chunks and SHALL NOT expose AstraVector internal generated chunk topology as AstraIndexator domain identities.
+
+Legacy control-plane terms such as `CreateMultiGranularityChunks`, `SOURCE`, `PARENT`, `SUB_180` and `SUB_260` are not the AstraIndexator 1.0 integration boundary.
 
 This avoids duplicating model-aware chunking logic across Python and Rust services.
 
@@ -89,7 +95,7 @@ A good logical fragment SHALL:
 2. preserve headings and hierarchy needed to understand the content;
 3. avoid joining unrelated sections merely to reach a target size;
 4. avoid splitting clauses/lists/tables in a way that removes their governing context;
-5. remain small enough that AstraVector can safely perform its downstream parent/sub-chunk generation;
+5. remain small enough that AstraVector can safely perform its downstream tokenizer/model-aware chunking without truncation;
 6. remain stable enough for repeatable reindexing and deterministic IDs;
 7. preserve original source provenance for citation and diagnostics.
 
@@ -132,8 +138,8 @@ Conceptual DTO:
 ```json
 {
   "fragmentId": "DOC-100:F-000042",
-  "documentId": "DOC-100",
-  "documentVersion": "3",
+  "documentId": "20fd6906-cf10-4d2a-bdbf-31ae32316716",
+  "documentVersion": 3,
   "sequence": 42,
   "fragmentType": "SECTION",
   "language": {
@@ -145,7 +151,7 @@ Conceptual DTO:
     "3. Жеткізу",
     "3.2 Жеткізу мерзімі"
   ],
-  "text": "Тауарды жеткізу мерзімі...",
+  "normalizedText": "Тауарды жеткізу мерзімі...",
   "contextPrefix": "3. Жеткізу\n3.2 Жеткізу мерзімі",
   "source": {
     "pageFrom": 14,
@@ -167,19 +173,32 @@ Conceptual DTO:
 }
 ```
 
-The exact canonical schema is finalized in TZ-09, but these semantics are mandatory for TZ-08.
+The exact canonical schema is finalized in TZ-09. `documentVersion` is a positive numeric canonical version, not an opaque string.
 
 ---
 
-## 8. Original text vs embedding text
+## 8. Original, normalized and downstream text
 
-The system SHALL distinguish original content from contextualized downstream embedding input.
+TZ-07/TZ-09 text semantics are normative:
 
 ```text
-originalText = exact normalized source content
-contextPrefix = selected structural context
-embeddingText = contextPrefix + separator + originalText
+source/native/OCR evidence
+        ↓
+originalText
+        ↓ TZ-07
+normalizedText
+        +
+contextPrefix
+        ↓ mapper/materialization
+embeddingText / LogicalBlock.text
 ```
+
+Definitions:
+
+- `originalText` = accepted parser/OCR evidence before TZ-07 normalization;
+- `normalizedText` = deterministic normalized source text consumed by TZ-08;
+- `contextPrefix` = synthetic structural context created by TZ-08;
+- `embeddingText` / mapped `LogicalBlock.text` = downstream materialization of context plus normalized source text according to TZ-09/TZ-11.
 
 Example:
 
@@ -188,11 +207,11 @@ contextPrefix:
 3. Поставка
 3.2 Сроки поставки
 
-originalText:
+normalizedText:
 Поставка осуществляется в течение 10 рабочих дней.
 ```
 
-Materialized downstream text:
+Materialized downstream text may be:
 
 ```text
 3. Поставка
@@ -201,7 +220,7 @@ Materialized downstream text:
 Поставка осуществляется в течение 10 рабочих дней.
 ```
 
-Citation/provenance MUST refer to original source content, not to synthetic contextual text as if it were physically present in the source.
+Citation/provenance MUST refer to physical source evidence and normalized source ranges, not to synthetic contextual text as if it were physically present in the source.
 
 ---
 
@@ -227,7 +246,7 @@ A change of language MUST NOT automatically create a fragment boundary.
 Mixed content such as:
 
 ```text
-Сервис вызывает CreateMultiGranularityChunks через gRPC.
+Сервис отправляет LogicalBlock через gRPC AstraVectorIngestionFacade.
 ```
 
 or:
@@ -409,7 +428,7 @@ The Logical Splitter MUST NOT aim to fill the maximum model context window.
 
 The downstream model limit is a safety ceiling, not a desirable RAG fragment size.
 
-Logical fragments SHOULD generally remain large enough to preserve local semantics yet small enough for AstraVector to create multiple internal PARENT/SUB granularities.
+Logical fragments SHOULD generally remain large enough to preserve local semantics yet small enough for AstraVector to perform its downstream model-aware chunking without truncation or excessive duplicate candidate generation.
 
 The initial design target is a typical logical fragment in the approximate range of 800–2000 downstream model tokens after calibration, without runtime tokenization inside AstraIndexator.
 
@@ -425,7 +444,7 @@ Calibration procedure:
 
 1. assemble representative corpus;
 2. run AstraIndexator logical fragmentation;
-3. submit fragment embedding text to AstraVector preview/diagnostic tokenization capability;
+3. submit mapped LogicalBlock text to an approved AstraVector diagnostic/tokenization verification path;
 4. collect actual model token counts and truncation flags;
 5. calculate language/script percentile distributions;
 6. adjust char/word guards;
@@ -524,7 +543,7 @@ overlap:
   repeat_list_intro: true
 ```
 
-Rationale: AstraVector already creates multiple searchable granularities. Large raw overlap in AstraIndexator would multiply near-duplicate vector candidates, storage and retrieval noise.
+Rationale: AstraVector performs additional searchable chunking. Large raw overlap in AstraIndexator would multiply near-duplicate vector candidates, storage and retrieval noise.
 
 Only context needed to understand a fragment SHOULD be repeated.
 
@@ -632,7 +651,8 @@ Protected spans SHOULD include patterns such as:
 Examples that SHOULD remain intact:
 
 ```text
-CreateMultiGranularityChunks
+AstraVectorIngestionFacade
+AppendLogicalDocumentBlocks
 accessZoneIds
 kz.acb.service
 10.20.30.40
@@ -740,61 +760,62 @@ fragmentIdentityInput =
 
 The exact deterministic ID algorithm belongs to TZ-09/TZ-11.
 
-AstraVector ingestion idempotency MUST distinguish separate logical fragments of the same document/version.
+AstraVector ingestion idempotency MUST distinguish separate logical fragments/blocks of the same document/version.
 
 ---
 
 ## 31. Downstream AstraVector mapping
 
-One logical fragment is the preferred unit for one AstraVector multi-granularity source-group ingestion operation unless TZ-11 proves a better batching contract.
+TZ-08 emits `LogicalFragment[]`. It does not invoke an AstraVector RPC directly.
 
-Conceptual mapping:
+TZ-09 owns deterministic mapping to the public `LogicalBlock` tree:
 
 ```text
-LogicalFragment
+LogicalFragment[]
   documentId
   documentVersion
   fragmentId
-  embeddingText
+  normalizedText
+  contextPrefix
   hierarchy/provenance metadata
         |
         v
-CreateMultiGranularityChunks
+LogicalBlockMapper
+        |
+        v
+LogicalBlock[]
+        |
+        v
+TZ-11 Start / Append / Finalize
 ```
 
 Recommended downstream metadata includes:
 
 - `logicalFragmentId`;
-- `pageFrom` / `pageTo` or equivalent source range;
+- page/range provenance where available;
 - hierarchy path;
 - language metadata;
 - splitter version/profile;
 - extraction/provenance reference.
 
-The downstream idempotency key SHOULD incorporate the logical fragment identity.
+Transport batching is a TZ-11 concern and MUST NOT alter fragment identity or logical hierarchy.
 
 ---
 
-## 32. Important AstraVector contract concern
+## 32. Downstream identity safety
 
-Multiple logical fragments may belong to the same `documentId + documentVersion`.
+Multiple logical fragments belong to the same `documentId + documentVersion` and are mapped into one deterministic `LogicalBlock[]` document tree.
 
-TZ-11 MUST formally verify that AstraVector can create multiple independent source/root groups for one document version without collisions.
+Requirements:
 
-AstraIndexator SHALL NOT rely solely on free-form metadata for uniqueness.
+- `LogicalBlock.blockId` is deterministic and unique inside the document version;
+- parent references are valid and acyclic;
+- one DOCUMENT root exists according to TZ-09/TZ-11;
+- retry/rebatch does not create new logical block identities;
+- batch boundaries are transport details, not semantic identity boundaries;
+- AstraVector-generated searchable chunk IDs are downstream identities and MUST NOT replace `fragmentId`/`blockId`.
 
-At least one deterministic fragment-scoped identity mechanism is required, for example:
-
-```text
-idempotencyKey = hash(
-  documentId
-  + documentVersion
-  + fragmentId
-  + splitterVersion
-)
-```
-
-If AstraVector requires an explicit `source_fragment_id`/equivalent contract extension, that change must be documented in TZ-11 and coordinated with `alimbetov/llm2`.
+No fragment-scoped creation of independent legacy source/root groups is required by AstraIndexator 1.0.
 
 ---
 
@@ -967,7 +988,9 @@ Mandatory tests include:
 20. deterministic repeated run;
 21. downstream AstraVector calibration against actual token counts;
 22. truncation gate;
-23. mixed-language retrieval quality fixtures through AstraVector.
+23. mixed-language retrieval quality fixtures through AstraVector;
+24. numeric `documentVersion` serialization;
+25. deterministic `LogicalFragment[] -> LogicalBlock[]` mapping compatibility.
 
 ---
 
@@ -1000,7 +1023,7 @@ The splitter SHALL NOT be considered production-calibrated merely because all fr
 TZ-08 implementation is accepted when all of the following are proven:
 
 ### AC-01 — Responsibility boundary
-AstraIndexator performs logical fragmentation only; BGE-M3 tokenization and AstraVector multi-granularity chunking remain downstream.
+AstraIndexator performs logical fragmentation only; BGE-M3 tokenization/model-aware searchable chunking remain downstream.
 
 ### AC-02 — Structure-first splitting
 Strong document boundaries are preferred over fixed-size cuts.
@@ -1051,13 +1074,16 @@ A representative corpus is evaluated using the actual AstraVector tokenizer/mode
 At least 99.9% of normal calibrated fragments report no downstream model truncation, or a stricter threshold is documented.
 
 ### AC-18 — Downstream identity safety
-Multiple logical fragments for one document version can be ingested idempotently without source-group collisions.
+Logical fragments map into a deterministic, valid `LogicalBlock[]` tree for one document version; rebatching/retry does not change semantic identities.
 
 ### AC-19 — Retrieval quality
 Structure-aware fragmentation demonstrates no unacceptable regression and preferably measurable improvement over naive fixed-size splitting on AstraVector quality fixtures.
 
 ### AC-20 — Multilingual quality evidence
 RU, KK, EN and mixed-language retrieval scenarios are represented in verification evidence.
+
+### AC-21 — DTO consistency
+`documentVersion` remains a positive numeric value and the splitter does not emit legacy AstraVector source/root/chunk DTO concepts.
 
 ---
 
@@ -1071,6 +1097,7 @@ Before production readiness, the repository SHOULD contain:
 - multilingual fixtures;
 - legal/technical/table/OCR fixtures;
 - deterministic golden tests;
+- LogicalBlock mapping contract tests;
 - calibration corpus tooling;
 - AstraVector token-count/truncation calibration report;
 - retrieval quality comparison report;
@@ -1089,10 +1116,11 @@ TZ-08 does not own:
 - semantic embedding-based topic segmentation;
 - BGE-M3 tokenization;
 - dense/sparse embedding generation;
-- AstraVector PARENT/SUB chunk algorithm;
+- AstraVector generated searchable chunk topology;
 - Qdrant indexing;
 - retrieval/ranking logic;
-- document version lifecycle.
+- document version lifecycle;
+- AstraVector session/batch transport orchestration.
 
 ---
 
@@ -1104,10 +1132,12 @@ The canonical AstraIndexator/AstraVector boundary is:
 AstraIndexator
   preserves document meaning and structure
   -> LogicalFragment[]
+  -> LogicalBlockMapper
+  -> LogicalBlock[]
 
 AstraVector
-  optimizes model/search granularity
-  -> SOURCE / PARENT / SUB_* / embeddings / retrieval
+  owns tokenizer/model-aware searchable chunking
+  -> embeddings / vector lifecycle / retrieval
 ```
 
 AstraIndexator SHALL optimize for semantic continuity and reproducibility. AstraVector SHALL optimize for embedding and retrieval granularity. Neither service should duplicate the other's responsibility.
