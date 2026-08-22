@@ -27,6 +27,7 @@ source accepted
   -> OCR enriches only where required
   -> normalization preserves meaning
   -> logical fragmentation is deterministic
+  -> LogicalFragment[] maps deterministically to LogicalBlock[]
   -> prepared artifact is durable/replayable
   -> AstraVector ingestion is idempotent/reconcilable
   -> vector state becomes searchable
@@ -74,15 +75,18 @@ Examples:
 
 ```text
 state transitions
+processing-stage enum consistency
 retry classification
 lease/fencing predicates
 access-zone selector normalization
+canonical knowledge-zone catalog mapping
 TTL intent mapping
 file-type detection helpers
 protected-span normalization
 reading-order helpers
 OCR decision rules
 logical splitter boundaries
+LogicalFragment -> LogicalBlock mapping
 batch construction
 idempotency-key construction
 configuration schema validation
@@ -187,8 +191,6 @@ retrieve proof
 cleanup proof
 ```
 
-Exact CI topology belongs to TZ-18, but the evidence requirements are normative here.
-
 ---
 
 # Part I — Internal Smoke Test API
@@ -233,9 +235,13 @@ Optional list endpoint:
 GET /internal/v1/smoke-tests?limit=...
 ```
 
-These endpoints are internal-only according to TZ-16.
+Rules:
 
-They do not accept arbitrary source URLs, arbitrary document text, arbitrary access zones or arbitrary model names.
+- endpoints are internal-only according to TZ-16;
+- mutating smoke endpoints MUST NOT be exposed through public ingress;
+- mutation SHOULD be disabled unless `smokeEnabled=true` (or equivalent approved deployment setting);
+- `RECOVERY_E2E` MUST remain disabled in ordinary production deployments;
+- callers cannot supply arbitrary source URLs, arbitrary document text, arbitrary access zones or arbitrary model names.
 
 ---
 
@@ -280,6 +286,7 @@ fixture
  -> normal PENDING job
  -> worker claim
  -> full pipeline
+ -> LogicalBlock[] delivery
  -> AstraVector searchable=true
  -> RetrieveContext
  -> expected marker/citation found
@@ -315,7 +322,8 @@ Rules:
 - `fixtureId` must refer to a server-approved immutable fixture manifest;
 - caller cannot supply arbitrary storage location;
 - caller cannot supply arbitrary `accessZoneCode`;
-- smoke access zone is deployment configuration;
+- smoke access zone is deployment configuration and MUST be an explicitly approved/ACTIVE zone;
+- a dedicated subdivision from the `0000–0999` catalog space MAY be provisioned for smoke, but it MUST be explicit configuration rather than an inferred code;
 - model/profile selection is server-side configuration;
 - smoke IDs/document IDs are generated in an isolated reserved namespace;
 - cleanup defaults SHOULD be environment-configurable and normally enabled.
@@ -332,11 +340,13 @@ Conceptual asynchronous response:
   "profile": "E2E_RETRIEVAL",
   "state": "ACCEPTED",
   "jobId": "...",
-  "documentId": "astra-smoke-...",
-  "documentVersion": "...",
+  "documentId": "20fd6906-cf10-4d2a-bdbf-31ae32316716",
+  "documentVersion": 1,
   "statusUrl": "/internal/v1/smoke-tests/..."
 }
 ```
+
+`documentVersion` is the same positive numeric canonical type used by TZ-01/TZ-02/TZ-09/TZ-11/TZ-12. Smoke MUST NOT introduce a string version DTO.
 
 The HTTP call SHALL NOT remain open for the full OCR/vector/retrieval duration.
 
@@ -386,7 +396,7 @@ Conceptual response:
   "job": {
     "jobId": "...",
     "status": "COMPLETED",
-    "processingStage": "FINALIZING"
+    "processingStage": "FINALIZING_VECTOR_STATE"
   },
   "source": {
     "fixtureId": "smoke-multilingual-v1",
@@ -447,8 +457,6 @@ Example conceptual marker:
 ```text
 ASTRA-SMOKE-KK-RU-EN-2026
 ```
-
-The marker is synthetic test content and MUST NOT overlap normal business documents.
 
 Fixtures SHOULD include at least:
 
@@ -527,6 +535,7 @@ Spring Boot job DTO
 PostgreSQL persistence mapping
 canonical document schema
 prepared manifest/JSONL schema
+LogicalFragment -> LogicalBlock mapping
 AstraVector generated protobuf compatibility
 Knowledge Inventory DTO
 Smoke API DTO
@@ -548,7 +557,7 @@ element IDs
 normalized text
 fragment boundaries
 fragment IDs
-LogicalBlock order
+LogicalBlock IDs/order/parents
 batch boundaries
 idempotency keys
 processing fingerprint
@@ -577,19 +586,21 @@ No independently guessed JSON serialization is accepted as proof.
 
 ---
 
-## 20. Document-version mapping proof
+## 20. Document-version contract proof
 
-If producer `documentVersion` is not constrained to positive integer form, tests SHALL prove the persisted mapping to AstraVector `uint64` is:
+AstraIndexator 1.0 does not support an opaque canonical `documentVersion`. Tests SHALL prove:
 
 ```text
-deterministic
-stable across restart
-unique for document identity
-idempotent under duplicate submission
-safe under concurrent submissions
+producer documentVersion is positive numeric
+PostgreSQL persistence preserves it exactly
+canonical DTOs preserve it exactly
+session Start rejects values outside current uint32 wire range
+uint64 status/delete identity is mapped without truncation
+externalRevision remains metadata only
+retry/restart does not renumber documentVersion
 ```
 
-This remains a production gate from TZ-11/TZ-12.
+No opaque-string-to-numeric mapping table is required for the 1.0 baseline.
 
 ---
 
@@ -649,8 +660,6 @@ Start timeout -> same idempotency key
 Append timeout -> same session + batch index + hash
 Finalize timeout -> status reconciliation before recreation
 ```
-
-No test passes merely because a retry eventually returned 200/OK; persisted downstream identity and duplicate absence must be checked.
 
 ---
 
@@ -778,6 +787,8 @@ unknown language
 forced size boundaries
 semantic section boundaries
 stable fragment IDs
+numeric documentVersion
+LogicalFragment -> LogicalBlock mapping
 ```
 
 AstraIndexator SHALL NOT reproduce AstraVector tokenizer-size chunking in these tests.
@@ -829,7 +840,9 @@ correct total block count
 
 ## 31. Access-zone verification
 
-Tests SHALL prove:
+Tests SHALL prove both the real AstraVector code domain and the AstraIndexator canonical v1 catalog.
+
+Wire/registry compatibility:
 
 ```text
 0000..9999 format validation
@@ -839,6 +852,33 @@ ID/code mismatch failure
 multiple distinct ingestion zones rejected
 unknown/disabled zone failure when configured by AstraVector
 retrieval may use multiple zones separately from ingestion
+```
+
+Canonical v1 root catalog:
+
+```text
+0000 GENERAL
+0100 CORPORATE
+0200 REGULATORY
+0300 LEGAL
+0400 FINANCE
+0500 HR
+0600 TECHNICAL
+0700 OPERATIONS
+0800 SECURITY
+0900 ARCHIVE
+```
+
+Required assertions:
+
+```text
+all ten canonical roots round-trip byte-for-byte as 4-character strings
+knowledgeType -> accessZoneCode mapping is deterministic
+producer assigns exactly one canonical zone at job creation
+syntactically valid unapproved code (e.g. 0473) is rejected in catalog mode
+configured subdivision is accepted only when both catalog-approved and AstraVector Registry ACTIVE
+catalog mapping does not derive AccessLevel
+catalog mapping does not compute TTL locally
 ```
 
 The test suite MAY contain the current code→TTL compatibility matrix from TZ-10 as a downstream contract fixture, but AstraIndexator runtime logic MUST NOT implement it as policy.
@@ -855,6 +895,8 @@ document effective expiry
 ```
 
 `ttl_days=0` SHALL verify inheritance behavior rather than asserting unconditional never-expire.
+
+For every canonical root in `0000–0999`, tests SHALL prove that AstraIndexator forwards `ttl_days=0` unchanged when inheritance is requested and does not synthesize an expiration timestamp.
 
 Exact remaining-lifetime tests require AstraVector to expose authoritative effective expiry according to TZ-14. Until then, Knowledge Inventory SHALL assert:
 
@@ -878,6 +920,7 @@ v2 success -> expected lifecycle behavior
 reindex auditable
 async delete progresses through scheduled/deleting/deleted
 same-version duplicate is idempotent or explicitly rejected according to contract
+numeric documentVersion remains stable through restart/recovery
 ```
 
 ---
@@ -889,11 +932,13 @@ same-version duplicate is idempotent or explicitly rejected according to contrac
 For a successfully indexed document, verify that Inventory exposes:
 
 ```text
-documentId/version
+documentId/documentVersion
+externalRevision when present
 source hash/format
 job status
 processing fingerprint
-access zone
+accessZoneId/accessZoneCode
+knowledgeType/catalog version when applicable
 page/element/fragment/block counts when available
 AstraVector state
 searchable
@@ -917,9 +962,8 @@ stale Inventory record
 AstraVector unavailable during refresh
 unknown effective TTL
 expired/deleted downstream document
+catalog knowledgeType/accessZoneCode mismatch in local data
 ```
-
-The projection reports/reconciles; it does not mutate Qdrant or bypass lifecycle contracts.
 
 ---
 
@@ -929,6 +973,7 @@ Verify:
 
 - correlation IDs propagate;
 - job/attempt/session identifiers are available in structured logs/traces;
+- canonical processing-stage values match TZ-02;
 - Prometheus labels are bounded-cardinality;
 - raw document/OCR/embedding text is absent from ordinary telemetry;
 - signed URLs/credentials are absent;
@@ -973,6 +1018,7 @@ AstraVector client thresholds
 OCR concurrency bounds
 secret redaction
 effectiveConfigSha256 stability
+catalog version/allowlist loading
 ```
 
 A worker SHALL NOT become ready with missing mandatory safety bounds.
@@ -993,8 +1039,10 @@ Nexus secret absent from worker when preload separation enabled
 worker has no direct Qdrant dependency
 worker has no direct AstraVector DB dependency
 Knowledge Inventory/admin endpoints bind/expose according to internal deployment config
+smoke mutation endpoints are not publicly exposed
+RECOVERY_E2E is disabled in ordinary production
 logs/config dump redact secrets
-access zone cannot be inferred/broadened from content
+access zone cannot be inferred/broadened from document content
 ```
 
 No OAuth/JWT/RBAC tests are required for AstraIndexator 1.0 because those mechanisms are explicitly out of scope in TZ-16.
@@ -1081,6 +1129,8 @@ technical identifiers/code
 
 Each case defines one or more questions plus expected document/section evidence.
 
+Where Access Zone is part of expected retrieval scope, corpus fixtures SHOULD include cross-zone negative assertions to prove that a query over one zone does not accidentally retrieve another catalog zone.
+
 ---
 
 ## 44. Retrieval metrics
@@ -1096,6 +1146,7 @@ citation correctness
 exact identifier retrieval
 no-answer correctness where supported
 duplicate-context rate
+cross-zone leakage rate (must be zero for isolated fixture scopes)
 ```
 
 A profile change to parser/OCR/normalizer/splitter SHALL be evaluated against the previous approved processing fingerprint when it can materially affect retrieval quality.
@@ -1107,8 +1158,6 @@ A profile change to parser/OCR/normalizer/splitter SHALL be evaluated against th
 A new processing profile SHOULD NOT be promoted merely because text appears cleaner.
 
 Promotion requires evidence that critical multilingual/legal/technical retrieval does not regress beyond approved thresholds.
-
-Exact thresholds are corpus/release policy and may evolve, but the comparison methodology and fixtures SHALL be versioned.
 
 ---
 
@@ -1122,6 +1171,7 @@ Release verification SHOULD produce a machine-readable and human-readable report
 application version/commit
 canonical schema version
 effectiveConfigSha256
+catalog version
 parser profile/version
 OCR model IDs/revisions
 normalizer profile/version
@@ -1164,7 +1214,7 @@ TZ-17 is satisfied when:
 - **AC-10:** logical fragmentation determinism is proven;
 - **AC-11:** real AstraVector integration reaches `searchable=true`;
 - **AC-12:** retrieval E2E proves expected synthetic/business-test evidence and citations;
-- **AC-13:** access-zone ingestion semantics are contract-tested;
+- **AC-13:** access-zone ingestion semantics and the ten canonical `0000–0999` root catalog entries are contract-tested;
 - **AC-14:** TTL/session-expiry distinction is proven;
 - **AC-15:** Knowledge Inventory accuracy/freshness is tested;
 - **AC-16:** model supply works offline with checksum/revision enforcement;
@@ -1178,8 +1228,10 @@ TZ-17 is satisfied when:
 - **AC-24:** E2E smoke proves `searchable=true` and retrieval marker/citation when retrieval is available;
 - **AC-25:** smoke cleanup uses normal AstraVector lifecycle APIs and is observable;
 - **AC-26:** P0 session hashing parity is closed with shared Rust/Python golden vectors before strict session production readiness;
-- **AC-27:** document-version mapping is proven before production if producer versions remain opaque;
-- **AC-28:** release verification produces durable evidence tied to code/config/model versions.
+- **AC-27:** positive numeric document-version semantics and current wire-width guards are proven; opaque source revisions remain metadata only;
+- **AC-28:** release verification produces durable evidence tied to code/config/model/catalog versions;
+- **AC-29:** canonical indexing processing stages are consistent with TZ-02/TZ-12;
+- **AC-30:** catalog approval and AstraVector Registry ACTIVE validation are both enforced without local TTL-policy duplication.
 
 ---
 
@@ -1201,11 +1253,11 @@ The minimum production proof is:
 
 ```text
 known immutable fixture
-  -> normal durable job
+  -> normal durable job with numeric documentVersion + approved accessZoneCode
   -> multi-stage AstraIndexator processing
-  -> AstraVector ingestion
+  -> LogicalBlock[] AstraVector ingestion
   -> searchable=true
-  -> RetrieveContext returns expected evidence/citation
+  -> RetrieveContext returns expected evidence/citation in the expected zone
   -> Inventory reflects reality
   -> normal lifecycle cleanup succeeds or is reconcilably pending
 ```
