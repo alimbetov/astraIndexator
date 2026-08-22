@@ -8,84 +8,80 @@
 - **Status:** Consolidated design baseline
 - **Parent specification:** `TZ-00-system-architecture.md`
 - **Related specifications:** TZ-01, TZ-02, TZ-08, TZ-09, TZ-10, TZ-12, TZ-13, TZ-14, TZ-16, TZ-17, TZ-18
-- **Authoritative wire source:** `alimbetov/llm2/main/proto/astravector_embedding.proto`
+- **Wire authority:** `alimbetov/llm2/main` → `proto/astravector_embedding.proto`
 - **Approved consumer mapping:** `agent-astradeployment-portable-local-1.0/docs/integration/ASTRAINDEXATOR_PROTO_MAPPING.md` and `EXTERNAL_DTO_REFERENCE.md`
 
 ---
 
-## 2. Integration authority and boundary
+## 2. Contract authority and purpose
 
-The only normative ingestion boundary for AstraIndexator 1.0 is:
+This specification defines the AstraIndexator → AstraVector adapter contract after acquisition, parsing, OCR, normalization and logical fragmentation.
 
-```text
-astravector.embedding.v1.AstraVectorIngestionFacade
-```
-
-Source-of-truth hierarchy:
+Authority order is normative:
 
 ```text
-1. llm2 proto                            -> wire field/type authority
-2. agent-astradeployment integration docs -> approved application/consumer mapping
-3. AstraIndexator TZ-09/TZ-11           -> implementation specification
+1. llm2/proto/astravector_embedding.proto
+   -> actual wire contract
+
+2. agent-astradeployment-portable-local-1.0/docs/integration/*
+   -> approved consumer/application mapping
+
+3. AstraIndexator TZ-09/TZ-11
+   -> implementation/domain specification
 ```
 
-AstraIndexator SHALL NOT create a competing REST/gRPC ingestion protocol or manually duplicate protobuf wire DTOs.
+AstraIndexator SHALL NOT create a third incompatible interpretation of the DTOs.
 
-Canonical path:
+Canonical integration boundary:
 
 ```text
-AstraIndexator canonical/domain DTOs
+AstraIndexator domain/canonical DTO
         ↓
-AstraVector adapter + validation
+anti-corruption mapper + local validation
         ↓
-generated protobuf DTOs from pinned llm2 revision
+generated astravector.embedding.v1 protobuf DTO
         ↓
-AstraVectorIngestionFacade
+gRPC AstraVectorIngestionFacade
         ↓
-tokenizer-aware chunking / BGE-M3 / vector lifecycle
+AstraVector tokenizer-aware chunking / BGE-M3 / PostgreSQL / outbox / Qdrant / retrieval
 ```
+
+Generated protobuf classes are wire DTOs only and MUST NOT leak through the entire AstraIndexator domain model.
 
 ---
 
-## 3. Responsibility split
+## 3. Responsibility boundary
 
-### AstraIndexator owns
+AstraIndexator owns:
 
-- source acquisition/validation;
-- parsing/OCR/normalization;
-- structural reconstruction;
-- logical semantic fragmentation;
-- deterministic canonical IDs;
-- `LogicalBlock[]` mapping;
-- source provenance/links;
-- one effective ingestion-zone selection;
-- path selection (single-call/session);
-- idempotency/session orchestration;
-- local wire-range validation;
-- retry/reconciliation;
-- durable delivery checkpoints;
-- mapping downstream status into local lifecycle/Knowledge Inventory.
+- acquisition / parser / OCR / normalization;
+- canonical `DocumentElement[]` and `LogicalFragment[]`;
+- `LogicalFragment` → `LogicalBlock[]` mapping;
+- provenance and source links;
+- structural and wire-range validation;
+- access-zone intent normalization to one ingestion zone;
+- Start/Append/Finalize orchestration;
+- client idempotency and replay checkpoints;
+- downstream status reconciliation.
 
-### AstraVector owns
+AstraVector owns:
 
 - access-zone registry resolution;
-- tokenizer-aware final chunking;
-- BGE-M3 model execution;
-- dense/sparse generation;
+- effective TTL policy/lifecycle;
+- tokenizer-aware searchable chunking;
+- BGE-M3 dense/sparse execution;
 - canonical vector/document state;
 - outbox/Qdrant projection;
-- activation/reconciliation;
-- effective TTL lifecycle;
-- searchability/readiness;
+- operation state and searchability;
 - retrieval.
 
-AstraIndexator MUST NOT create internal AstraVector `PARENT/SUB_*` chunks, embeddings or Qdrant points.
+AstraIndexator MUST NOT create `PARENT`, `SUB_180`, `SUB_260`, embeddings or Qdrant points directly.
 
 ---
 
-## 4. Public gRPC surface
+## 4. Public wire services
 
-Current `llm2` facade operations used by AstraIndexator:
+Canonical service:
 
 ```proto
 service AstraVectorIngestionFacade {
@@ -108,166 +104,107 @@ service AstraVectorIngestionFacade {
 }
 ```
 
----
-
-## 5. DTO-layer rule
-
-Keep three layers separate:
-
-```text
-Domain/Application DTO
-        ↓
-AstraVector adapter mapper
-        ↓
-Generated protobuf DTO
-```
-
-Generated proto classes belong only in the adapter/transport module.
+AstraIndexator SHALL use generated clients for this facade rather than hand-maintained transport DTOs.
 
 ---
 
-## 6. Approved application DTOs
+## 5. Application DTO layers
 
-The application DTO shape follows the already-approved deployment mapping.
-
-### 6.1 Access zone
+Keep three layers distinct:
 
 ```text
-sealed AccessZoneRef
-  -> AccessZoneId(UUID)
-  -> AccessZoneCode(String)
+Domain DTO
+  -> adapter/mapping DTO
+  -> generated protobuf DTO
 ```
 
-Producer compatibility may contain singular/plural selectors, but ingestion normalization SHALL produce exactly one `AccessZoneRef`.
-
-### 6.2 Start session command
-
-Conceptual application DTO:
+Recommended application command shapes follow the approved deployment mapping.
 
 ```text
-StartIndexingCommand {
-  accessZone: AccessZoneRef,
-  documentId: UUID,
-  documentVersion: long,
-  sourceUri: URI/string,
-  fileName: string,
-  contentHash: string,
-  idempotencyKey: string,
-  totalBytesEstimate: long,
-  totalBlocksEstimate: long,
-  totalPagesEstimate: long,
-  metadata: map<string,string>,
-  ttlDays: long
-}
+StartIndexingCommand
+LogicalBlockBatch
+FinalizeIndexingCommand
+AbortIndexingCommand
+IngestionSessionStatus
+DocumentVectorStatus
+VectorSyncStatus
 ```
 
-### 6.3 Append batch
-
-```text
-LogicalBlockBatch {
-  sessionId: UUID/string,
-  batchIndex: long,
-  blocks: LogicalBlock[],
-  lastBatch: boolean,
-  batchContentHash: string
-}
-```
-
-### 6.4 Finalize
-
-```text
-FinalizeIndexingCommand {
-  sessionId,
-  finalContentHash
-}
-```
-
-### 6.5 Session status
-
-```text
-IngestionSessionStatus {
-  sessionId,
-  mappedState,
-  rawState,
-  receivedBatches,
-  receivedBlocks,
-  receivedBytes,
-  sessionExpiresAt,
-  errorCode,
-  errorMessage
-}
-```
-
-`sessionExpiresAt` is ingestion-session lifetime, not document TTL expiry.
+These are application concepts; field numbers and exact wire scalar widths come from generated protobuf.
 
 ---
 
-## 7. Actual wire-width contract from llm2
+## 6. Document identity
 
-AstraIndexator domain `long` does not imply every wire field is `uint64`.
+Canonical AstraIndexator identity:
 
-Current proto uses:
+```text
+documentId      = stable UUID/string identity of one logical document
+documentVersion = positive numeric version
+```
 
-| Concept | Proto field | Wire type |
-|---|---|---|
-| single-call document version | `DocumentIdentity.document_version` | `uint64` |
-| status/delete document version | `DocumentRef.document_version` | `uint64` |
-| session Start document version | `StartLogicalDocumentIngestionRequest.document_version` | `uint32` |
-| Start `total_bytes_estimate` | same | `uint64` |
-| Start `total_blocks_estimate` | same | `uint32` |
-| Start `total_pages_estimate` | same | `uint32` |
-| Start `ttl_days` | same | `uint32` |
-| LogicalBlock `order_index` | same | `uint32` |
-| Append `batch_index` | same | `uint32` |
-| status `received_batches` | same | `uint32` |
-| status `received_blocks` | same | `uint64` |
-| status `received_bytes` | same | `uint64` |
+A changed source revision receives a new positive numeric `documentVersion`.
 
-The adapter MUST range-check before conversion. It MUST NOT truncate, wrap or cast unchecked.
+If an upstream system also has an opaque/string revision, preserve it as metadata such as `externalRevision`; it SHALL NOT become the AstraVector wire `document_version`.
 
-For current session Start:
+### 6.1 Actual llm2 wire widths
+
+The current wire contract is intentionally not uniform:
+
+```text
+DocumentIdentity.document_version                   = uint64
+DocumentRef.document_version                        = uint64
+StartLogicalDocumentIngestionRequest.document_version = uint32
+```
+
+Therefore the AstraIndexator domain MAY represent `documentVersion` as a positive signed 64-bit integer, but session Start adapter MUST validate:
 
 ```text
 1 <= documentVersion <= 4_294_967_295
 ```
 
-If a future `llm2` proto widens the field, the adapter contract may be revised after contract tests.
+before mapping to the current `uint32` Start field.
 
----
+The adapter MUST NOT truncate, wrap or unchecked-cast an out-of-range version.
 
-## 8. Document identity mapping
+If this wire mismatch is removed in a future llm2 contract revision, contract tests SHALL be updated before deleting the guard.
 
-| AstraIndexator | llm2 | Rule |
-|---|---|---|
-| `documentId` | `document_id` | stable logical document identity |
-| `documentVersion` | `document_version` | positive numeric; wire-width guards apply |
-| upstream business id | `external_document_id` | optional metadata/business identity |
-| title | `title` | optional |
-| source reference | `source_uri` | provenance/navigation |
-| actual MIME | `mime_type` | from validated acquisition |
-| content hash | `content_hash` | deterministic documented source/content identity |
-| source links | `source_links` | no credentials/secrets |
+### 6.2 Other unsigned wire guards
 
-AstraIndexator 1.0 baseline does not require an opaque string-to-number version mapping. Non-numeric upstream revision belongs in metadata such as `externalRevision`.
-
----
-
-## 9. LogicalBlock wire contract
-
-Current proto:
+Current session wire fields requiring explicit non-negative/range validation include:
 
 ```text
-block_id: string
-parent_block_id: string
-block_type: enum
-text: string
-order_index: uint32
-source_location: SourceLocation
-source_links: SourceLink[]
-metadata: map<string,string>
+Start.document_version      -> uint32
+Start.total_blocks_estimate -> uint32
+Start.total_pages_estimate  -> uint32
+Start.ttl_days              -> uint32
+Append.batch_index          -> uint32
+LogicalBlock.order_index    -> uint32
+SourceLocation numeric fields -> uint32
 ```
 
-Current block types:
+`total_bytes_estimate`, `received_blocks`, `received_bytes` are wider `uint64` fields where defined by the proto.
+
+Domain code SHALL use explicit mapper guards rather than rely on language-specific unsigned conversions.
+
+---
+
+## 7. LogicalBlock contract
+
+Actual current AstraVector wire shape:
+
+```text
+block_id
+parent_block_id
+block_type
+text
+order_index
+source_location
+source_links
+metadata
+```
+
+Supported external block types:
 
 ```text
 DOCUMENT
@@ -283,52 +220,76 @@ CODE_BLOCK
 CAPTION
 ```
 
-Local validation before any mutation:
+`UNSPECIFIED` MUST NOT be emitted.
 
-1. collection non-empty;
-2. exactly one root `DOCUMENT`;
-3. block IDs non-blank and unique;
-4. all non-root parent references resolve;
-5. hierarchy is acyclic;
-6. type is not UNSPECIFIED;
-7. text is non-blank for searchable/structural text blocks;
-8. deterministic order;
-9. `order_index` fits `uint32`;
-10. source-location and metadata bounds respected.
+Local structural validator SHALL require:
 
----
+1. non-empty block set;
+2. exactly one root `DOCUMENT` block;
+3. unique non-blank block IDs;
+4. every non-root parent exists;
+5. no hierarchy cycles;
+6. deterministic order indexes;
+7. non-blank text where required;
+8. supported parent/child structure;
+9. metadata/source links inside configured bounds.
 
-## 10. SourceLocation semantics
-
-Current llm2 fields:
-
-```text
-page_start: uint32
-page_end: uint32
-char_start: uint32
-char_end: uint32
-section_path: string
-heading: string
-table_id: string
-row_index: uint32
-column_index: uint32
-```
-
-The canonical AstraIndexator model preserves presence/nullability independently of proto3 scalar presence.
-
-Baseline adapter convention until llm2 publishes explicit optional presence:
-
-```text
-page/row/column: 0 = unknown/not-applicable, 1+ = actual 1-based value
-```
-
-Character offsets can validly start at 0, therefore consumers MUST NOT infer presence solely from `char_start == 0`; the canonical model/provenance metadata remains the stronger source of truth.
-
-TZ-17 SHALL pin this convention with contract fixtures against the selected llm2 revision.
+Server validation remains authoritative.
 
 ---
 
-## 11. SourceLink semantics
+## 8. TZ-09 mapping boundary
+
+Canonical conversion:
+
+```text
+ParsedDocument / DocumentElement[] / LogicalFragment[]
+        ↓
+LogicalBlockMapper
+        ↓
+LogicalBlock[]
+```
+
+Simple prose may map one fragment to one block. Structured content may create multiple blocks, for example TABLE + TABLE_ROW or LIST + LIST_ITEM.
+
+`fragmentId` MAY be used as or contribute to a deterministic `block_id` when mapping rules require it, but it MUST NOT be confused with AstraVector-generated searchable chunk IDs.
+
+AstraVector internal/source/chunk topology is outside this DTO boundary.
+
+---
+
+## 9. SourceLocation contract
+
+Current wire fields:
+
+```text
+page_start
+page_end
+char_start
+char_end
+section_path
+heading
+table_id
+row_index
+column_index
+```
+
+Current proto3 numeric scalar fields are non-`optional`. Therefore AstraIndexator domain provenance SHOULD preserve nullable/optional semantics internally, and the adapter SHALL use the documented compatibility convention:
+
+```text
+0 = unknown / unavailable / not applicable on the current wire
+1+ = actual one-based page/row/column value where that locator is defined
+```
+
+Character offsets follow the canonical parser/normalizer convention documented by TZ-05/TZ-07 and MUST be contract-tested.
+
+The adapter SHALL NOT fabricate a page, row or column merely to avoid zero.
+
+A future llm2 proto may replace this convention with `optional` scalar presence; until then, the zero convention is a compatibility rule and test requirement.
+
+---
+
+## 10. SourceLink contract
 
 Current wire fields:
 
@@ -342,58 +303,25 @@ expires_at
 attributes
 ```
 
-Current wire types include:
+Domain code MAY use typed values such as `Instant` for expiration; adapter serializes the format expected by the wire contract.
 
-```text
-ORIGINAL_DOCUMENT
-PREVIEW
-DOWNLOAD
-PAGE
-SECTION
-CHUNK
-EXTERNAL_SYSTEM
-```
+`SourceLink.expires_at` is source-link lifetime and MUST NOT be confused with document TTL.
 
-AstraIndexator domain may use typed time values and map to the wire string. SourceLink expiry is unrelated to document TTL.
-
-Credentials/tokens are forbidden in URLs/attributes.
+Source links/attributes SHALL NOT contain credentials, API keys or bearer tokens.
 
 ---
 
-## 12. RequestContext
+## 11. Access-zone application contract
 
-Current single-call/status/delete facade requests use:
-
-```text
-RequestContext {
-  correlation_id,
-  idempotency_key,
-  caller_service,
-  caller_user_id,
-  caller_access_level
-}
-```
-
-AstraIndexator SHOULD model an internal downstream request context with at least:
+The approved application abstraction remains:
 
 ```text
-correlationId
-idempotencyKey
-callerService
-callerAccessLevel
+AccessZoneRef
+  |- AccessZoneId(UUID)
+  `- AccessZoneCode(String)
 ```
 
-`callerUserId` may be absent for a service worker unless platform policy requires it.
-
-`AccessLevel` is a separate concept from Access Zone and MUST NOT be derived from the access-zone code.
-
----
-
-## 13. Access-zone mapping
-
-For ingestion one document version belongs to exactly one effective zone.
-
-Accepted producer compatibility forms may include:
+Producer compatibility may accept:
 
 ```text
 accessZoneId
@@ -402,180 +330,316 @@ accessZoneCode
 accessZoneCodes[]
 ```
 
-Before downstream mutation they normalize to one distinct zone.
+but one ingestion operation MUST normalize to exactly one effective access zone before downstream mutation.
 
-Wire ingestion exposes singular:
+### 11.1 Critical `0000–0999` invariant
+
+The actual `llm2` Access Zone Registry validates codes as exactly four ASCII digits:
+
+```regex
+^[0-9]{4}$
+```
+
+The full code space is `0000..9999`. The subrange **`0000–0999` is explicitly valid and MUST be preserved exactly as a four-character string**.
+
+Valid examples include:
+
+```text
+0000
+0001
+0010
+0100
+0999
+```
+
+Therefore `AccessZoneCode` SHALL be represented as `String` end-to-end. Parsing it into an integer is forbidden because it destroys the contract:
+
+```text
+"0001" -> 1 -> "1"   // INVALID transformation
+```
+
+The real `llm2` implementation computes `default_ttl_days = 0` for codes whose numeric value is `<= 999`; when a zone is auto-created, `allow_never_expire` is set when that derived TTL is `0`. This is AstraVector registry policy and MUST NOT be reimplemented as AstraIndexator business logic.
+
+### 11.2 Requested selector versus resolved identity
+
+Current Start/Index requests may send one:
 
 ```text
 access_zone_id
 access_zone_code
 ```
 
-Retrieval may expose plural selectors; this does not imply multi-zone ingestion.
+(or both only when both identify the same zone).
 
-### Resolved identity
-
-AstraVector `DocumentRef` contains canonical `access_zone_id`. When ingestion started by code, AstraIndexator SHALL retain:
+Downstream `DocumentRef` carries:
 
 ```text
-requestedAccessZoneCode
+access_zone_id
+document_id
+document_version
+```
+
+Therefore AstraIndexator SHOULD preserve both:
+
+```text
+requestedAccessZoneCode / requestedAccessZoneId
 resolvedAccessZoneId
 ```
 
-in lifecycle/Knowledge Inventory evidence when the resolved ID becomes available.
+and SHOULD retain normalized code in Knowledge Inventory when known.
 
-This does not authorize local code->ID policy duplication; AstraVector registry remains authoritative.
+Conceptual application read model:
+
+```text
+EffectiveAccessZone {
+  accessZoneId
+  accessZoneCode
+}
+```
+
+`accessZoneId` is downstream canonical identity; `accessZoneCode` remains the operator/business semantic reference.
+
+AstraIndexator MUST NOT derive the registry UUID from code itself as business logic.
+
+### 11.3 Access level is separate
+
+`AccessLevel` values in llm2 include:
+
+```text
+PUBLIC
+INTERNAL
+CONFIDENTIAL
+RESTRICTED
+```
+
+Access level and access zone are different dimensions. AstraIndexator SHALL NOT derive one from the other.
 
 ---
 
-## 14. TTL mapping
+## 12. TTL mapping
 
-### Session path
-
-Actual Start field:
+Session Start uses:
 
 ```text
-ttl_days: uint32
+ttl_days = 0 -> inherit resolved access-zone/platform policy
+ttl_days > 0 -> request explicit relative finite lifetime in days
 ```
 
-Semantics:
+For `accessZoneCode` in `0000–0999`, `ttl_days = 0` means **inherit that resolved zone policy**. It does not mean the client itself declares `forever`.
 
-```text
-0  -> inherit effective zone/platform policy
->0 -> explicit finite relative lifetime in days
-```
+Because the current AstraVector code matrix assigns default TTL `0` and permits never-expire for auto-created zones in this subrange, the effective result may be non-expiring when the resolved active zone policy permits it.
 
-`0` is not `never expire`.
+AstraIndexator MUST NOT rewrite this to a positive TTL, MUST NOT compute its own expiry from the code, and MUST NOT interpret request-level `0` as unconditional forever.
 
-### Single-call path
+Single-call `IndexLogicalDocument` uses separate `TtlPolicy` semantics (`mode`, `ttl_seconds`, `expires_at`). The two contracts MUST NOT be conflated.
 
-`IndexLogicalDocument` uses a separate `TtlPolicy` with:
-
-```text
-TTL_MODE_NONE
-TTL_MODE_RELATIVE + ttl_seconds
-TTL_MODE_ABSOLUTE + expires_at
-```
-
-Do not conflate second-based single-call TTL with session `ttl_days`.
-
-AstraIndexator does not duplicate the access-zone code->TTL runtime policy.
+AstraVector registry/runtime remains authoritative for effective TTL and expiry.
 
 ---
 
-## 15. Single-call path
+## 13. RequestContext
 
-Use `IndexLogicalDocument` only when the serialized request is comfortably within configured client/server limits.
-
-Request carries:
+Current public facade uses `RequestContext` for status/delete and single-call flows:
 
 ```text
-RequestContext
-access_zone_id/access_zone_code
-DocumentIdentity
-LogicalBlock[]
-TokenAwareChunkingOptions
-VectorIndexingOptions
+correlation_id
+idempotency_key
+caller_service
+caller_user_id
+caller_access_level
+```
+
+Recommended AstraIndexator application concept:
+
+```text
+DownstreamRequestContext {
+  correlationId
+  idempotencyKey
+  callerService
+  callerAccessLevel
+}
+```
+
+`callerUserId` may remain empty for internal worker operations unless the platform contract requires it.
+
+`callerAccessLevel` is a visibility input and MUST NOT be confused with the ingestion access-zone selector.
+
+---
+
+## 14. Single-call ingestion DTO
+
+Current wire request:
+
+```text
+IndexLogicalDocumentRequest {
+  context
+  access_zone_id
+  access_zone_code
+  document: DocumentIdentity
+  blocks[]
+  chunking_options
+  indexing_options
+  metadata
+}
+```
+
+`DocumentIdentity` contains:
+
+```text
+external_document_id
+document_id
+document_version:uint64
+title
+source_uri
+source_type
+mime_type
+content_hash
+source_links[]
+```
+
+AstraIndexator SHALL not override AstraVector tokenizer/chunking policy unless an explicitly versioned client profile requires it. Default integration SHOULD favor server-approved chunking/indexing configuration.
+
+---
+
+## 15. Session Start DTO
+
+Approved application shape remains equivalent to:
+
+```text
+StartIndexingCommand {
+  accessZone: AccessZoneRef
+  documentId
+  documentVersion
+  sourceUri
+  fileName
+  contentHash
+  idempotencyKey
+  totalBytesEstimate
+  totalBlocksEstimate
+  totalPagesEstimate
+  metadata
+  ttlDays
+}
+```
+
+Actual wire fields:
+
+```text
+access_zone_id
+access_zone_code
+document_id
+document_version:uint32
+source_uri
+file_name
+content_hash
+idempotency_key
+total_bytes_estimate:uint64
+total_blocks_estimate:uint32
+total_pages_estimate:uint32
 metadata
+ttl_days:uint32
 ```
 
-AstraIndexator MUST NOT hard-code current server maxima as protocol constants.
-
-A successful mutation response is not automatically proof of searchability; completion policy still follows downstream vector status when needed.
-
----
-
-## 16. Session path
-
-Preferred for large documents:
-
-```text
-StartLogicalDocumentIngestion
-  -> AppendLogicalDocumentBlocks x N
-  -> FinalizeLogicalDocumentIngestion
-  -> GetLogicalDocumentIngestionStatus
-  -> GetDocumentVectorStatus
-```
-
-### 16.1 Start wire fields
-
-Current proto:
-
-```text
-access_zone_id           string
-access_zone_code         string
-document_id              string
-document_version         uint32
-source_uri               string
-file_name                string
-content_hash             string
-idempotency_key          string
-total_bytes_estimate     uint64
-total_blocks_estimate    uint32
-total_pages_estimate     uint32
-metadata                 map<string,string>
-ttl_days                 uint32
-```
-
-Recommended idempotency key:
+Recommended stable idempotency key:
 
 ```text
 astraindexator:{documentId}:{documentVersion}:{contentHash}
 ```
 
-Retries of the same logical Start reuse the same key.
+A retry of the same logical Start MUST reuse the same key.
 
-### 16.2 Append
+---
 
-Current wire fields:
+## 16. Append DTO
+
+Approved application shape:
+
+```text
+LogicalBlockBatch {
+  sessionId
+  batchIndex
+  blocks[]
+  lastBatch
+  batchContentHash
+}
+```
+
+Wire:
 
 ```text
 ingestion_session_id
 blocks[]
-batch_index: uint32
+batch_index:uint32
 is_last_batch
 batch_content_hash
 ```
 
 Rules:
 
-- deterministic monotonically increasing batch index using one documented origin convention;
-- same index + same hash = intended safe replay;
-- same index + different hash = integrity conflict;
-- `is_last_batch` is informational;
-- Finalize is still mandatory.
+```text
+same session + same batchIndex + same hash
+-> safe replay identity
 
-### 16.3 Finalize
+same session + same batchIndex + different hash
+-> integrity conflict
+```
+
+`is_last_batch` remains informational in the current llm2 contract. Explicit Finalize is still required.
+
+---
+
+## 17. Finalize and Abort DTOs
+
+Finalize:
+
+```text
+FinalizeIndexingCommand {
+  sessionId
+  finalContentHash
+}
+```
+
+Wire:
 
 ```text
 ingestion_session_id
 final_content_hash
 ```
 
-Finalize ACK is not proof of searchability.
+Abort:
 
-### 16.4 Abort
+```text
+AbortIndexingCommand {
+  sessionId
+  reason
+}
+```
 
-Use Abort for an active session that must not complete. Reconcile before aborting a session that may already be finalizing/completed.
+Mutating timeout does not prove failure; recovery follows TZ-13.
 
 ---
 
-## 17. Session status DTO
+## 18. Session status DTO
 
-Current wire response:
+Session status is a session-lifecycle DTO and MUST remain distinct from document/vector status.
+
+Approved application representation SHOULD include:
 
 ```text
-ingestion_session_id: string
-status: string
-received_batches: uint32
-received_blocks: uint64
-received_bytes: uint64
-expires_at: string
-error_code: string
-error_message: string
+IngestionSessionStatus {
+  ingestionSessionId
+  state
+  rawStatus
+  receivedBatches
+  receivedBlocks
+  receivedBytes
+  expiresAt
+  errorCode
+  errorMessage
+}
 ```
 
-Known states:
+Known wire strings:
 
 ```text
 ACTIVE
@@ -586,48 +650,48 @@ ABORTED
 EXPIRED
 ```
 
-Application mapping MUST include `UNKNOWN` and preserve the raw wire value.
+Application enum MUST add `UNKNOWN`; raw value is retained for forward-compatible diagnostics.
 
-Session state and session expiry are not document vector state/TTL.
+`expiresAt` here is ingestion-session expiration, NOT knowledge TTL expiry.
 
 ---
 
-## 18. DocumentRef and downstream canonical identity
+## 19. DocumentRef and resolved identity
 
-Current llm2:
+AstraVector status/delete responses use:
 
 ```text
 DocumentRef {
-  access_zone_id: string,
-  document_id: string,
-  document_version: uint64
+  access_zone_id
+  document_id
+  document_version:uint64
 }
 ```
 
-This DTO is the canonical downstream reference for status/delete lifecycle operations.
+This is authoritative downstream reference for later status/delete/reconciliation operations.
 
-AstraIndexator SHALL persist/observe enough data to reconstruct the same reference safely, especially the resolved `access_zone_id`.
+AstraIndexator SHALL persist or deterministically recover the resolved `DocumentRef` once returned. A requested `accessZoneCode` alone is not sufficient for later lifecycle operations when the downstream contract requires `access_zone_id`.
 
 ---
 
-## 19. DocumentVectorStatus application DTO
+## 20. DocumentVectorStatus DTO
 
-Session status MUST NOT be reused as document readiness status.
+Document vector/readiness status is separate from session status.
 
-AstraIndexator SHALL model a separate application DTO conceptually equivalent to current llm2:
+Application model SHOULD mirror the stable semantics of:
 
 ```text
 DocumentVectorStatus {
-  state: OperationState,
-  progressPercent: float,
-  searchable: boolean,
-  message: string,
-  readyToActivate: boolean,
+  state
+  progressPercent
+  searchable
+  message
+  readyToActivate
   sync: VectorSyncStatus
 }
 ```
 
-Current operation states include:
+Current `OperationState` includes:
 
 ```text
 ACCEPTED
@@ -644,13 +708,17 @@ DELETE_SCHEDULED
 DELETING
 ```
 
-Unknown future enum values SHALL fail safely/map to UNKNOWN in the application layer where the language/runtime requires defensive mapping.
+Application adapters SHALL keep an UNKNOWN/UNSPECIFIED-safe path for future additive enum values.
+
+`searchable=true` is the authoritative completion gate used by AstraIndexator job lifecycle.
 
 ---
 
-## 20. VectorSyncStatus application DTO
+## 21. VectorSyncStatus DTO
 
-For Knowledge Inventory/reconciliation, model the current `GetVectorSyncStatusResponse` evidence separately:
+Knowledge Inventory/reconciliation SHOULD expose downstream sync evidence without querying Qdrant directly.
+
+Application `VectorSyncStatus` should cover current wire evidence including:
 
 ```text
 documentStatus
@@ -683,13 +751,32 @@ lastSyncErrorMessage
 warnings[]
 ```
 
-This is read/reconciliation evidence. AstraIndexator still MUST NOT access Qdrant directly.
+This is downstream observability evidence, not permission for AstraIndexator to query or repair Qdrant directly.
 
 ---
 
-## 21. Completion levels
+## 22. Session state handling
 
-AstraIndexator distinguishes at least:
+Current session `status` is a wire string. Known values:
+
+```text
+ACTIVE
+FINALIZING
+COMPLETED
+FAILED
+ABORTED
+EXPIRED
+```
+
+Map to an application enum with `UNKNOWN`, while retaining raw status.
+
+A session `COMPLETED` is not sufficient proof of searchable knowledge.
+
+---
+
+## 23. Completion levels
+
+AstraIndexator SHALL distinguish:
 
 ```text
 SESSION_ACCEPTED
@@ -700,171 +787,133 @@ SEARCHABLE
 FAILED
 ```
 
-Top-level local job `COMPLETED` requires the completion policy defined by TZ-12/TZ-13, with authoritative downstream evidence including `searchable=true` for the baseline indexing success contract.
+Only verified downstream:
 
-`session.status == COMPLETED` alone is insufficient.
+```text
+GetDocumentVectorStatus.status.searchable == true
+```
+
+allows the normal indexing job to transition to `COMPLETED`.
 
 ---
 
-## 22. Hash canonicalization P0 gap
+## 24. Hashing contract
 
-The session protocol requires:
+Current session wire requires:
 
 ```text
 batch_content_hash
 final_content_hash
 ```
 
-The DTO fields exist and are aligned. What remains unresolved is the byte-exact external canonicalization algorithm.
+DTO placement is agreed. Byte-exact canonicalization remains a cross-service contract gate until llm2 publishes authoritative canonical representation and shared golden fixtures.
 
-Before production interoperability is declared, AstraVector MUST publish/freeze:
+Required evidence:
 
 ```text
-canonical input fields
-field ordering
-normalization
-serialization/text representation
-UTF-8 bytes
-SHA-256
-hex representation
-shared golden fixtures
+same LogicalBlock/batch content
+-> same canonical bytes
+-> same SHA-256
+-> same lowercase hex
 ```
 
-AstraIndexator SHALL NOT reverse-engineer current Rust serialization and treat it as a stable external contract.
+across the AstraVector implementation and AstraIndexator implementation.
 
-This remains a **P0 external contract gate** for strict session ingestion.
+AstraIndexator SHALL NOT reverse-engineer a private Rust serialization and treat it as permanent wire policy.
 
 ---
 
-## 23. Retry/reconciliation rules
+## 25. Retry and ambiguous outcomes
 
-Mutating RPC retry policy:
+Mutation retry follows TZ-13:
 
 ```text
 Start timeout
- -> retry SAME idempotency key
+-> retry SAME idempotency key
 
 Append timeout
- -> replay SAME session + batchIndex + batchContentHash
+-> replay SAME sessionId + batchIndex + batchContentHash
 
 Finalize timeout
- -> query session/document status before unsafe replay/replacement
+-> query session status before unsafe replay/new version
 
 UNAVAILABLE
- -> bounded exponential backoff
+-> bounded backoff
 
-validation/policy error
- -> no blind retry
-
-ambiguous downstream state
- -> reconcile, do not create a new document version
+INVALID_ARGUMENT / permanent policy errors
+-> no blind retry
 ```
 
-Delivery semantics remain at-least-once with idempotent/reconcilable downstream operations.
+AstraIndexator must reconcile ambiguous results rather than create duplicate document versions.
 
 ---
 
-## 24. Durable checkpoints
+## 26. Contract pinning
 
-TZ-02/TZ-13 persistence for session delivery SHALL retain enough state for restart/reclaim:
-
-```text
-ingestionSessionId
-idempotencyKey
-nextBatchIndex
-lastAcceptedBatchIndex
-batchContentHash per accepted batch
-finalContentHash
-raw session state
-DocumentRef / resolved accessZoneId when available
-raw/vector state
-searchable evidence
-last reconciled timestamp/error
-```
-
-A stale worker cannot authoritatively update these checkpoints without current fencing ownership.
-
----
-
-## 25. Contract pinning and generated code
-
-AstraIndexator implementation SHALL pin:
+AstraIndexator release evidence SHALL pin/record:
 
 ```text
-llm2 protobuf revision/contract revision
-supported BlockType values
-approved deployment mapping revision
+llm2 protobuf revision / generated client version
+supported block types
+unsigned wire guards
+access-zone/TTL semantics
 hash canonicalization revision once published
+configured server limits relevant to batching
 ```
 
-Generated protobuf code is produced from the pinned proto. Handwritten duplicate wire classes are prohibited.
-
-Additive unknown fields/statuses must be handled forward-compatibly where the generated runtime permits it.
+Breaking semantic changes require an explicit contract revision and contract-test update.
 
 ---
 
-## 26. Contract verification
+## 27. Required contract tests
 
-TZ-17 SHALL provide executable tests for at least:
+TZ-17 SHALL include at minimum:
 
-1. canonical LogicalBlock -> generated proto mapping;
-2. all supported block types;
-3. exactly one root and hierarchy validation;
-4. `uint32` max/range failures for documentVersion/orderIndex/batchIndex/estimates/ttlDays;
-5. session Start by zone code;
-6. capture of resolved `access_zone_id` from downstream reference;
-7. TTL inheritance (`ttlDays=0`);
-8. explicit finite TTL;
-9. Start retry with same idempotency key;
-10. Append replay with same index/hash;
-11. same index/different hash conflict;
-12. Finalize ambiguity/status reconciliation;
-13. session `UNKNOWN` raw-state compatibility;
-14. SourceLocation zero/presence convention;
-15. SourceLink mapping and secret absence;
-16. separate session status vs DocumentVectorStatus;
-17. VectorSyncStatus/Knowledge Inventory mapping;
-18. `searchable=true` completion proof;
-19. delete/status operations reconstructed from canonical `DocumentRef`;
-20. shared hash golden fixtures once published.
-
----
-
-## 27. Acceptance criteria
-
-- **AC-01:** wire DTOs are generated from pinned current llm2 proto;
-- **AC-02:** AstraIndexator domain/application DTOs follow the approved deployment mapping;
-- **AC-03:** no legacy v004 ingestion DTO is used as the public boundary;
-- **AC-04:** one effective ingestion access zone is enforced;
-- **AC-05:** resolved `access_zone_id` is retained for lifecycle/status operations;
-- **AC-06:** all current wire `uint32` fields are range-checked;
-- **AC-07:** documentVersion is positive numeric and session-compatible;
-- **AC-08:** LogicalBlock hierarchy and types match current llm2;
-- **AC-09:** SourceLocation ambiguity is explicitly documented/tested;
-- **AC-10:** session and document-vector status DTOs remain separate;
-- **AC-11:** VectorSyncStatus is available to reconciliation/Knowledge Inventory without direct Qdrant access;
-- **AC-12:** Start/Append/Finalize replay rules are deterministic;
-- **AC-13:** `is_last_batch` is never treated as implicit finalize;
-- **AC-14:** `session COMPLETED` is not equated to `searchable=true`;
-- **AC-15:** `ttl_days=0` means inherit, not forever;
-- **AC-16:** RequestContext/AccessLevel remain distinct from access-zone semantics;
-- **AC-17:** hash canonicalization remains an explicit P0 gate until shared golden fixtures exist;
-- **AC-18:** contract tests execute against the pinned llm2 facade revision.
+1. `documentVersion` session range guard;
+2. every current `uint32` adapter bound;
+3. valid `LogicalBlock` tree;
+4. duplicate block ID rejection;
+5. missing parent/cycle rejection;
+6. all supported block type mappings;
+7. SourceLocation zero/presence convention;
+8. source link mapping;
+9. access zone by code;
+10. **leading-zero Access Zone codes across the full `0000–0999` compatibility subrange, including `0000`, `0001`, `0010`, `0100`, `0999`;**
+11. rejection of malformed code `1`, `999`, `10000`, non-digits;
+12. code/id consistency failure;
+13. one-zone ingestion normalization;
+14. `ttlDays=0` inheritance for a `0000–0999` zone without client-side coercion;
+15. explicit finite TTL;
+16. Start retry same idempotency key;
+17. Append replay same batch/hash;
+18. same batch index different hash conflict;
+19. Finalize ambiguity reconciliation;
+20. session status UNKNOWN fallback;
+21. session expiry not treated as document expiry;
+22. requested zone code → resolved `DocumentRef.access_zone_id` persistence;
+23. `DocumentVectorStatus` mapping;
+24. `VectorSyncStatus` mapping;
+25. searchable completion proof;
+26. shared hash golden fixture once available.
 
 ---
 
-## 28. Final invariant
+## 28. Acceptance criteria
 
-The integration contract is:
-
-```text
-AstraIndexator canonical model
-  -> approved application DTOs
-  -> validated adapter mapping
-  -> generated llm2 protobuf DTOs
-  -> AstraVectorIngestionFacade
-  -> authoritative downstream status
-  -> searchable=true
-```
-
-No fourth DTO interpretation is permitted between the agreed deployment mapping and the actual llm2 wire contract.
+- **AC-01:** generated llm2 protobuf is the wire source of truth;
+- **AC-02:** deployment integration docs are the approved application mapping;
+- **AC-03:** AstraIndexator does not maintain an independent parallel wire DTO contract;
+- **AC-04:** canonical `documentVersion` is positive numeric and current session `uint32` guard is explicit;
+- **AC-05:** all unsigned wire conversions are validated;
+- **AC-06:** canonical output maps to current `LogicalBlock[]` types only;
+- **AC-07:** no legacy v004 `SOURCE/PARENT/SUB_*` API appears as AstraIndexator ingestion responsibility;
+- **AC-08:** `accessZoneCode` remains a four-character string, and `0000–0999` is explicitly supported without loss of leading zeroes;
+- **AC-09:** `ttl_days=0` remains inheritance, including for `0000–0999`; effective non-expiry is downstream policy, not a client declaration;
+- **AC-10:** requested code and resolved downstream zone ID are both traceable;
+- **AC-11:** SourceLocation presence convention is explicit and tested;
+- **AC-12:** session status and document/vector status remain separate;
+- **AC-13:** Knowledge Inventory can expose current downstream sync evidence without direct Qdrant access;
+- **AC-14:** mutating timeout recovery is idempotency/reconciliation based;
+- **AC-15:** job completion requires `searchable=true`;
+- **AC-16:** exact session hashing remains blocked until authoritative golden vectors exist;
+- **AC-17:** contract tests pin selected llm2 revision and all approved consumer mappings.
