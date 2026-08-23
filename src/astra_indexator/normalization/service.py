@@ -1,20 +1,40 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import unicodedata
 from collections import Counter
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Iterable
 
-from astra_indexator.parser import DocumentElement, ElementType, ParsedDocument, SourceGeometry
+from astra_indexator.parser import DocumentElement, ElementType, ParsedDocument
 
 from .model import NormalizationProfile, NormalizationStats, NormalizedDocument, NormalizedElement
 
 
 _HORIZONTAL_WS = re.compile(r"[\t\v\f ]+")
 _C0 = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_PROTECTED_TOKEN = re.compile(
+    r"(?:https?://\S+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|"
+    r"\b(?:\d{1,3}\.){3}\d{1,3}\b|"
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b|"
+    r"\bv?\d+(?:\.\d+){1,}\b|"
+    r"\b[0-9a-fA-F]{32,64}\b|"
+    r"\b\d{4}\b|"
+    r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*(?:\(\))?)+)",
+    re.UNICODE,
+)
+
+
+def _canonical_profile_hash(profile: NormalizationProfile) -> str:
+    payload = json.dumps(asdict(profile), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _overlaps_protected_span(text: str, start: int, end: int) -> bool:
+    return any(match.start() < end and match.end() > start for match in _PROTECTED_TOKEN.finditer(text))
 
 
 class TextNormalizationService:
@@ -22,7 +42,15 @@ class TextNormalizationService:
         self.profile = profile or NormalizationProfile()
         self.profile.validate()
 
-    def normalize(self, document: ParsedDocument) -> NormalizedDocument:
+    def normalize(
+        self,
+        document: ParsedDocument,
+        *,
+        upstream_processing_fingerprint: str | None = None,
+    ) -> NormalizedDocument:
+        if document.document_version <= 0:
+            raise ValueError("NORMALIZATION_INVALID:document_version")
+
         normalized_pre: list[NormalizedElement] = []
         counters = Counter()
         warnings: list[str] = []
@@ -34,31 +62,32 @@ class TextNormalizationService:
             warnings.extend(normalized.warnings)
 
         furniture_ids = self._classify_page_furniture(normalized_pre) if self.profile.page_furniture_suppression else set()
-        normalized_final: list[NormalizedElement] = []
-        for element in normalized_pre:
+        for index, element in enumerate(normalized_pre):
             if element.source_element_id in furniture_ids:
-                normalized_final.append(replace(
+                normalized_pre[index] = replace(
                     element,
                     suppressed_from_index=True,
                     suppression_reason="REPEATED_PAGE_FURNITURE",
-                ))
+                )
                 counters["elements_suppressed"] += 1
                 counters["furniture_suppressed"] += 1
-            else:
-                normalized_final.append(element)
 
+        profile_hash = _canonical_profile_hash(self.profile)
+        upstream = upstream_processing_fingerprint or "NO_UPSTREAM_PROCESSING_FINGERPRINT"
         fingerprint_payload = "\x1f".join([
+            upstream,
             document.source_sha256,
             document.parser.name,
             document.parser.version,
             document.parser.profile,
             self.profile.profile_id,
             self.profile.version,
+            profile_hash,
         ])
         fingerprint = hashlib.sha256(fingerprint_payload.encode("utf-8")).hexdigest()
         stats = NormalizationStats(
             elements_input=len(document.elements),
-            elements_output=len(normalized_final),
+            elements_output=len(normalized_pre),
             elements_suppressed=counters["elements_suppressed"],
             chars_before=counters["chars_before"],
             chars_after=counters["chars_after"],
@@ -77,7 +106,7 @@ class TextNormalizationService:
             normalizer_profile=self.profile.profile_id,
             normalizer_version=self.profile.version,
             processing_fingerprint=fingerprint,
-            elements=tuple(normalized_final),
+            elements=tuple(normalized_pre),
             stats=stats,
             warnings=tuple(dict.fromkeys(warnings)),
         )
@@ -89,12 +118,28 @@ class TextNormalizationService:
         structured: dict = {}
         element_warnings: list[str] = []
 
+        allow_dehyphenation = bool(element.metadata.get("lineWrapHyphenEvidence"))
+        # A parser-classified PARAGRAPH is itself structural continuity evidence.
+        # OCR_TEXT is deliberately excluded: OCR line boundaries remain source
+        # evidence unless the OCR/parser explicitly marks them as physical wraps.
+        parser_paragraph_continuity = (
+            element.type == ElementType.PARAGRAPH
+            and (element.role or "").upper() != "OCR_TEXT"
+            and not bool(element.metadata.get("preserveLineBreaks"))
+        )
+        allow_line_join = (
+            bool(element.metadata.get("lineWrapEvidence"))
+            or allow_dehyphenation
+            or parser_paragraph_continuity
+        )
+
         if original is not None:
             counters["chars_before"] += len(original)
             normalized_text, text_counts = self._normalize_text(
                 original,
                 preserve_layout=element.type == ElementType.CODE_BLOCK,
-                allow_dehyphenation=bool(element.metadata.get("lineWrapHyphenEvidence")),
+                allow_dehyphenation=allow_dehyphenation,
+                allow_line_join=allow_line_join,
             )
             counters.update(text_counts)
             counters["chars_after"] += len(normalized_text)
@@ -110,7 +155,12 @@ class TextNormalizationService:
                     normalized_row: list[str] = []
                     for cell in row:
                         value = "" if cell is None else str(cell)
-                        normalized_cell, local = self._normalize_text(value, preserve_layout=False, allow_dehyphenation=False)
+                        normalized_cell, local = self._normalize_text(
+                            value,
+                            preserve_layout=False,
+                            allow_dehyphenation=False,
+                            allow_line_join=False,
+                        )
                         counters.update(local)
                         normalized_row.append(normalized_cell)
                     normalized_rows.append(normalized_row)
@@ -140,7 +190,14 @@ class TextNormalizationService:
         )
         return normalized, counters
 
-    def _normalize_text(self, text: str, *, preserve_layout: bool, allow_dehyphenation: bool) -> tuple[str, Counter]:
+    def _normalize_text(
+        self,
+        text: str,
+        *,
+        preserve_layout: bool,
+        allow_dehyphenation: bool,
+        allow_line_join: bool,
+    ) -> tuple[str, Counter]:
         counters = Counter()
         value = text.replace("\r\n", "\n").replace("\r", "\n")
         value = unicodedata.normalize(self.profile.unicode_form, value)
@@ -156,11 +213,16 @@ class TextNormalizationService:
             return value, counters
 
         if allow_dehyphenation:
-            # Ordinary hyphens are removed only when upstream parser/OCR supplied explicit
-            # line-wrap evidence. This prevents guessing on lexical forms like бизнес-процесс.
-            updated, count = re.subn(r"(?<=\w)-\n(?=\w)", "", value)
-            value = updated
-            counters["dehyphenations_applied"] += count
+            # Dehyphenate only explicit physical-wrap evidence and never rewrite a
+            # token range already recognized as an identifier/URL/version/hash/etc.
+            matches = list(re.finditer(r"(?<=\w)-\n(?=\w)", value))
+            for match in reversed(matches):
+                start = max(0, match.start() - 64)
+                end = min(len(value), match.end() + 64)
+                if _overlaps_protected_span(value[start:end], match.start() - start, match.end() - start):
+                    continue
+                value = value[:match.start()] + value[match.end():]
+                counters["dehyphenations_applied"] += 1
 
         lines = value.split("\n")
         normalized_lines: list[str] = []
@@ -171,11 +233,19 @@ class TextNormalizationService:
                 line = collapsed
             normalized_lines.append(line.strip())
 
-        nonempty = [line for line in normalized_lines if line]
-        if len(nonempty) > 1:
-            counters["line_wrap_joins"] += len(nonempty) - 1
-        value = " ".join(nonempty).strip()
-        return value, counters
+        if allow_line_join:
+            nonempty = [line for line in normalized_lines if line]
+            if len(nonempty) > 1:
+                counters["line_wrap_joins"] += len(nonempty) - 1
+            return " ".join(nonempty).strip(), counters
+
+        compact: list[str] = []
+        for line in normalized_lines:
+            if line or (compact and compact[-1] != ""):
+                compact.append(line)
+        while compact and compact[-1] == "":
+            compact.pop()
+        return "\n".join(compact).strip(), counters
 
     def _classify_page_furniture(self, elements: Iterable[NormalizedElement]) -> set[str]:
         page_elements: list[NormalizedElement] = []
