@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -58,4 +58,35 @@ class AcquisitionSettings(BaseSettings):
             raise ValueError("acquisition timeouts must be positive")
         if self.total_deadline_seconds < self.connect_timeout_seconds:
             raise ValueError("total_deadline_seconds must be >= connect_timeout_seconds")
+        return self
+
+
+class OcrSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="ASTRA_OCR_", extra="ignore")
+
+    enabled: bool = True
+    profile_id: str = "ocr_cpu_ru_kk_en_v1"
+    device: str = "cpu"
+    model_bundle_root: Path = Path("/opt/astra/models/ocr/active")
+    workspace_root: Path = Path("/work/astra-indexator")
+    languages: str = "ru,kk,en"
+    min_confidence: float = 0.35
+    hard_confidence_floor: float = 0.10
+    max_pages_per_job: int = 500
+    max_pixels_per_page: int = 24_000_000
+    max_total_pixels_per_job: int = 250_000_000
+    timeout_per_candidate_seconds: float = 60.0
+    timeout_per_job_seconds: float = 900.0
+    render_dpi: int = 200
+
+    @model_validator(mode="after")
+    def validate_ocr(self) -> "OcrSettings":
+        if not (0 <= self.hard_confidence_floor <= self.min_confidence <= 1):
+            raise ValueError("OCR confidence thresholds must satisfy 0 <= hard floor <= min <= 1")
+        if min(self.max_pages_per_job, self.max_pixels_per_page, self.max_total_pixels_per_job, self.render_dpi) <= 0:
+            raise ValueError("OCR resource limits must be positive")
+        if min(self.timeout_per_candidate_seconds, self.timeout_per_job_seconds) <= 0:
+            raise ValueError("OCR timeouts must be positive")
+        if not tuple(value.strip() for value in self.languages.split(",") if value.strip()):
+            raise ValueError("at least one OCR language must be configured")
         return self
