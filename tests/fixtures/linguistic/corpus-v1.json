@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "astra-indexator-linguistic-corpus-v1",
+  "fixtureVersion": "2026.08.23-v1",
+  "languages": ["am", "ar", "de", "el", "en", "es", "fr", "he", "hi", "hy", "it", "ja", "kk", "ko", "my", "pt", "ru", "th", "tr", "zh"],
+  "cases": [
+    {"id":"en-basic","language":"en","backend":"unicode","text":"The service starts. The worker is ready.","expectedBoundaries":[19],"expectedSentences":["The service starts.","The worker is ready."]},
+    {"id":"en-abbrev","language":"en","backend":"unicode","text":"Dr. Smith approved it. Next item.","expectedBoundaries":[22],"expectedSentences":["Dr. Smith approved it.","Next item."]},
+    {"id":"ru-basic","language":"ru","backend":"unicode","text":"Сервис запущен. Воркер готов.","expectedBoundaries":[15],"expectedSentences":["Сервис запущен.","Воркер готов."]},
+    {"id":"ru-abbrev","language":"ru","backend":"unicode","text":"См. приложение. Далее текст.","expectedBoundaries":[15],"expectedSentences":["См. приложение.","Далее текст."]},
+    {"id":"kk-basic","language":"kk","backend":"unicode","text":"Қызмет іске қосылды. Жұмысшы дайын.","expectedBoundaries":[20],"expectedSentences":["Қызмет іске қосылды.","Жұмысшы дайын."]},
+    {"id":"kk-abbrev","language":"kk","backend":"unicode","text":"Құжаттар т.б. материалдар тіркелді. Келесі бөлім.","expectedBoundaries":[35],"expectedSentences":["Құжаттар т.б. материалдар тіркелді.","Келесі бөлім."]},
+    {"id":"de-basic","language":"de","backend":"unicode","text":"Der Dienst läuft. Der Worker ist bereit.","expectedBoundaries":[17],"expectedSentences":["Der Dienst läuft.","Der Worker ist bereit."]},
+    {"id":"fr-basic","language":"fr","backend":"unicode","text":"Le service démarre. Le worker est prêt.","expectedBoundaries":[19],"expectedSentences":["Le service démarre.","Le worker est prêt."]},
+    {"id":"es-basic","language":"es","backend":"unicode","text":"El servicio inicia. El worker está listo.","expectedBoundaries":[19],"expectedSentences":["El servicio inicia.","El worker está listo."]},
+    {"id":"pt-basic","language":"pt","backend":"unicode","text":"O serviço inicia. O worker está pronto.","expectedBoundaries":[17],"expectedSentences":["O serviço inicia.","O worker está pronto."]},
+    {"id":"it-basic","language":"it","backend":"unicode","text":"Il servizio parte. Il worker è pronto.","expectedBoundaries":[18],"expectedSentences":["Il servizio parte.","Il worker è pronto."]},
+    {"id":"el-question","language":"el","backend":"unicode","text":"Πρώτη πρόταση; Δεύτερη πρόταση.","expectedBoundaries":[14],"expectedSentences":["Πρώτη πρόταση;","Δεύτερη πρόταση."]},
+    {"id":"ar-question","language":"ar","backend":"unicode","text":"هل الخدمة جاهزة؟ نعم، الخدمة جاهزة.","expectedBoundaries":[16],"expectedSentences":["هل الخدمة جاهزة؟","نعم، الخدمة جاهزة."]},
+    {"id":"he-basic","language":"he","backend":"unicode","text":"השירות פעיל. העובד מוכן.","expectedBoundaries":[12],"expectedSentences":["השירות פעיל.","העובד מוכן."]},
+    {"id":"hi-danda","language":"hi","backend":"unicode","text":"सेवा चालू है। कार्यकर्ता तैयार है।","expectedBoundaries":[13],"expectedSentences":["सेवा चालू है।","कार्यकर्ता तैयार है।"]},
+    {"id":"zh-nospace","language":"zh","backend":"unicode","text":"第一句。第二句！第三句？","expectedBoundaries":[4,8],"expectedSentences":["第一句。","第二句！","第三句？"]},
+    {"id":"ja-nospace","language":"ja","backend":"unicode","text":"最初の文です。次の文です！最後です？","expectedBoundaries":[7,13],"expectedSentences":["最初の文です。","次の文です！","最後です？"]},
+    {"id":"ko-basic","language":"ko","backend":"unicode","text":"서비스가 시작되었습니다. 작업자가 준비되었습니다.","expectedBoundaries":[13],"expectedSentences":["서비스가 시작되었습니다.","작업자가 준비되었습니다."]},
+    {"id":"th-punct","language":"th","backend":"unicode","text":"บริการพร้อมแล้ว. ระบบทำงานปกติ.","expectedBoundaries":[16],"expectedSentences":["บริการพร้อมแล้ว.","ระบบทำงานปกติ."]},
+    {"id":"hy-terminal","language":"hy","backend":"unicode","text":"Ծառայությունը պատրաստ է։ Համակարգը գործում է։","expectedBoundaries":[24],"expectedSentences":["Ծառայությունը պատրաստ է։","Համակարգը գործում է։"]},
+    {"id":"my-terminal","language":"my","backend":"unicode","text":"ဝန်ဆောင်မှုအဆင်သင့်ဖြစ်သည်။ စနစ်အလုပ်လုပ်နေသည်။","expectedBoundaries":[27],"expectedSentences":["ဝန်ဆောင်မှုအဆင်သင့်ဖြစ်သည်။","စနစ်အလုပ်လုပ်နေသည်။"]},
+    {"id":"am-terminal","language":"am","backend":"unicode","text":"አገልግሎቱ ዝግጁ ነው። ስርዓቱ እየሰራ ነው።","expectedBoundaries":[14],"expectedSentences":["አገልግሎቱ ዝግጁ ነው።","ስርዓቱ እየሰራ ነው።"]},
+    {"id":"tr-basic","language":"tr","backend":"unicode","text":"Hizmet başladı. Çalışan hazır.","expectedBoundaries":[15],"expectedSentences":["Hizmet başladı.","Çalışan hazır."]},
+    {"id":"mixed-tech","language":"mixed","backend":"unicode","text":"Spring Boot сервис v1.2.3 работает на 10.20.30.40. Next check.","expectedBoundaries":[50],"expectedSentences":["Spring Boot сервис v1.2.3 работает на 10.20.30.40.","Next check."]}
+  ],
+  "gates": {
+    "coreLanguages": ["kk", "ru", "en"],
+    "coreMinPrecision": 1.0,
+    "coreMinRecall": 1.0,
+    "macroMinF1": 0.98,
+    "microMinF1": 0.98,
+    "minimumLanguages": 20
+  }
+}
