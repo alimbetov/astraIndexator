@@ -15,12 +15,12 @@ from .extended_handlers import (
 )
 from .extended_fixes import EpubDocumentHandlerV1, PptxDocumentHandlerV1
 from .handlers import (
-    DocxDocumentHandler,
     ImageDocumentHandler,
     MarkdownDocumentHandler,
     PdfDocumentHandler,
     TextDocumentHandler,
 )
+from .ordered_docx import OrderedDocxDocumentHandler
 from .model import (
     DocumentElement,
     ElementType,
@@ -33,6 +33,7 @@ from .model import (
 )
 
 
+DocxDocumentHandler = OrderedDocxDocumentHandler
 PptxDocumentHandler = PptxDocumentHandlerV1
 EpubDocumentHandler = EpubDocumentHandlerV1
 
