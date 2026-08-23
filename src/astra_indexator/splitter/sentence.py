@@ -18,18 +18,34 @@ class SentenceBoundaryProfile:
 _EN = frozenset({"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "etc.", "e.g.", "i.e.", "vs.", "fig.", "no."})
 _RU = frozenset({"г.", "гг.", "т.е.", "т.д.", "т.п.", "др.", "стр.", "рис.", "им.", "см.", "напр."})
 _KK = frozenset({"ж.", "т.б.", "т.с.с.", "мыс."})
+_DE = frozenset({"dr.", "prof.", "hr.", "fr.", "bzw.", "z.b.", "u.a."})
+_ES = frozenset({"sr.", "sra.", "srta.", "dr.", "dra.", "ud.", "uds.", "etc."})
+_PT = frozenset({"sr.", "sra.", "dr.", "dra.", "prof.", "etc."})
+_IT = frozenset({"dott.", "dott.ssa.", "sig.", "sig.ra.", "prof.", "ecc."})
+_TR = frozenset({"dr.", "prof.", "sn.", "vb.", "vs."})
+
 _ALWAYS_EN = frozenset({"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "fig.", "no."})
 _ALWAYS_RU = frozenset({"г.", "гг.", "стр.", "рис.", "им.", "см.", "напр."})
 _ALWAYS_KK = frozenset({"ж.", "мыс."})
+_ALWAYS_DE = frozenset({"dr.", "prof.", "hr.", "fr.", "bzw.", "z.b.", "u.a."})
+_ALWAYS_ES = frozenset({"sr.", "sra.", "srta.", "dr.", "dra.", "ud.", "uds."})
+_ALWAYS_PT = frozenset({"sr.", "sra.", "dr.", "dra.", "prof."})
+_ALWAYS_IT = frozenset({"dott.", "dott.ssa.", "sig.", "sig.ra.", "prof."})
+_ALWAYS_TR = frozenset({"dr.", "prof.", "sn."})
 
 PROFILES: dict[str, SentenceBoundaryProfile] = {
-    "en": SentenceBoundaryProfile("sentence-en-v3", ("en",), _EN, _ALWAYS_EN),
-    "ru": SentenceBoundaryProfile("sentence-ru-v3", ("ru",), _RU, _ALWAYS_RU),
-    "kk": SentenceBoundaryProfile("sentence-kk-v3", ("kk",), _KK | _RU, _ALWAYS_KK | _ALWAYS_RU),
+    "en": SentenceBoundaryProfile("sentence-en-v4", ("en",), _EN, _ALWAYS_EN),
+    "ru": SentenceBoundaryProfile("sentence-ru-v4", ("ru",), _RU, _ALWAYS_RU),
+    "kk": SentenceBoundaryProfile("sentence-kk-v4", ("kk",), _KK | _RU, _ALWAYS_KK | _ALWAYS_RU),
+    "de": SentenceBoundaryProfile("sentence-de-v1", ("de",), _DE, _ALWAYS_DE),
+    "es": SentenceBoundaryProfile("sentence-es-v1", ("es",), _ES, _ALWAYS_ES),
+    "pt": SentenceBoundaryProfile("sentence-pt-v1", ("pt",), _PT, _ALWAYS_PT),
+    "it": SentenceBoundaryProfile("sentence-it-v1", ("it",), _IT, _ALWAYS_IT),
+    "tr": SentenceBoundaryProfile("sentence-tr-v1", ("tr",), _TR, _ALWAYS_TR),
     "el": SentenceBoundaryProfile("sentence-el-v1", ("el",), frozenset(), frozenset(), frozenset({";"})),
-    "und": SentenceBoundaryProfile("sentence-unicode-generic-v1", ("und",), frozenset(), frozenset()),
+    "und": SentenceBoundaryProfile("sentence-unicode-generic-v2", ("und",), frozenset(), frozenset()),
     "mixed": SentenceBoundaryProfile(
-        "sentence-mixed-ru-kk-en-v3",
+        "sentence-mixed-ru-kk-en-v4",
         ("ru", "kk", "en"),
         _EN | _RU | _KK,
         _ALWAYS_EN | _ALWAYS_RU | _ALWAYS_KK,
@@ -43,6 +59,7 @@ _COMPLEX_WORD_SCRIPT = regex.compile(
     r"\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]"
 )
 _LETTER_BEFORE = regex.compile(r"([\p{L}\p{M}]+)$")
+_JA_QUOTE_CONTINUATIONS = ("と", "って", "という", "と述", "と答", "と語")
 
 
 def profile_for(language_hint: str | None) -> SentenceBoundaryProfile:
@@ -53,6 +70,15 @@ def profile_for(language_hint: str | None) -> SentenceBoundaryProfile:
         return PROFILES["mixed"]
     primary = value.split("-", 1)[0]
     return PROFILES.get(primary, PROFILES["und"])
+
+
+def _primary_language(language_hint: str | None) -> str:
+    if not language_hint:
+        return "mixed"
+    value = language_hint.lower().replace("_", "-")
+    if "," in value or "+" in value or value in {"mixed", "mul"}:
+        return "mixed"
+    return value.split("-", 1)[0]
 
 
 def _locale_id(language_hint: str | None) -> str:
@@ -125,8 +151,41 @@ def _period_is_protected(text: str, index: int, profile: SentenceBoundaryProfile
     return False
 
 
+def _looks_like_reporting_continuation(text: str, end: int, language: str, had_closer: bool) -> bool:
+    if not had_closer or end >= len(text):
+        return False
+    immediate = text[end:]
+    if language == "ja" and immediate.startswith(_JA_QUOTE_CONTINUATIONS):
+        return True
+    cursor = end
+    while cursor < len(text) and text[cursor].isspace():
+        cursor += 1
+    if cursor >= len(text):
+        return False
+    next_char = text[cursor]
+    # Cased scripts: a lower-case continuation after a closing quote usually
+    # belongs to the same reporting sentence (e.g. Kazakh/Russian/English speech tags).
+    return next_char.isalpha() and next_char.lower() != next_char.upper() and next_char.islower()
+
+
+def _ellipsis_is_terminal(text: str, end: int, language: str) -> bool:
+    cursor = end
+    while cursor < len(text) and text[cursor].isspace():
+        cursor += 1
+    if cursor >= len(text):
+        return True
+    next_char = text[cursor]
+    if next_char.isalpha() and next_char.lower() != next_char.upper():
+        return next_char.isupper()
+    # For CJK, sentence transitions normally do not require whitespace.
+    if language in {"ja", "zh"}:
+        return True
+    return False
+
+
 def _split_unicode(text: str, language_hint: str | None) -> tuple[str, ...]:
     profile = profile_for(language_hint)
+    language = _primary_language(language_hint)
     out: list[str] = []
     start = 0
     i = 0
@@ -140,21 +199,43 @@ def _split_unicode(text: str, language_hint: str | None) -> tuple[str, ...]:
                 i += 1
             start = i
             continue
+
+        ascii_ellipsis = text.startswith("...", i)
+        unicode_ellipsis = text[i] == "…"
         ch = text[i]
-        if not _is_sentence_terminal(ch, profile):
+        if not _is_sentence_terminal(ch, profile) and not ascii_ellipsis and not unicode_ellipsis:
             i += 1
             continue
-        if ch == "." and _period_is_protected(text, i, profile):
+        if ch == "." and not ascii_ellipsis and _period_is_protected(text, i, profile):
             i += 1
             continue
-        end = i + 1
-        while end < length and _is_sentence_terminal(text[end], profile):
-            end += 1
+
+        if ascii_ellipsis:
+            end = i + 3
+            while end < length and text[end] == ".":
+                end += 1
+        else:
+            end = i + 1
+            while end < length and _is_sentence_terminal(text[end], profile):
+                end += 1
+
+        closer_start = end
         while end < length and _is_closer(text[end]):
             end += 1
-        if end < length and not text[end].isspace() and ch == ".":
+        had_closer = end > closer_start
+
+        if _looks_like_reporting_continuation(text, end, language, had_closer):
+            i = end
+            continue
+
+        if (ascii_ellipsis or unicode_ellipsis) and not _ellipsis_is_terminal(text, end, language):
+            i = end
+            continue
+
+        if end < length and not text[end].isspace() and ch == "." and not ascii_ellipsis:
             i += 1
             continue
+
         sentence = text[start:end].strip()
         if sentence:
             out.append(sentence)
@@ -162,6 +243,7 @@ def _split_unicode(text: str, language_hint: str | None) -> tuple[str, ...]:
             end += 1
         start = end
         i = end
+
     tail = text[start:].strip()
     if tail:
         out.append(tail)
