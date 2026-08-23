@@ -9,15 +9,24 @@ from .object_storage import ObjectHead, StorageRef
 
 
 class SeaweedFilerStorage:
-    """SeaweedFS Filer HTTP adapter.
+    """SeaweedFS Filer HTTP adapter with bounded transport timeouts."""
 
-    Credentials/transport policy are supplied through the configured httpx client.
-    Durable object references never contain credentials.
-    """
-
-    def __init__(self, base_url: str, *, client: httpx.Client | None = None, timeout_seconds: float = 30.0):
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        client: httpx.Client | None = None,
+        connect_timeout_seconds: float = 5.0,
+        read_timeout_seconds: float = 30.0,
+    ):
         self._base_url = base_url.rstrip("/")
-        self._client = client or httpx.Client(timeout=timeout_seconds, follow_redirects=True)
+        timeout = httpx.Timeout(
+            connect=connect_timeout_seconds,
+            read=read_timeout_seconds,
+            write=read_timeout_seconds,
+            pool=connect_timeout_seconds,
+        )
+        self._client = client or httpx.Client(timeout=timeout, follow_redirects=True)
 
     def _url(self, ref: StorageRef) -> str:
         parts = [quote(part, safe="") for part in (ref.bucket, *ref.object_key.split("/"))]
