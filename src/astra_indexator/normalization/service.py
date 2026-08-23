@@ -48,6 +48,9 @@ class TextNormalizationService:
         *,
         upstream_processing_fingerprint: str | None = None,
     ) -> NormalizedDocument:
+        if document.document_version <= 0:
+            raise ValueError("NORMALIZATION_INVALID:document_version")
+
         normalized_pre: list[NormalizedElement] = []
         counters = Counter()
         warnings: list[str] = []
@@ -116,7 +119,19 @@ class TextNormalizationService:
         element_warnings: list[str] = []
 
         allow_dehyphenation = bool(element.metadata.get("lineWrapHyphenEvidence"))
-        allow_line_join = bool(element.metadata.get("lineWrapEvidence")) or allow_dehyphenation
+        # A parser-classified PARAGRAPH is itself structural continuity evidence.
+        # OCR_TEXT is deliberately excluded: OCR line boundaries remain source
+        # evidence unless the OCR/parser explicitly marks them as physical wraps.
+        parser_paragraph_continuity = (
+            element.type == ElementType.PARAGRAPH
+            and (element.role or "").upper() != "OCR_TEXT"
+            and not bool(element.metadata.get("preserveLineBreaks"))
+        )
+        allow_line_join = (
+            bool(element.metadata.get("lineWrapEvidence"))
+            or allow_dehyphenation
+            or parser_paragraph_continuity
+        )
 
         if original is not None:
             counters["chars_before"] += len(original)
@@ -224,9 +239,6 @@ class TextNormalizationService:
                 counters["line_wrap_joins"] += len(nonempty) - 1
             return " ".join(nonempty).strip(), counters
 
-        # Preserve physical line separation when upstream did not prove that the
-        # newline is merely a wrapping artifact. Empty runs collapse to one LF;
-        # source evidence remains available in original_text.
         compact: list[str] = []
         for line in normalized_lines:
             if line or (compact and compact[-1] != ""):
