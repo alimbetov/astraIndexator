@@ -6,6 +6,8 @@ import queue
 from pathlib import Path
 from typing import Protocol
 
+from PIL import Image
+
 from .bundle import VerifiedOcrModelBundle, verify_local_bundle
 from .model import OcrModelIdentity, OcrObservation, OcrRequest, SourceGeometry
 
@@ -59,6 +61,8 @@ class PaddleOcrEngine:
 
     def recognize(self, request: OcrRequest) -> tuple[OcrObservation, ...]:
         observations: list[OcrObservation] = []
+        with Image.open(request.image_path) as image:
+            image_width, image_height = max(1, image.width), max(1, image.height)
         results = self._ocr.predict(str(request.image_path))
         block_order = 0
         for result in results:
@@ -73,13 +77,26 @@ class PaddleOcrEngine:
                     continue
                 confidence = float(scores[index]) if index < len(scores) else 0.0
                 geometry = None
+                metadata = {}
                 if index < len(polys) and polys[index]:
                     points = polys[index]
                     xs = [float(point[0]) for point in points]
                     ys = [float(point[1]) for point in points]
-                    geometry = SourceGeometry(page_number=request.page_number, x0=min(xs), y0=min(ys), x1=max(xs), y1=max(ys), coordinate_space="ocr-image-pixels")
+                    geometry = SourceGeometry(
+                        page_number=request.page_number,
+                        x0=max(0.0, min(1.0, min(xs) / image_width)),
+                        y0=max(0.0, min(1.0, min(ys) / image_height)),
+                        x1=max(0.0, min(1.0, max(xs) / image_width)),
+                        y1=max(0.0, min(1.0, max(ys) / image_height)),
+                        page_width=1.0,
+                        page_height=1.0,
+                        coordinate_space="normalized-top-left",
+                    )
+                    metadata = {"rawPolygon": [[float(p[0]), float(p[1])] for p in points],
+                                "rawCoordinateSpace": "ocr-image-pixels"}
                 observations.append(OcrObservation(text, confidence, block_order, request.candidate_id,
-                                                   request.source_element_id, request.page_number, geometry, self._identity))
+                                                   request.source_element_id, request.page_number, geometry,
+                                                   self._identity, metadata))
                 block_order += 1
         return tuple(observations)
 
