@@ -15,13 +15,9 @@ from astra_indexator.parser import (
     DocumentParserService,
     ElementType,
     FileTypeHandlerRegistry,
-    ImageDocumentHandler,
-    MarkdownDocumentHandler,
     ParseContext,
     ParserError,
-    PdfDocumentHandler,
     TextDocumentHandler,
-    DocxDocumentHandler,
     default_registry,
 )
 from astra_indexator.storage import StorageRef
@@ -30,7 +26,7 @@ from astra_indexator.storage import StorageRef
 def _source(path: Path, fmt: str) -> AcquiredSource:
     payload = path.read_bytes()
     return AcquiredSource(
-        source_ref=StorageRef("documents", path.name),
+        source_ref=StorageRef.parse(f"seaweed://documents/{path.name}"),
         local_path=path,
         original_file_name=path.name,
         detected_format=fmt,
