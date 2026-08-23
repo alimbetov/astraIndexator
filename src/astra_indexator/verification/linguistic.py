@@ -40,6 +40,7 @@ class BoundaryMetrics:
 class CaseResult:
     case_id: str
     language: str
+    category: str | None
     expected_boundaries: tuple[int, ...]
     predicted_boundaries: tuple[int, ...]
     predicted_sentences: tuple[str, ...]
@@ -51,8 +52,43 @@ class CorpusReport:
     fixture_version: str
     case_results: tuple[CaseResult, ...]
     by_language: dict[str, BoundaryMetrics]
+    by_category: dict[str, BoundaryMetrics]
     micro: BoundaryMetrics
     macro_f1: float
+
+
+def _boundary_offsets(text: str, sentences: tuple[str, ...]) -> tuple[int, ...]:
+    if len(sentences) <= 1:
+        return ()
+    offsets: list[int] = []
+    cursor = 0
+    for index, sentence in enumerate(sentences):
+        position = text.find(sentence, cursor)
+        if position < 0:
+            raise ValueError("LINGUISTIC_SENTENCE_NOT_TRACEABLE_TO_SOURCE")
+        end = position + len(sentence)
+        if index < len(sentences) - 1:
+            offsets.append(end)
+        cursor = end
+    return tuple(offsets)
+
+
+def _gold_boundaries(case: dict) -> tuple[int, ...]:
+    text = str(case.get("text", ""))
+    expected_sentences_raw = case.get("expectedSentences")
+    if isinstance(expected_sentences_raw, list) and expected_sentences_raw:
+        expected_sentences = tuple(str(value) for value in expected_sentences_raw)
+        derived = _boundary_offsets(text, expected_sentences)
+        explicit = tuple(int(value) for value in case.get("expectedBoundaries", []))
+        # Human-maintained Unicode offsets are easy to miscount. Exact sentence
+        # materialization is the canonical annotation; offsets are derived from it.
+        # A corpus may opt into strict explicit-offset validation when needed.
+        if case.get("strictBoundaryOffsets") and explicit != derived:
+            raise ValueError(
+                f"LINGUISTIC_EXPLICIT_BOUNDARY_MISMATCH:{case.get('id')}:{explicit}!={derived}"
+            )
+        return derived
+    return tuple(int(value) for value in case.get("expectedBoundaries", []))
 
 
 def load_corpus(path: Path) -> dict:
@@ -67,23 +103,9 @@ def load_corpus(path: Path) -> dict:
     case_ids = [case.get("id") for case in cases]
     if len(case_ids) != len(set(case_ids)) or any(not value for value in case_ids):
         raise ValueError("LINGUISTIC_CORPUS_CASE_ID_INVALID")
+    for case in cases:
+        _gold_boundaries(case)
     return data
-
-
-def _boundary_offsets(text: str, sentences: tuple[str, ...]) -> tuple[int, ...]:
-    if len(sentences) <= 1:
-        return ()
-    offsets: list[int] = []
-    cursor = 0
-    for index, sentence in enumerate(sentences):
-        position = text.find(sentence, cursor)
-        if position < 0:
-            raise ValueError("LINGUISTIC_PREDICTION_NOT_TRACEABLE_TO_SOURCE")
-        end = position + len(sentence)
-        if index < len(sentences) - 1:
-            offsets.append(end)
-        cursor = end
-    return tuple(offsets)
 
 
 def _score(expected: tuple[int, ...], predicted: tuple[int, ...]) -> BoundaryMetrics:
@@ -100,19 +122,23 @@ def evaluate_corpus(path: Path, *, backend_override: str | None = None) -> Corpu
     corpus = load_corpus(path)
     results: list[CaseResult] = []
     by_language: dict[str, BoundaryMetrics] = {}
+    by_category: dict[str, BoundaryMetrics] = {}
     micro = BoundaryMetrics(0, 0, 0)
 
     for case in corpus["cases"]:
         text = str(case["text"])
         language = str(case["language"])
+        category_raw = case.get("category")
+        category = str(category_raw) if category_raw else None
         backend = backend_override or str(case.get("backend", "unicode"))
-        expected = tuple(int(value) for value in case.get("expectedBoundaries", []))
+        expected = _gold_boundaries(case)
         predicted_sentences = split_sentences(text, language_hint=language, backend=backend)
         predicted = _boundary_offsets(text, predicted_sentences)
         metrics = _score(expected, predicted)
         result = CaseResult(
             case_id=str(case["id"]),
             language=language,
+            category=category,
             expected_boundaries=expected,
             predicted_boundaries=predicted,
             predicted_sentences=predicted_sentences,
@@ -120,6 +146,8 @@ def evaluate_corpus(path: Path, *, backend_override: str | None = None) -> Corpu
         )
         results.append(result)
         by_language[language] = by_language.get(language, BoundaryMetrics(0, 0, 0)) + metrics
+        if category:
+            by_category[category] = by_category.get(category, BoundaryMetrics(0, 0, 0)) + metrics
         micro = micro + metrics
 
     language_f1 = [metrics.f1 for metrics in by_language.values()]
@@ -128,6 +156,7 @@ def evaluate_corpus(path: Path, *, backend_override: str | None = None) -> Corpu
         fixture_version=str(corpus["fixtureVersion"]),
         case_results=tuple(results),
         by_language=by_language,
+        by_category=by_category,
         micro=micro,
         macro_f1=macro_f1,
     )
@@ -168,3 +197,19 @@ def verify_corpus_gates(path: Path, report: CorpusReport) -> None:
         raise AssertionError(
             f"LINGUISTIC_MICRO_F1_REGRESSION:{report.micro.f1:.6f}<{micro_min:.6f}"
         )
+
+    per_language_min = float(gates.get("perLanguageMinF1", 0.0))
+    if per_language_min:
+        for language, metrics in report.by_language.items():
+            if metrics.f1 < per_language_min:
+                raise AssertionError(
+                    f"LINGUISTIC_LANGUAGE_F1_REGRESSION:{language}:{metrics.f1:.6f}<{per_language_min:.6f}"
+                )
+
+    per_category_min = float(gates.get("perCategoryMinF1", 0.0))
+    if per_category_min:
+        for category, metrics in report.by_category.items():
+            if metrics.f1 < per_category_min:
+                raise AssertionError(
+                    f"LINGUISTIC_CATEGORY_F1_REGRESSION:{category}:{metrics.f1:.6f}<{per_category_min:.6f}"
+                )
