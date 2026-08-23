@@ -22,6 +22,15 @@ class ParseLimits:
     max_extracted_chars: int = 50_000_000
     max_embedded_images: int = 10_000
     max_tables: int = 10_000
+    max_sheets: int = 1_000
+    max_rows: int = 1_000_000
+    max_columns: int = 16_384
+    max_non_empty_cells: int = 5_000_000
+    max_cell_chars: int = 1_000_000
+    max_slides: int = 20_000
+    max_shapes: int = 500_000
+    max_dom_nodes: int = 500_000
+    max_epub_spine_items: int = 20_000
 
 
 @dataclass(frozen=True, slots=True)
