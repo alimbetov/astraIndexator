@@ -7,9 +7,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from PIL import Image
+from reportlab.pdfgen import canvas
 
 from astra_indexator.acquisition import AcquiredSource
+from astra_indexator.config import OcrSettings
 from astra_indexator.ocr import (
+    DefaultOcrInputResolver,
     OcrDecision,
     OcrMode,
     OcrModelIdentity,
@@ -173,3 +176,37 @@ def test_verified_bundle_is_fail_closed_and_checksums_files(tmp_path):
         assert "CHECKSUM_MISMATCH" in str(exc)
     else:
         raise AssertionError("tampered model bundle must be rejected")
+
+
+def test_pdf_page_candidate_is_rendered_incrementally(tmp_path):
+    pdf_path = tmp_path / "scan.pdf"
+    pdf = canvas.Canvas(str(pdf_path), pagesize=(300, 400))
+    pdf.drawString(40, 200, "render fixture")
+    pdf.showPage()
+    pdf.save()
+    sha = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+    src = AcquiredSource(StorageRef.parse("seaweed://docs/scan.pdf"), pdf_path, "scan.pdf", "PDF", "application/pdf",
+                         pdf_path.stat().st_size, sha, None, None, "default-v1", (), datetime.now(timezone.utc))
+    candidate = OcrCandidate("ocr:page:1", "PAGE", 1, "low_native_text", None, SourceGeometry(page_number=1))
+    doc = ParsedDocument("astra-indexator-document-v1", uuid4(), 1, sha, "PDF", ParserIdentity("pdf", "v1", "default"),
+                         (), (candidate,), ParseQuality(QualityStatus.OCR_REQUIRED, 0, 1, (), ("LOW_SIGNAL",)))
+    resolver = DefaultOcrInputResolver(tmp_path / "workspace")
+    resolved = resolver.resolve(source=src, document=doc, candidate=candidate, profile=OcrProfile(render_dpi=144))
+    try:
+        assert resolved.width > 0 and resolved.height > 0
+        assert resolved.image_path.exists()
+        assert resolved.pixels <= OcrProfile().max_pixels_per_page
+    finally:
+        resolved.image_path.unlink(missing_ok=True)
+
+
+def test_ocr_settings_validate_confidence_and_multilingual_default():
+    settings = OcrSettings()
+    assert settings.languages == "ru,kk,en"
+    assert settings.device == "cpu"
+    try:
+        OcrSettings(hard_confidence_floor=0.9, min_confidence=0.2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid OCR confidence thresholds must fail startup validation")
