@@ -5,11 +5,12 @@
 - **System:** AstraIndexator 1.0
 - **Specification:** TZ-05
 - **Title:** Document Parser
-- **Status:** Consolidated design baseline
+- **Status:** Consolidated implementation baseline
 - **Parent specification:** `TZ-00-system-architecture.md`
-- **Related specifications:** TZ-01, TZ-03, TZ-04, TZ-06, TZ-07, TZ-08, TZ-09, TZ-13, TZ-14, TZ-15, TZ-16, TZ-17, TZ-18
-- **Input boundary:** TZ-04 `AcquiredSource`
+- **Related specifications:** TZ-01, TZ-03, TZ-04, TZ-04A, TZ-06, TZ-07, TZ-08, TZ-09, TZ-13, TZ-14, TZ-15, TZ-16, TZ-17, TZ-18
+- **Input boundary:** TZ-04/TZ-04A `AcquiredSource`
 - **Output boundary:** TZ-09 `ParsedDocument` / `DocumentElement[]`
+- **Implementation milestone:** M4 — Canonical Parser
 - **Reference implementation source for ideas:** `alimbetov/llm-indexator` (non-authoritative)
 
 ---
@@ -109,15 +110,27 @@ Same source bytes + same parser/profile version SHALL reproduce equivalent struc
 
 ### DP-09 — Bounded execution
 
-Page count, element count, extracted chars, tables, images and parser runtime SHALL be bounded by configuration.
+Page count, element count, extracted chars, tables, images, parser runtime and in-memory element buffers SHALL be bounded by configuration.
 
 ### DP-10 — No embedding chunking
 
-The parser SHALL NOT use BGE-M3 tokenizer or generate AstraVector `PARENT/SUB_*` chunks.
+The parser SHALL NOT use BGE-M3 tokenizer or generate AstraVector-owned chunk classes.
 
 ### DP-11 — Partial quality is explicit
 
 If parsing succeeds structurally but text signal is insufficient, the result SHALL record a quality state and OCR candidates rather than pretending extraction is complete.
+
+### DP-12 — `detectedFormat` is authoritative
+
+TZ-05 SHALL NOT re-resolve type from file extension or producer-declared MIME. TZ-04/TZ-04A already admitted one canonical `detectedFormat`.
+
+### DP-13 — Policy, not magic constants
+
+Layout/quality thresholds SHALL be versioned, typed configuration. Numeric defaults are implementation defaults and MUST be backed by golden-corpus verification before being treated as production baselines.
+
+### DP-14 — Large documents remain bounded
+
+Parser implementations SHALL support incremental page/section emission and SHALL NOT require the full `DocumentElement[]` population to be materialized in memory before progress can be checkpointed/spooled.
 
 ---
 
@@ -135,21 +148,23 @@ If parsing succeeds structurally but text signal is insufficient, the result SHA
 - OCR-candidate generation;
 - parser quality diagnostics;
 - parser warnings/errors;
+- incremental parser emission;
 - `ParsedDocument` production.
 
-### 5.2 TZ-04 owns
+### 5.2 TZ-04 / TZ-04A owns
 
 - source admission;
 - safe local source;
 - SHA-256;
 - MIME/signature validation;
-- container/image safety preflight.
+- container/image safety preflight;
+- bounded workspace/capacity/timeouts.
 
 ### 5.3 TZ-06 owns
 
 - OCR policy and decision thresholds;
 - OCR model lifecycle;
-- model loading from approved internal supply, including Nexus where configured;
+- model loading from approved internal supply;
 - OCR execution and confidence;
 - OCR page/image rendering policy;
 - OCR result enrichment.
@@ -171,40 +186,62 @@ If parsing succeeds structurally but text signal is insufficient, the result SHA
 
 ---
 
-## 6. Parser architecture
+## 6. Parser architecture and handler resolution
 
-Recommended structure:
+Required structure:
 
 ```text
 DocumentParserService
     ↓
 FileTypeHandlerRegistry
-    ├── PdfDocumentHandler
-    ├── DocxDocumentHandler
-    ├── TextDocumentHandler
-    ├── MarkdownDocumentHandler
-    └── ImageDocumentHandler
+    ├── PDF      -> PdfDocumentHandler
+    ├── DOCX     -> DocxDocumentHandler
+    ├── TXT      -> TextDocumentHandler
+    ├── MARKDOWN -> MarkdownDocumentHandler
+    ├── JPEG     -> ImageDocumentHandler
+    ├── PNG      -> ImageDocumentHandler
+    └── TIFF     -> ImageDocumentHandler
 ```
 
 Conceptual interface:
 
 ```python
 class DocumentHandler(Protocol):
-    def supports(self, source: AcquiredSource) -> bool: ...
-    def parse(self, source: AcquiredSource, context: ParseContext) -> ParsedDocument: ...
+    supported_formats: frozenset[DetectedFormat]
+
+    def parse(
+        self,
+        source: AcquiredSource,
+        context: ParseContext,
+        sink: ElementSink,
+    ) -> ParseSummary: ...
 ```
 
-Rules:
+Normative resolution algorithm:
 
-- exactly one handler SHALL match a Tier-1 admitted format;
-- routing SHALL use `detectedFormat`, not producer extension;
-- third-party library DTOs SHALL not escape into the AstraIndexator domain model;
+```text
+1. read source.detectedFormat only;
+2. lookup exact canonical format in registry;
+3. require exactly one registered owner for that format;
+4. zero matches -> PARSER_UNSUPPORTED_FORMAT;
+5. more than one match -> PARSER_CONFIGURATION_ERROR;
+6. no extension/MIME fallback is allowed inside TZ-05.
+```
+
+Registry requirements:
+
+- registration SHALL be explicit at startup;
+- duplicate format ownership SHALL fail startup/readiness;
+- handlers MAY support multiple canonical formats only where implementation semantics are intentionally shared, e.g. image shell handler;
+- third-party library DTOs SHALL not escape into AstraIndexator domain objects;
 - parser implementation/version/profile SHALL be recorded in provenance;
 - parser adapters SHALL be replaceable without changing TZ-09 canonical semantics.
 
+Custom handler plugins are outside 1.0 dynamic runtime scope. Adding a handler is an application build/configuration change, not arbitrary runtime code loading.
+
 ---
 
-## 7. ParseContext
+## 7. ParseContext and typed parser policy
 
 Conceptual context:
 
@@ -216,17 +253,32 @@ Conceptual context:
   "documentVersion": 3,
   "sourceSha256": "...",
   "parserProfile": "default-v1",
+  "readingOrderProfile": "reading-order-v1",
+  "layoutProfile": "layout-v1",
+  "qualityProfile": "quality-v1",
   "limits": {
     "maxPages": 5000,
     "maxElements": 200000,
     "maxExtractedChars": 50000000,
     "maxEmbeddedImages": 10000,
-    "maxTables": 10000
+    "maxTables": 10000,
+    "maxBufferedElements": 10000,
+    "maxParserSeconds": 1800
   }
 }
 ```
 
-Values above are illustrative only. Production limits are configuration and MUST be startup-validated.
+Values above are illustrative defaults only. Production values SHALL be typed configuration, startup-validated and included in parser provenance/fingerprint where they can alter canonical output.
+
+Configuration categories:
+
+```text
+safety/resource limits          -> output-independent where possible
+layout heuristics               -> output-affecting, versioned
+reading-order heuristics        -> output-affecting, versioned
+quality/OCR-candidate thresholds-> output-affecting, versioned
+library/backend selection       -> provenance + fingerprint when output may change
+```
 
 ---
 
@@ -239,14 +291,16 @@ Conceptual summary:
 ```json
 {
   "schemaVersion": "astra-indexator-document-v1",
-  "documentId": "DOC-100",
+  "documentId": "...",
   "documentVersion": 3,
   "sourceSha256": "...",
   "detectedFormat": "PDF",
   "parser": {
     "name": "pdf-parser",
     "version": "1.0.0",
-    "profile": "default-v1"
+    "profile": "default-v1",
+    "readingOrderVersion": "reading-order-v1",
+    "layoutVersion": "layout-v1"
   },
   "elements": [],
   "quality": {
@@ -258,7 +312,9 @@ Conceptual summary:
 }
 ```
 
-Exact schema remains governed by TZ-09.
+Exact DTO field ownership remains governed by TZ-09. TZ-05 SHALL NOT add a competing canonical schema.
+
+For very large documents, the implementation MAY spool canonical element records incrementally while the final `ParsedDocument` carries collection descriptors/counts rather than requiring every element object in one Python list. TZ-09/TZ-03 prepared artifact semantics remain authoritative for durable representation.
 
 ---
 
@@ -281,24 +337,28 @@ OTHER
 
 `OCR_TEXT` is produced/enriched by TZ-06.
 
-Each element SHOULD retain where meaningful:
+Each element SHALL retain where meaningful:
 
 ```text
 elementId
 parentElementId
 type
 orderIndex
-text
+originalText or parser-native text evidence
 level
 pageNumber / slideNumber / sheetName
 bbox
+pageWidth/pageHeight when visual
 sectionPath
 sourceLocator
 styleHints
 languageHint optional
 role optional
+confidence optional
 bounded metadata
 ```
+
+`elementId` and `orderIndex` SHALL be deterministic for equivalent canonical output under the same parser profile. They are not AstraVector chunk IDs.
 
 ---
 
@@ -316,18 +376,33 @@ logical reading order
 
 Canonical `orderIndex` represents logical reading order.
 
-For multi-column pages, the parser MUST avoid naïve interleaving such as:
+### 10.1 Reading-order v1 algorithm
+
+For each visual page:
 
 ```text
-left line 1
-right line 1
-left line 2
-right line 2
+1. collect text/layout blocks with normalized bbox;
+2. exclude blocks already owned by table-cell substructure from page-flow sorting;
+3. form horizontal overlap groups;
+4. detect candidate columns from persistent vertical whitespace corridors and bbox x-clusters;
+5. classify full-width blocks whose horizontal span crosses column boundaries;
+6. split page into ordered vertical bands separated by full-width anchors;
+7. within each band:
+   a. if one column -> sort top-to-bottom, then x as deterministic tie-break;
+   b. if multiple independent columns -> sort columns by x0, then each column top-to-bottom;
+8. append anchored captions/images/tables according to their spatial association rules;
+9. assign monotonic orderIndex;
+10. record ambiguity diagnostics when geometry does not support one reliable ordering.
 ```
 
-when columns are independent reading flows.
+Naïve line interleaving across columns is forbidden.
 
-Reading-order algorithm/profile SHALL be versioned because changing it can alter downstream fragments and IDs.
+Overlapping blocks:
+
+- substantial geometric overlap is resolved using container/z-order evidence where available;
+- otherwise the parser preserves separate elements and emits `READING_ORDER_AMBIGUOUS` rather than silently merging text.
+
+The algorithm/profile SHALL be versioned. Any material change to column detection, band formation or tie-breaking is fingerprint-significant.
 
 ---
 
@@ -335,29 +410,29 @@ Reading-order algorithm/profile SHALL be versioned because changing it can alter
 
 Language switching alone is not a parser boundary.
 
-The parser SHALL preserve original text and layout for:
+The parser SHALL preserve original text and layout for RU/KK/EN and mixed-language content. Other languages SHALL be preserved as text when the underlying parser can extract them; language-specific semantic transformations are out of scope.
+
+### 11.1 Bilingual two-column policy
+
+For visually parallel columns:
 
 ```text
-RU
-KK
-EN
-DE
-mixed-language paragraphs
-bilingual columns
-parallel translations
+1. spatial reconstruction occurs before language inference;
+2. each column remains an independent ordered structural stream;
+3. optional languageHint may be attached per element/column;
+4. parser SHALL NOT translate/transliterate;
+5. parser SHALL NOT fabricate 1:1 translation pairing;
+6. translationGroupId may be emitted only when a deterministic source/layout signal proves pairing;
+7. uncertainty -> preserve independent streams with provenance.
 ```
 
-A bilingual two-column page MUST first be reconstructed spatially before TZ-08 sees it.
-
-The parser MAY attach language hints but SHALL NOT translate or transliterate.
-
-Parallel translation pairing MAY be represented through structural metadata when reliably detected, but uncertain pairing MUST NOT be fabricated.
+Language detection is advisory metadata, not a prerequisite for column detection. Layout must remain correct even when both columns use the same language.
 
 ---
 
 ## 12. Coordinate model
 
-For paged visual formats, parser adapters SHOULD emit normalized source geometry:
+For paged visual formats, parser adapters SHALL normalize source geometry where available:
 
 ```text
 pageNumber: 1-based
@@ -367,79 +442,94 @@ pageHeight
 coordinateSpace
 ```
 
+Canonical normalized visual coordinates SHALL use a documented top-left-origin page coordinate space inside AstraIndexator adapters. Library-native coordinate systems MUST be converted at the adapter boundary.
+
 Rules:
 
-- coordinate representation SHALL be consistent within one parser profile;
 - no coordinates are fabricated where unavailable;
 - page/region provenance SHALL survive OCR enrichment and downstream citation mapping;
-- original library coordinate conventions SHALL be normalized by adapter code.
+- char offsets remain nullable/optional because zero can be a real offset;
+- bbox absence is distinct from zero coordinates;
+- coordinate normalization implementation is parser-version significant.
 
 ---
 
 ## 13. Heading reconstruction
 
-Priority:
+Heading reconstruction is evidence-scored, not based on one formatting flag.
+
+Evidence priority:
 
 ```text
-native semantic heading metadata
-→ outline/bookmark/style information
-→ deterministic layout/typography heuristics
+native semantic heading/style/outline metadata
+→ source outline/bookmark correlation
+→ deterministic typography/layout/numbering evidence
 ```
 
-Examples:
+### 13.1 PDF heading scoring model
 
-- DOCX heading styles / outline levels;
-- Markdown `#` hierarchy;
-- PDF outline/bookmarks where trustworthy;
-- PDF typography/spacing/numbering heuristics.
-
-PDF heading heuristics MAY use:
+The implementation SHALL use a versioned score composed from configurable evidence features such as:
 
 ```text
-font-size delta
-font weight
+font size relative to local/body baseline
+font weight/style
 numbering pattern
-whitespace
+preceding/following whitespace
+line length
 alignment
-repeated style pattern
-outline correlation
+repeated style signature
+outline/bookmark correlation
 ```
 
-Heuristic confidence SHOULD be retained when practical.
+Conceptual score:
 
-The parser SHALL NOT simply classify every bold span as `HEADING`.
+```text
+headingScore = Σ(weight_i * normalized_feature_i)
+```
+
+Promotion to `HEADING` occurs only when:
+
+```text
+headingScore >= configured threshold
+AND no table/list/caption ownership conflict exists
+```
+
+Exact numeric weights/thresholds are `layoutProfile` values, not permanent TZ constants. They SHALL be frozen by profile version and verified on a golden corpus before production rollout.
+
+The parser SHALL NOT classify every bold or large span as a heading.
 
 ---
 
 ## 14. Paragraph reconstruction
 
-PDF line/spans MAY be combined when geometric and typography evidence supports one paragraph.
+### 14.1 PDF line-to-paragraph assembly v1
 
-The parser SHALL avoid combining across:
+Line/span blocks MAY be joined when all applicable conditions hold:
 
 ```text
-columns
-headings
-list boundaries
-table cells
-headers/footers
-captions
-unrelated text boxes
+same reading-order column/band
+compatible font/style class
+horizontal indentation compatible with paragraph profile
+vertical gap <= configured local line-gap threshold
+no heading/list/table/caption/page-furniture boundary
+no explicit block/container boundary contradicts the merge
 ```
 
-Source line/span ranges SHOULD remain recoverable through provenance.
+Thresholds SHALL be expressed relative to local font/line metrics where possible instead of absolute points only.
+
+The parser SHALL avoid combining across columns, headings, list boundaries, table cells, headers/footers, captions and unrelated text boxes.
+
+Source spans used to build a paragraph SHALL remain recoverable through provenance.
 
 Dehyphenation across visual line wraps is finalized by TZ-07, not irreversibly guessed here.
 
 ---
 
-## 15. Repeated page furniture
+## 15. Repeated page furniture detection
 
-Repeated headers, footers, page numbers and watermarks can severely pollute retrieval.
+TZ-05 SHALL identify candidates but SHALL NOT irreversibly discard uncertain content.
 
-TZ-05 SHOULD identify candidates but SHOULD NOT irreversibly discard uncertain content.
-
-Suggested role metadata:
+Candidate roles:
 
 ```text
 PAGE_HEADER
@@ -448,7 +538,21 @@ PAGE_NUMBER
 WATERMARK_CANDIDATE
 ```
 
-TZ-07 decides deterministic suppression/normalization.
+### 15.1 Furniture candidate v1
+
+A page element becomes a candidate using versioned evidence such as:
+
+```text
+normalized vertical position band near top/bottom
+text/style repetition across multiple pages
+stable bbox/style signature
+page-number lexical pattern
+low-content repeated visual/image signature
+```
+
+A repeated-text threshold SHALL be configurable and corpus-validated. Position alone is insufficient for removal.
+
+The parser emits role/confidence/provenance only. TZ-07 remains responsible for deterministic suppression, so false positives remain recoverable.
 
 ---
 
@@ -465,7 +569,7 @@ LIST
   └── LIST_ITEM
 ```
 
-Useful metadata MAY include:
+Useful metadata:
 
 ```text
 ordered/unordered
@@ -474,7 +578,19 @@ marker text
 item ordinal
 ```
 
-PDF list recognition may use numbering/bullets/indentation heuristics and SHALL preserve uncertainty when ambiguous.
+### 16.1 PDF list recognition v1
+
+A candidate list item requires a combination of:
+
+```text
+recognized bullet/number marker
+indentation consistency
+repeated marker/indentation pattern across adjacent items
+compatible vertical spacing
+same reading-order column
+```
+
+One isolated numeric/bullet-like prefix SHALL NOT automatically create a list. Ambiguous candidates remain paragraphs with bounded diagnostic metadata rather than fabricated hierarchy.
 
 ---
 
@@ -494,16 +610,25 @@ cells
 row/column spans where available
 page/region provenance
 reading order
+confidence
 ```
 
-A table SHOULD be represented as a `TABLE` element with structured payload/source references rather than only `"a | b | c"` text.
+### 17.1 PDF table policy
 
-For PDF table extraction:
+The parser SHALL use a layered strategy:
 
-- native geometric table detection is preferred when reliable;
-- uncertain regions MAY be emitted as `IMAGE`/OCR candidates;
-- a bad inferred table is worse than preserved raw layout evidence;
-- table confidence SHOULD be recorded when heuristic extraction is used.
+```text
+1. native/source table semantics when available;
+2. explicit ruled-line/geometric cell structure when reliable;
+3. text alignment/whitespace table inference only when profile confidence threshold is met;
+4. otherwise preserve region/layout evidence and optional OCR/image candidate instead of inventing cells.
+```
+
+For an inferred table, the parser SHALL retain extraction method/profile and confidence. Header inference and row/column span inference SHALL be conservative.
+
+A bad inferred table is worse than preserved raw layout evidence.
+
+No specific third-party table library is a protocol requirement. Backend selection is an implementation profile decision subject to golden-corpus quality tests.
 
 TZ-08 owns later logical splitting of large tables.
 
@@ -527,7 +652,7 @@ ocrCandidate
 role hint
 ```
 
-Parser SHOULD classify lightweight role hints when deterministic enough:
+Role hints may include:
 
 ```text
 SCANNED_PAGE
@@ -540,24 +665,24 @@ UNKNOWN
 
 These are hints to TZ-06, not final OCR decisions.
 
-Repeated logos/decorative assets SHOULD be identified through stable image/hash/layout signals where possible, but uncertain assets are preserved rather than silently discarded.
+Repeated logos/decorative assets MAY be identified through stable image/hash/layout signals. Uncertain assets are preserved.
 
 ---
 
 ## 19. Captions and image associations
 
-Caption association SHOULD preserve proximity and reading order.
+Caption association SHALL be based on versioned spatial/structural evidence such as adjacency, alignment, source object relationship and reading order.
 
 Conceptually:
 
 ```text
-IMAGE element
+IMAGE/TABLE element
   ↔ CAPTION element
 ```
 
-A caption SHALL remain separately addressable text with link metadata to its visual object.
+A caption remains separately addressable text with explicit link metadata. Caption text SHALL NOT be irreversibly baked into image OCR output.
 
-The parser SHALL NOT bake caption text irreversibly into image OCR output.
+Ambiguous caption association remains unlinked with diagnostic metadata rather than choosing an arbitrary target.
 
 ---
 
@@ -573,21 +698,12 @@ SCANNED_IMAGE
 MIXED
 LOW_SIGNAL
 EMPTY
+FAILED_PAGE
 ```
 
 This is a page processing classification, not a document MIME type.
 
-One PDF may therefore contain:
-
-```text
-page 1 → NATIVE_TEXT
-page 2 → NATIVE_TEXT
-page 3 → SCANNED_IMAGE
-page 4 → MIXED
-page 5 → LOW_SIGNAL
-```
-
-The document is not forced into one global text-vs-OCR mode.
+One PDF may contain different modes page by page. A single failed page does not automatically invalidate the whole document when partial policy allows safe continuation.
 
 ---
 
@@ -603,7 +719,7 @@ extract text blocks/spans
 → OCR only selected image regions if TZ-06 requires
 ```
 
-A native page SHOULD NOT be rasterized and fully OCRed by default.
+A native page SHALL NOT be rasterized and fully OCRed by default.
 
 ---
 
@@ -634,39 +750,33 @@ embedded screenshot/table image
 native caption
 ```
 
-The parser SHALL preserve native text and the image as separate elements.
+The parser SHALL preserve native text and image regions as separate elements.
 
-It SHALL NOT choose one destructive mode:
-
-```text
-OCR whole page and discard native text
-```
-
-or:
-
-```text
-keep native text and discard meaningful image
-```
-
-TZ-06 decides whether the image/region requires OCR.
+It SHALL NOT choose one destructive mode such as whole-page OCR that discards trustworthy native text, nor discard meaningful visual regions simply because some native text exists.
 
 ---
 
-## 24. PDF low-signal diagnostics
+## 24. PDF quality classification
 
-The parser SHALL expose measurable native extraction diagnostics such as:
+The parser SHALL expose measurable page/document diagnostics:
 
 ```text
 nativeTextChars
-textBlocks
-pageArea coverage optional
-imageArea coverage optional
-empty/garbled text indicators
+textBlockCount
+nonWhitespaceChars
+printableCharRatio
+textAreaCoverage optional
+imageAreaCoverage optional
+failedPageCount
+ocrCandidateCount
+garbledTextIndicators
 ```
 
-A low-signal decision may be based on configurable policy, but the parser MUST NOT hard-code one historical threshold as permanent protocol semantics.
+### 24.1 Quality state rules
 
-Useful state vocabulary:
+Quality status SHALL be deterministic under one `qualityProfile`.
+
+Document-level vocabulary:
 
 ```text
 GOOD
@@ -676,7 +786,38 @@ PARTIAL
 FAILED
 ```
 
-This adapts the practical low-signal/OCR-required idea from the predecessor implementation while keeping the threshold versioned/configurable.
+Normative state precedence:
+
+```text
+FAILED
+  -> no usable structural/native result can be produced safely
+
+PARTIAL
+  -> at least one page/section failed but usable canonical elements remain
+
+OCR_REQUIRED
+  -> parser produced valid structure and one or more mandatory OCR candidates
+
+LOW_SIGNAL
+  -> parse is structurally valid but native text quality/coverage falls below profile threshold
+     and OCR is not yet mandatory for every low-signal region
+
+GOOD
+  -> none of the higher-precedence states apply and quality thresholds are met
+```
+
+Exact numeric thresholds are typed `qualityProfile` values. A production profile SHALL define and freeze at least:
+
+```text
+min_native_chars_per_text_page
+min_printable_char_ratio
+min_text_area_coverage when available
+max_failed_page_ratio
+low_signal_page_ratio
+mandatory_ocr_candidate rules
+```
+
+These values MUST be calibrated on the real RU/KK/EN document corpus. Arbitrary constants such as `1000 chars` or `70% coverage` are not protocol semantics unless corpus evidence later promotes them into a named profile.
 
 ---
 
@@ -695,436 +836,427 @@ OCR_TEXT elements with source regions
 → TZ-07 overlap/deduplication
 ```
 
-The system SHALL retain enough provenance to determine whether two text representations originate from the same page/region.
+The system SHALL retain enough page/region geometry and source-locator provenance to determine whether two representations originate from the same source region.
 
 ---
 
 ## 26. DOCX parsing
 
-DOCX is a structured OOXML format and SHALL not be reduced immediately to concatenated paragraphs plus pipe-delimited table rows.
-
-Parser SHOULD preserve:
+DOCX SHALL preserve native OOXML structure where available:
 
 ```text
-paragraph order
-heading styles
-outline levels
-lists and nesting
-tables
-hyperlinks
-sections
-headers/footers with role metadata
-embedded images
-captions where recognizable
-```
-
-Images remain first-class elements and MAY become OCR candidates.
-
-DOCX pagination is not authoritative unless generated by a layout engine; therefore page numbers SHOULD NOT be fabricated from paragraph order.
-
----
-
-## 27. TXT parsing
-
-TXT parsing SHALL produce structured paragraphs/blocks after TZ-04 has resolved encoding.
-
-It SHOULD preserve:
-
-```text
-line offsets
-character offsets
-blank-line paragraph boundaries
-original encoding provenance
-```
-
-TXT parser SHALL NOT infer complex heading hierarchy solely from capitalization without profile evidence.
-
----
-
-## 28. Markdown parsing
-
-Markdown has native structural cues and SHOULD preserve:
-
-```text
-headings
 paragraphs
-lists
-code blocks
-block quotes
-tables when supported
-links
+heading styles / outline levels
+lists and numbering
+section boundaries
+tables and cells
+inline/anchored images
+captions when structurally detectable
+hyperlinks where provenance permits
 ```
 
-Fenced code SHALL map to `CODE_BLOCK` rather than prose.
+DOCX parser SHALL NOT fabricate page numbers because pagination depends on rendering environment and is not intrinsic to OOXML document semantics.
 
-Inline markup MAY be normalized later, but structural meaning must not be lost.
+Ordering follows document XML/body order augmented by explicit drawing/table relationships where required.
 
 ---
 
-## 29. Image source parsing
+## 27. TXT and Markdown parsing
 
-For JPEG/PNG/TIFF source documents, parser output creates document/page/image structure but does not itself perform recognition.
+TXT:
 
-Typical flow:
+- input decoding has already passed TZ-04 admission;
+- paragraph/blank-line structure is preserved;
+- no heading hierarchy is invented absent deterministic syntax/profile rules.
 
-```text
-AcquiredSource IMAGE
-→ IMAGE element(s)
-→ page/frame provenance
-→ OCR_REQUIRED candidate(s)
-→ TZ-06
-```
+Markdown:
 
-Multi-page TIFF SHALL create ordered page/frame elements.
+- ATX/setext headings;
+- lists;
+- fenced code blocks;
+- block quotes where represented in canonical metadata;
+- tables only when syntax is unambiguous under active Markdown profile;
+- source order is authoritative.
+
+Markdown parser SHALL preserve code blocks without prose normalization.
 
 ---
 
-## 30. Future XLSX/PPTX/HTML contract
+## 28. Image-only source shell
 
-Tier-2 formats are not mandatory in AstraIndexator 1.0 baseline, but the parser architecture SHALL allow them without changing TZ-09.
-
-Expected mapping:
+JPEG/PNG/TIFF admitted by M3 produce parser structural shells rather than invented text:
 
 ```text
-XLSX
-  workbook → sheet → table/rows/cells
-
-PPTX
-  presentation → slide → title/text/image/table/notes
-
-HTML
-  semantic DOM/main content → headings/paragraphs/lists/tables/code
+ParsedDocument
+  └── IMAGE / page-image element(s)
+      └── OCR candidate metadata
 ```
 
-Future handlers SHALL not flatten these formats simply because the first implementation is easier.
+For multi-frame TIFF, each frame/page is independently addressable and bounded by the M3/TZ-06 limits.
+
+---
+
+## 29. OCR candidate contract
+
+TZ-05 SHALL emit structured OCR candidates sufficient for TZ-06 without requiring TZ-06 to rediscover parser layout.
+
+Conceptual fields:
+
+```text
+candidateId
+candidateType: PAGE | EMBEDDED_IMAGE | REGION
+sourceElementId optional
+pageNumber optional
+bbox optional
+sourceLocator
+reasonCode
+required: bool
+parserConfidence optional
+readingOrderAnchor optional
+```
+
+Reason vocabulary SHOULD include bounded canonical values such as:
+
+```text
+SCANNED_PAGE
+LOW_NATIVE_SIGNAL
+MEANINGFUL_IMAGE
+TABLE_IMAGE
+UNREADABLE_REGION
+```
+
+TZ-06 remains authoritative for whether/how OCR is actually executed and for OCR model confidence.
+
+---
+
+## 30. Parser library/backend policy
+
+TZ-05 intentionally does NOT make a specific third-party library part of the public canonical contract.
+
+Implementation SHALL define an explicit backend profile per format, for example conceptually:
+
+```text
+pdfBackend
+pdfLayoutBackend optional
+pdfTableBackend optional
+docxBackend
+markdownBackend
+```
+
+A backend is acceptable only when it satisfies:
+
+```text
+license approved
+Python 3.12 compatibility
+bounded-memory/page-wise processing where required
+source-coordinate access sufficient for canonical provenance
+deterministic behavior under pinned version
+no implicit network/model download
+real-document golden-corpus quality evidence
+```
+
+Candidate libraries MAY include established Python PDF/OOXML parsers, but choosing one is an implementation decision verified during M4 spike/benchmark, not a protocol constant.
+
+Backend name/version SHALL be recorded in parser provenance. Changing a backend or major version is fingerprint-significant unless equivalence is proven by golden fixtures.
 
 ---
 
 ## 31. Parser quality report
 
-Every parse SHOULD produce a bounded quality summary.
-
-Conceptual fields:
+Every parse SHALL produce a bounded quality summary containing at least:
 
 ```text
-pagesProcessed
+qualityStatus
+pageCount
+failedPageCount
 nativeTextChars
 elementCount
 headingCount
 paragraphCount
+listCount
 tableCount
 imageCount
 ocrCandidateCount
-emptyPageCount
-lowSignalPageCount
-warnings[]
-qualityStatus
+warnings/error summaries
 ```
 
-Quality metrics are diagnostics and routing evidence, not the final RAG quality score.
+Quality reporting SHALL not include full source text in logs/metrics.
+
+Per-page diagnostics MAY be persisted in prepared artifacts where bounded and operationally useful.
 
 ---
 
-## 32. Parser limits
+## 32. Error taxonomy and partial behavior
 
-Configuration SHALL include explicit bounds such as:
+Canonical parser errors SHALL map into TZ-13 classes.
 
-```text
-max_pages
-max_elements
-max_extracted_chars
-max_images
-max_tables
-max_table_cells
-max_parse_seconds
-max_metadata_bytes_per_element
-```
-
-If a deterministic limit is exceeded:
-
-```text
-PARSER_RESOURCE_LIMIT
-```
-
-or a more specific typed error SHALL be emitted.
-
-Blind retry under unchanged limits is prohibited.
-
----
-
-## 33. Large-document processing
-
-Parser architecture SHOULD support page/section incremental processing and avoid building unnecessary duplicate representations in memory.
-
-Baseline requirement:
-
-- no second full binary copy in heap;
-- page-level temporary objects released when possible;
-- emitted canonical elements may be streamed/spooled toward TZ-03 prepared artifacts;
-- parser SHOULD support bounded batching/checkpoint-friendly output for very large documents.
-
-The final durable sharding contract remains TZ-03.
-
----
-
-## 34. Deterministic IDs
-
-TZ-09 defines identity semantics.
-
-TZ-05 SHALL provide stable ingredients for `elementId`, including:
-
-```text
-documentId
-version
-canonical order
-source locator
-page/region
-canonical element type
-```
-
-A parser library's transient internal object ID MUST NOT become the canonical element ID.
-
----
-
-## 35. Parser versioning and reindex impact
-
-The following SHALL be persisted:
-
-```text
-parserName
-parserVersion
-parserProfileVersion
-readingOrderVersion
-layoutRulesVersion where separate
-```
-
-A change that materially alters canonical structure or reading order MAY require reindexing under TZ-12.
-
-Such a change MUST participate in TZ-03 `processingFingerprint` compatibility.
-
----
-
-## 36. Failure taxonomy
-
-Canonical parser errors SHOULD include:
+Suggested stable codes:
 
 ```text
 PARSER_UNSUPPORTED_FORMAT
-PARSER_CORRUPT_DOCUMENT
+PARSER_CONFIGURATION_ERROR
+PARSER_MALFORMED_DOCUMENT
 PARSER_ENCRYPTED_DOCUMENT
-PARSER_INTERNAL_ERROR
-PARSER_TIMEOUT
 PARSER_RESOURCE_LIMIT
-PARSER_PAGE_LIMIT_EXCEEDED
-PARSER_ELEMENT_LIMIT_EXCEEDED
-PARSER_TEXT_LIMIT_EXCEEDED
-PARSER_TABLE_LIMIT_EXCEEDED
-PARSER_IMAGE_LIMIT_EXCEEDED
-PARSER_LAYOUT_FAILED
-PARSER_READING_ORDER_UNCERTAIN
-PARSER_OUTPUT_INVALID
-OCR_REQUIRED
+PARSER_TIMEOUT
+PARSER_BACKEND_ERROR
+PARSER_READING_ORDER_AMBIGUOUS
+PARSER_TABLE_EXTRACTION_FAILED
+PARSER_PAGE_FAILED
+PARSER_OUTPUT_LIMIT
+PARSER_INTERNAL_BUG
 ```
 
-Some conditions are warnings/quality states rather than terminal errors. `OCR_REQUIRED` is normally a routing result, not failure.
+Rules:
 
-Retry classification follows TZ-13.
+- deterministic malformed/encrypted/unsupported input -> permanent input/policy class;
+- dependency/backend temporary failure -> transient/dependency class where justified;
+- resource limit -> `RESOURCE_LIMIT`;
+- parser bug/invariant violation -> `INTERNAL_BUG`;
+- page-local failure MAY yield `PARTIAL` only if page isolation is safe and enough provenance remains;
+- silent page omission is forbidden.
 
 ---
 
-## 37. Security rules
+## 33. Large-document processing and bounded emission
 
-1. Parser receives only TZ-04 admitted sources.
-2. Parser SHALL NOT execute macros/scripts/embedded active content.
-3. External links/references SHALL NOT be fetched automatically.
-4. Embedded file attachments SHALL NOT be recursively processed without an explicit future contract.
-5. Third-party parsers SHOULD run with bounded resources; process isolation/sandbox policy is completed in TZ-16/TZ-18.
-6. Parser logs SHALL NOT dump whole document text.
-7. Temporary extracted assets use safe internal paths only.
+Large-document support is a MUST, not a SHOULD.
+
+### 33.1 Incremental parser contract
+
+```text
+AcquiredSource
+  ↓
+format parser
+  ↓
+page/section ParseUnit
+  ↓
+canonical DocumentElement records
+  ↓
+bounded ElementSink
+  ↓
+spool/prepared staging owned by orchestration/TZ-03
+```
+
+Requirements:
+
+1. parser processes natural units incrementally where format permits (PDF page, TIFF frame, DOCX structural block batches);
+2. no more than `maxBufferedElements` canonical elements are retained solely for downstream emission;
+3. cumulative page/element/char/table/image limits are checked during processing;
+4. emitted elements are deterministic and append-only for one attempt/profile;
+5. an element emitted for a completed parse unit SHALL NOT later be silently mutated; required cross-page corrections use explicit deferred metadata/finalization or force unit buffering within configured bounds;
+6. local spool is attempt-owned and non-authoritative until durable publication/fenced checkpoint;
+7. M4 does not invent per-page PostgreSQL status strings such as `PARSED_PAGE_123`; durable resumability is coordinated through M7/TZ-03 prepared artifact checkpoints, not unbounded dynamic job stages.
+
+### 33.2 Recovery boundary
+
+M4 baseline SHALL support bounded restart from immutable source. Fine-grained resume from an intermediate parser unit is permitted only once an M7/TZ-03 durable prepared checkpoint proves compatibility.
+
+Thus a 5000-page PDF MUST be processable without OOM, but M4 alone does not promise arbitrary page-level resume before prepared-artifact publication exists.
+
+---
+
+## 34. Parser workspace and M3 integration
+
+M4 consumes `source.validated` inside the attempt-owned M3 workspace.
+
+Rules:
+
+```text
+M3 workspace policy remains authoritative for capacity/free-space
+M4 may create bounded parse/ derived intermediates under same attempt root
+M4 SHALL account additional workspace usage against attempt budget
+M4 SHALL NOT cleanup source.validated while downstream M5/M6 may still need it
+attempt orchestration owns final cleanup
+```
+
+If parser expansion would exceed workspace/resource policy:
+
+```text
+PARSER_RESOURCE_LIMIT
+```
+
+No parser library may bypass M3.1 path/capacity controls by extracting to arbitrary system temp directories unless explicitly redirected into the controlled attempt workspace.
+
+---
+
+## 35. Parser versioning, fingerprint and reindex impact
+
+Parser provenance SHALL include enough data to reproduce or explain canonical output:
+
+```text
+canonicalSchemaVersion
+parser implementation name/version
+format backend name/version
+parserProfile
+layoutProfile/version
+readingOrderProfile/version
+qualityProfile/version
+relevant output-affecting configuration digest
+```
+
+These fields feed the TZ-03/TZ-09 `processingFingerprint` composition together with OCR/normalizer/splitter identities downstream.
+
+A material change to structure, reading order, table/list/heading recognition or coordinates requires either:
+
+```text
+new parser/layout/reading-order profile version
+or demonstrated golden-fixture equivalence
+```
+
+Reindex decision follows TZ-12. The parser itself does not mutate an existing document version in place.
+
+---
+
+## 36. Determinism and canonical IDs
+
+For identical source bytes and identical fingerprint-significant parser configuration:
+
+```text
+same parse-unit traversal
+same element ordering
+same element structural content
+same source locators
+same deterministic element IDs
+```
+
+Deterministic IDs SHOULD be derived from canonical document/version + stable source locator/structural ordinal, not random UUID generation. Exact shared identity rule remains governed by TZ-09.
+
+Any detector using probabilistic/ML behavior must pin model/version/runtime determinism constraints and remain outside baseline M4 unless explicitly specified.
+
+---
+
+## 37. Known PDF limitations
+
+The following are explicit 1.0 limitations, not hidden defects:
+
+- PDF is visual presentation data; perfect semantic reconstruction is impossible for all files;
+- borderless tables may remain ambiguous and should be preserved rather than over-inferred;
+- malformed producer ordering/z-order can make reading order ambiguous;
+- decorative shapes can mimic table borders or bullets;
+- scans require TZ-06 OCR;
+- bilingual parallel-text pairing may be impossible to prove;
+- unusual fonts/encodings may yield low-signal native extraction;
+- native text preservation and provenance take priority over speculative structural perfection.
+
+Ambiguity SHALL be observable through warnings/confidence/quality states.
 
 ---
 
 ## 38. Observability
 
+M4 SHALL expose low-cardinality instrumentation hooks. Exporter wiring remains TZ-14/M10.
+
 Metrics SHOULD include:
 
 ```text
-parser_documents_total{format,status}
-parser_duration_seconds{format}
-parser_pages_total{format}
-parser_elements_total{type}
-parser_native_text_chars_total
-parser_tables_total
-parser_images_total
-parser_ocr_candidates_total
-parser_low_signal_pages_total
-parser_failures_total{reason}
+parser_documents_total{format,result}
+parser_pages_total{format,page_mode}
+parser_duration_seconds{format,result}
+parser_elements_total{format,type}
+parser_failures_total{format,error_code}
+parser_ocr_candidates_total{format,reason}
+parser_partial_documents_total{format}
 ```
 
-Structured logs SHOULD carry:
+High-cardinality labels such as `documentId`, `jobId`, file name, elementId or source URI are forbidden in metrics and belong in traces/logs.
 
-```text
-jobId
-documentId/documentVersion
-processingAttemptId
-parser/version/profile
-format
-page count
-element count
-quality status
-warning/error codes
-```
-
-Raw content MUST NOT be normal-log payload.
+Logs SHALL NOT contain raw document text by default.
 
 ---
 
-## 39. OCR/model delivery note
+## 39. Verification and golden corpus
 
-Parser-core SHALL NOT depend on OCR model installation or model registry protocols.
-
-TZ-06/TZ-15 may configure OCR model acquisition from the internal repository:
+M4 SHALL have an executable golden corpus covering at least:
 
 ```text
-https://nexus.astrabase.asia
+native single-column PDF
+multi-column PDF
+RU/KK bilingual columns
+mixed native+image PDF
+scanned PDF shell/OCR candidates
+PDF with headings/lists
+ruled table PDF
+borderless/ambiguous table PDF
+repeated headers/footers/page numbers
+DOCX headings/lists/tables/images
+TXT
+Markdown with code/list/table syntax
+image-only JPEG/PNG/TIFF
+large multi-page synthetic/real PDF
+malformed/page-local failure cases
 ```
 
-The parser only emits deterministic OCR candidates and source geometry. This keeps parser availability independent from temporary model-registry/network issues after models are provisioned/cached.
+For each fixture, tests SHALL assert relevant invariants:
+
+```text
+deterministic element order
+stable IDs/locators
+no cross-column interleaving
+no fabricated text
+expected table/list/heading structure where evidence is deterministic
+OCR candidates preserve coordinates
+quality state deterministic under profile
+resource limits enforced
+bounded memory/spooling behavior
+```
+
+Changes to output-affecting parser profiles/backends require golden-fixture comparison before merge.
 
 ---
 
-## 40. Verification corpus
+## 40. M4 implementation acceptance criteria
 
-TZ-17 SHALL include real/synthetic documents covering at least:
+M4 is complete only when all of the following are demonstrated:
 
-1. native text PDF;
-2. scanned PDF;
-3. mixed PDF;
-4. PDF with headings and multiple columns;
-5. bilingual RU/KK two-column PDF;
-6. PDF with repeated headers/footers;
-7. PDF with embedded screenshot;
-8. PDF image table;
-9. PDF native table;
-10. corrupt PDF;
-11. DOCX headings/lists/tables/images;
-12. TXT UTF-8 multilingual;
-13. Markdown headings/lists/code/table;
-14. JPEG/PNG source image;
-15. multi-page TIFF;
-16. very large page-count document;
-17. element/resource-limit document;
-18. deterministic repeat parse;
-19. parser version change fixture;
-20. downstream retrieval-quality fixture demonstrating correct reading order.
+1. exact handler resolution by TZ-04 `detectedFormat` with duplicate/missing handler tests;
+2. TXT and Markdown canonical handlers pass golden tests;
+3. DOCX preserves heading/list/table/image structure without fabricated page numbers;
+4. native PDF emits text/layout elements with normalized coordinates;
+5. reading-order-v1 passes single/multi-column and bilingual-layout fixtures;
+6. scanned/mixed/low-signal pages generate correct page modes and OCR candidates;
+7. heading/paragraph/list/table detectors are deterministic under versioned profile;
+8. page-furniture candidates are tagged but not irreversibly dropped;
+9. quality states are deterministic under named `qualityProfile`;
+10. large-document fixture respects `maxBufferedElements`, workspace and cumulative limits;
+11. parser backend/version/profile are present in provenance/fingerprint inputs;
+12. repeated run of same fixture/profile yields equivalent canonical output;
+13. parser errors map to TZ-13 taxonomy without silent page loss;
+14. metrics hooks have no high-cardinality identifiers;
+15. CI and golden corpus are green before M4 is marked CLOSED.
 
 ---
 
-## 41. RAG-quality acceptance
+## 41. Decisions from pre-implementation review
 
-Parser correctness SHALL not be measured only by extracted character count.
+The M4 review identified several valid gaps. Their resolution in this baseline is:
 
-Verification SHOULD measure:
-
-```text
-heading preservation
-paragraph boundary accuracy
-reading-order correctness
-table preservation
-list preservation
-image/OCR provenance
-citation page accuracy
-repeated-header noise rate
-retrieval hit quality after TZ-08/AstraVector
-```
-
-A parser that extracts more characters but destroys logical order is considered lower quality for RAG.
+| Review concern | Decision |
+|---|---|
+| Handler selection ambiguous | **Accepted and hardened:** exact `detectedFormat` registry resolution; extension/MIME fallback explicitly forbidden |
+| PDF layout algorithms unspecified | **Accepted:** versioned evidence/scoring algorithms defined; arbitrary numeric constants remain profile configuration pending corpus evidence |
+| Multi-column reading order unspecified | **Accepted:** `reading-order-v1` deterministic band/column algorithm added |
+| Large document strategy unclear | **Accepted:** bounded incremental `ElementSink` contract added; page-level DB stage explosion explicitly rejected |
+| Bilingual columns unclear | **Accepted with correction:** spatial reconstruction first; language is advisory; no fabricated translation pairs |
+| Quality thresholds unclear | **Accepted:** deterministic state precedence + required profile thresholds; no unsupported hard-coded numbers |
+| Page furniture unspecified | **Accepted:** position + repetition + style evidence model; tagging only, suppression remains TZ-07 |
+| Concrete parser libraries absent | **Partially accepted:** backend-selection contract and acceptance requirements added; no library is frozen before benchmark/golden-corpus proof |
+| Nested M3 workspace/resource relationship | **Accepted:** M4 must use controlled attempt workspace and account against M3.1 limits |
+| Processing fingerprint mechanism vague | **Accepted:** parser/backend/layout/reading-order/quality identities explicitly feed processing fingerprint |
 
 ---
 
-## 42. Acceptance criteria
+## 42. Final implementation rule
 
-TZ-05 is satisfied when:
-
-- **AC-01:** all Tier-1 admitted formats route through explicit handlers;
-- **AC-02:** parser result conforms to TZ-09 canonical model;
-- **AC-03:** PDF is processed page-wise and may be native/scanned/mixed within one document;
-- **AC-04:** native text is not discarded merely because images exist;
-- **AC-05:** embedded images survive as first-class elements;
-- **AC-06:** OCR candidates preserve page/region provenance;
-- **AC-07:** reading order is deterministic and multi-column aware;
-- **AC-08:** bilingual parallel layout is not naïvely interleaved;
-- **AC-09:** headings/paragraphs/lists/tables remain structurally distinct;
-- **AC-10:** repeated page furniture is classified rather than blindly indexed as body text;
-- **AC-11:** DOCX native structure is preserved beyond plain-text concatenation;
-- **AC-12:** TXT/Markdown preserve meaningful structural/source offsets;
-- **AC-13:** parser execution is bounded by explicit resource limits;
-- **AC-14:** same source/profile reproduces equivalent canonical structure;
-- **AC-15:** parser/library internal IDs do not become canonical identities;
-- **AC-16:** parser version/profile participates in processing fingerprint/reindex decisions;
-- **AC-17:** low-signal/OCR-required states are explicit;
-- **AC-18:** parser does not perform embeddings/tokenizer-aware chunking;
-- **AC-19:** raw source text is not leaked through normal logs;
-- **AC-20:** RAG-quality verification includes structure and retrieval effects, not only character extraction.
-
----
-
-## 43. Implementation decomposition
-
-Recommended modules:
+AstraIndexator M4 SHALL optimize for:
 
 ```text
-DocumentParserService
-FileTypeHandlerRegistry
-ParseContext
-ParseQualityReport
-PdfDocumentHandler
-PdfPageClassifier
-PdfLayoutReconstructor
-ReadingOrderResolver
-HeadingDetector
-ParagraphAssembler
-ListDetector
-TableExtractor
-ImageExtractor
-DocxDocumentHandler
-TextDocumentHandler
-MarkdownDocumentHandler
-ImageDocumentHandler
-ParsedDocumentValidator
+correct provenance
++ deterministic structure
++ bounded execution
++ recoverable ambiguity
 ```
 
-This decomposition permits targeted replacement and benchmarking of PDF layout/table/reading-order components without changing canonical contracts.
+rather than speculative semantic perfection.
 
----
-
-## 44. Final invariant
-
-The parser boundary is:
-
-```text
-AcquiredSource
-  ↓
-trusted format handler
-  ↓
-native extraction + structure/layout reconstruction
-  ↓
-explicit reading order
-  ↓
-text + tables + lists + images + captions + provenance
-  ↓
-quality/OCR-candidate diagnostics
-  ↓
-ParsedDocument
-```
-
-It is explicitly NOT:
-
-```text
-file
-→ extract all text
-→ concatenate
-→ split every N characters/tokens
-```
-
-The quality of this structural representation is a direct upstream determinant of TZ-08 fragmentation and final RAG retrieval quality.
+When evidence is insufficient, preserving a lower-level `PARAGRAPH`, `IMAGE`, `OTHER` or ambiguity diagnostic is preferable to inventing a heading, table, translation pair or reading order that cannot be justified.
