@@ -20,6 +20,7 @@ class FragmentType(StrEnum):
 class SplitterProfile:
     profile_id: str = "multilingual-general-v1"
     version: str = "logical-v1"
+    sentence_boundary_backend: str = "unicode"
     min_chars: int = 800
     target_chars: int = 5000
     soft_max_chars: int = 8000
@@ -36,6 +37,8 @@ class SplitterProfile:
     repeat_list_intro: bool = True
 
     def validate(self) -> None:
+        if self.sentence_boundary_backend not in {"unicode", "icu"}:
+            raise ValueError("SPLITTER_PROFILE_INVALID:sentence_boundary_backend")
         if not (0 < self.min_chars <= self.target_chars <= self.soft_max_chars <= self.hard_max_chars):
             raise ValueError("SPLITTER_PROFILE_INVALID:char_limits")
         if not (0 < self.target_words <= self.soft_max_words <= self.hard_max_words):
