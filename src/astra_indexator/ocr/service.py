@@ -193,8 +193,20 @@ class OcrPipelineService:
                 results.append(OcrCandidateResult(candidate.candidate_id, OcrDecision.REJECTED_RESOURCE_LIMIT, ("OCR_JOB_TIMEOUT",)))
                 warnings.append("OCR_JOB_TIMEOUT")
                 continue
+            if candidate.scope == "PAGE" and pages >= profile.max_pages_per_job:
+                self.metrics.resource("OCR_PAGE_LIMIT")
+                results.append(OcrCandidateResult(candidate.candidate_id, OcrDecision.REJECTED_RESOURCE_LIMIT, ("OCR_PAGE_LIMIT",)))
+                continue
 
-            resolved = self.resolver.resolve(source=source, document=document, candidate=candidate, profile=profile)
+            try:
+                resolved = self.resolver.resolve(source=source, document=document, candidate=candidate, profile=profile)
+            except Exception:
+                self.metrics.recognition("render_failed", 0.0)
+                results.append(OcrCandidateResult(candidate.candidate_id, OcrDecision.REQUIRED, decision.reason_codes,
+                                                  warnings=("OCR_RENDER_FAILED",)))
+                warnings.append("OCR_RENDER_FAILED")
+                continue
+
             try:
                 file_bytes = resolved.image_path.stat().st_size
                 memory_estimate = resolved.pixels * 4
@@ -215,12 +227,6 @@ class OcrPipelineService:
                     continue
                 if memory_estimate > profile.memory_soft_limit_bytes:
                     warnings.append("OCR_MEMORY_SOFT_LIMIT")
-                if candidate.scope == "PAGE":
-                    pages += 1
-                    if pages > profile.max_pages_per_job:
-                        self.metrics.resource("OCR_PAGE_LIMIT")
-                        results.append(OcrCandidateResult(candidate.candidate_id, OcrDecision.REJECTED_RESOURCE_LIMIT, ("OCR_PAGE_LIMIT",)))
-                        continue
 
                 image_hash = _file_sha256(resolved.image_path)
                 if image_hash in image_cache:
@@ -231,8 +237,6 @@ class OcrPipelineService:
                     started = time.monotonic()
                     try:
                         raw_observations = self.engine.recognize(request)
-                        observations = _normalize_observations(tuple(raw_observations), resolved)
-                        self.metrics.recognition("success", time.monotonic() - started)
                     except TimeoutError:
                         self.metrics.recognition("timeout", time.monotonic() - started)
                         results.append(OcrCandidateResult(candidate.candidate_id, OcrDecision.REQUIRED, decision.reason_codes,
@@ -245,10 +249,21 @@ class OcrPipelineService:
                                                           warnings=("OCR_ENGINE_FAILED",)))
                         warnings.append("OCR_ENGINE_FAILED")
                         continue
+                    try:
+                        observations = _normalize_observations(tuple(raw_observations), resolved)
+                    except Exception:
+                        self.metrics.recognition("invalid_output", time.monotonic() - started)
+                        results.append(OcrCandidateResult(candidate.candidate_id, OcrDecision.REQUIRED, decision.reason_codes,
+                                                          warnings=("OCR_OUTPUT_INVALID",)))
+                        warnings.append("OCR_OUTPUT_INVALID")
+                        continue
+                    self.metrics.recognition("success", time.monotonic() - started)
                     image_cache[image_hash] = tuple(observations)
                     reason_codes = decision.reason_codes
                 pixels += resolved.pixels
                 derived_bytes += file_bytes
+                if candidate.scope == "PAGE":
+                    pages += 1
                 retained = tuple(obs for obs in observations if obs.confidence >= profile.hard_confidence_floor)
                 if len(retained) < len(observations):
                     warnings.append("OCR_LOW_CONFIDENCE_DROPPED")
