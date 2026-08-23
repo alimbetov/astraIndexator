@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "astra-indexator-linguistic-corpus-v1",
+  "fixtureVersion": "2026.08.23-v1",
+  "description": "Golden sentence-boundary corpus for M6.2/TZ-17 multilingual verification.",
+  "languages": ["en","ru","kk","de","fr","es","pt","it","el","ar","he","hi","zh","ja","ko","th","hy","my","am","tr"],
+  "cases": []
+}
