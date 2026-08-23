@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
 import shutil
@@ -94,6 +95,7 @@ class SafeAcquisitionService:
                     digest.update(chunk)
                 target.flush()
                 os.fsync(target.fileno())
+
             if count == 0:
                 raise AcquisitionError("EMPTY_SOURCE", "zero-byte source is not supported")
             if head.size_bytes is not None and count != head.size_bytes:
@@ -128,14 +130,14 @@ class SafeAcquisitionService:
         shutil.rmtree(self.workspace_root / str(job_id) / str(attempt_id), ignore_errors=True)
 
     def _validate(self, path: Path, original_name: str | None) -> tuple[str, str, list[str]]:
-        prefix = path.read_bytes()[:64]
-        suffix = b""
-        with path.open("rb") as f:
+        with path.open("rb") as stream:
+            prefix = stream.read(64)
             try:
-                f.seek(-2048, os.SEEK_END)
+                stream.seek(-2048, os.SEEK_END)
             except OSError:
-                f.seek(0)
-            suffix = f.read()
+                stream.seek(0)
+            suffix = stream.read(2048)
+
         ext = Path(original_name).suffix.lower() if original_name else ""
         warnings: list[str] = []
 
@@ -158,22 +160,40 @@ class SafeAcquisitionService:
             self._validate_docx(path)
             fmt, mime = "DOCX", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         else:
-            raw = path.read_bytes()
-            if b"\x00" in raw[: min(len(raw), 1024 * 1024)]:
-                raise AcquisitionError("UNSUPPORTED_FORMAT", "binary format is not supported")
-            try:
-                raw.decode("utf-8", errors="strict")
-            except UnicodeDecodeError as exc:
-                raise AcquisitionError("TEXT_ENCODING_UNSUPPORTED", "text source is not valid UTF-8") from exc
+            self._validate_utf8_text(path)
             if ext in {".md", ".markdown"}:
                 fmt, mime = "MARKDOWN", "text/markdown"
             else:
                 fmt, mime = "TXT", "text/plain"
 
-        expected_ext = {"PDF": ".pdf", "PNG": ".png", "JPEG": ".jpg", "TIFF": ".tiff", "DOCX": ".docx"}.get(fmt)
-        if expected_ext and ext and ext not in {expected_ext, ".jpeg" if fmt == "JPEG" else expected_ext, ".tif" if fmt == "TIFF" else expected_ext}:
+        accepted_exts = {
+            "PDF": {".pdf"},
+            "PNG": {".png"},
+            "JPEG": {".jpg", ".jpeg"},
+            "TIFF": {".tif", ".tiff"},
+            "DOCX": {".docx"},
+        }.get(fmt)
+        if accepted_exts and ext and ext not in accepted_exts:
             warnings.append("FILE_TYPE_MISMATCH")
         return fmt, mime, warnings
+
+    @staticmethod
+    def _validate_utf8_text(path: Path) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+        probed = 0
+        try:
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    if probed < 1024 * 1024:
+                        remaining = 1024 * 1024 - probed
+                        probe = chunk[:remaining]
+                        if b"\x00" in probe:
+                            raise AcquisitionError("UNSUPPORTED_FORMAT", "binary format is not supported")
+                        probed += len(probe)
+                    decoder.decode(chunk, final=False)
+                decoder.decode(b"", final=True)
+        except UnicodeDecodeError as exc:
+            raise AcquisitionError("TEXT_ENCODING_UNSUPPORTED", "text source is not valid UTF-8") from exc
 
     def _validate_image(self, path: Path, expected: str) -> None:
         try:
@@ -181,7 +201,11 @@ class SafeAcquisitionService:
                 if image.format != expected:
                     raise AcquisitionError("IMAGE_FORMAT_MISMATCH", "image decoder disagrees with signature")
                 width, height = image.size
-                if width > self.policy.max_image_width or height > self.policy.max_image_height or width * height > self.policy.max_image_pixels:
+                if (
+                    width > self.policy.max_image_width
+                    or height > self.policy.max_image_height
+                    or width * height > self.policy.max_image_pixels
+                ):
                     raise AcquisitionError("IMAGE_RESOURCE_LIMIT", "image dimensions exceed configured limits")
                 frames = getattr(image, "n_frames", 1)
                 if expected == "TIFF" and frames > self.policy.max_tiff_pages:
