@@ -35,6 +35,7 @@ test = [
   "pytest>=8,<9",
   "testcontainers[postgres]>=4,<5",
   "reportlab>=4,<5",
+  "pypdfium2>=4,<5",
 ]
 
 [tool.hatch.build.targets.wheel]
