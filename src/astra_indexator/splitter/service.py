@@ -86,8 +86,6 @@ class LogicalSplitter:
                 raise RuntimeError("SPLITTER_UNIT_EXCEEDS_HARD_GUARD")
 
             if unit.element_type == ElementType.HEADING and buffer:
-                # Keep a tiny compatible predecessor with the next section; otherwise
-                # respect the strong structural boundary.
                 if self._size(buffer)[0] >= self.profile.min_chars or self._small_exception(buffer):
                     flush("SECTION_BOUNDARY")
 
@@ -334,14 +332,22 @@ class LogicalSplitter:
             ):
                 next_units, next_reason, next_forced = groups[index + 1]
                 combined = [*units, *next_units]
-                if self._compatible_small_merge(units, next_units) and not self._exceeds_hard(combined):
+                if (
+                    not self._small_exception(next_units)
+                    and self._compatible_small_merge(units, next_units)
+                    and not self._exceeds_hard(combined)
+                ):
                     out.append((combined, "SMALL_FRAGMENT_MERGE", forced or next_forced))
                     index += 2
                     continue
             if out and self._size(units)[0] < self.profile.min_chars and not self._small_exception(units):
                 prev_units, prev_reason, prev_forced = out[-1]
                 combined = [*prev_units, *units]
-                if self._compatible_small_merge(prev_units, units) and not self._exceeds_hard(combined):
+                if (
+                    not self._small_exception(prev_units)
+                    and self._compatible_small_merge(prev_units, units)
+                    and not self._exceeds_hard(combined)
+                ):
                     out[-1] = (combined, "SMALL_FRAGMENT_MERGE", prev_forced or forced)
                     index += 1
                     continue
