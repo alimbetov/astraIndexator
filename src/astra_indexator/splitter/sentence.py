@@ -15,29 +15,32 @@ class SentenceBoundaryProfile:
     extra_terminal_chars: frozenset[str] = frozenset()
 
 
-_EN = frozenset({"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "etc.", "e.g.", "i.e.", "vs.", "fig.", "no."})
-_RU = frozenset({"г.", "гг.", "т.е.", "т.д.", "т.п.", "др.", "стр.", "рис.", "им.", "см.", "напр."})
+_EN = frozenset({"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "etc.", "e.g.", "i.e.", "vs.", "fig.", "no.", "sec.", "art."})
+_RU = frozenset({"г.", "гг.", "т.е.", "т.д.", "т.п.", "др.", "стр.", "рис.", "им.", "см.", "напр.", "п.", "пп.", "ст.", "табл.", "разд."})
 _KK = frozenset({"ж.", "т.б.", "т.с.с.", "мыс."})
-_DE = frozenset({"dr.", "prof.", "hr.", "fr.", "bzw.", "z.b.", "u.a."})
+_DE = frozenset({"dr.", "prof.", "hr.", "fr.", "bzw.", "z.b.", "u.a.", "ziff.", "abs.", "art."})
+_FR = frozenset({"m.", "mme.", "mlle.", "dr.", "pr.", "art.", "l’art.", "etc."})
 _ES = frozenset({"sr.", "sra.", "srta.", "dr.", "dra.", "ud.", "uds.", "etc."})
 _PT = frozenset({"sr.", "sra.", "dr.", "dra.", "prof.", "etc."})
 _IT = frozenset({"dott.", "dott.ssa.", "sig.", "sig.ra.", "prof.", "ecc."})
 _TR = frozenset({"dr.", "prof.", "sn.", "vb.", "vs."})
 
-_ALWAYS_EN = frozenset({"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "fig.", "no."})
-_ALWAYS_RU = frozenset({"г.", "гг.", "стр.", "рис.", "им.", "см.", "напр."})
+_ALWAYS_EN = frozenset({"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "fig.", "no.", "sec.", "art."})
+_ALWAYS_RU = frozenset({"г.", "гг.", "стр.", "рис.", "им.", "см.", "напр.", "п.", "пп.", "ст.", "табл.", "разд."})
 _ALWAYS_KK = frozenset({"ж.", "мыс."})
-_ALWAYS_DE = frozenset({"dr.", "prof.", "hr.", "fr.", "bzw.", "z.b.", "u.a."})
+_ALWAYS_DE = frozenset({"dr.", "prof.", "hr.", "fr.", "bzw.", "z.b.", "u.a.", "ziff.", "abs.", "art."})
+_ALWAYS_FR = frozenset({"m.", "mme.", "mlle.", "dr.", "pr.", "art.", "l’art."})
 _ALWAYS_ES = frozenset({"sr.", "sra.", "srta.", "dr.", "dra.", "ud.", "uds."})
 _ALWAYS_PT = frozenset({"sr.", "sra.", "dr.", "dra.", "prof."})
 _ALWAYS_IT = frozenset({"dott.", "dott.ssa.", "sig.", "sig.ra.", "prof."})
 _ALWAYS_TR = frozenset({"dr.", "prof.", "sn."})
 
 PROFILES: dict[str, SentenceBoundaryProfile] = {
-    "en": SentenceBoundaryProfile("sentence-en-v4", ("en",), _EN, _ALWAYS_EN),
-    "ru": SentenceBoundaryProfile("sentence-ru-v4", ("ru",), _RU, _ALWAYS_RU),
-    "kk": SentenceBoundaryProfile("sentence-kk-v4", ("kk",), _KK | _RU, _ALWAYS_KK | _ALWAYS_RU),
-    "de": SentenceBoundaryProfile("sentence-de-v1", ("de",), _DE, _ALWAYS_DE),
+    "en": SentenceBoundaryProfile("sentence-en-v5", ("en",), _EN, _ALWAYS_EN),
+    "ru": SentenceBoundaryProfile("sentence-ru-v5", ("ru",), _RU, _ALWAYS_RU),
+    "kk": SentenceBoundaryProfile("sentence-kk-v5", ("kk",), _KK | _RU, _ALWAYS_KK | _ALWAYS_RU),
+    "de": SentenceBoundaryProfile("sentence-de-v2", ("de",), _DE, _ALWAYS_DE),
+    "fr": SentenceBoundaryProfile("sentence-fr-v1", ("fr",), _FR, _ALWAYS_FR),
     "es": SentenceBoundaryProfile("sentence-es-v1", ("es",), _ES, _ALWAYS_ES),
     "pt": SentenceBoundaryProfile("sentence-pt-v1", ("pt",), _PT, _ALWAYS_PT),
     "it": SentenceBoundaryProfile("sentence-it-v1", ("it",), _IT, _ALWAYS_IT),
@@ -45,7 +48,7 @@ PROFILES: dict[str, SentenceBoundaryProfile] = {
     "el": SentenceBoundaryProfile("sentence-el-v1", ("el",), frozenset(), frozenset(), frozenset({";"})),
     "und": SentenceBoundaryProfile("sentence-unicode-generic-v2", ("und",), frozenset(), frozenset()),
     "mixed": SentenceBoundaryProfile(
-        "sentence-mixed-ru-kk-en-v4",
+        "sentence-mixed-ru-kk-en-v5",
         ("ru", "kk", "en"),
         _EN | _RU | _KK,
         _ALWAYS_EN | _ALWAYS_RU | _ALWAYS_KK,
@@ -132,22 +135,36 @@ def _period_is_protected(text: str, index: int, profile: SentenceBoundaryProfile
     next_char = text[index + 1] if index + 1 < len(text) else ""
     if prev_char.isalnum() and next_char.isalnum():
         return True
+
     token = _previous_token(text, index)
     if _abbreviation_is_protected(text, index, token, profile):
         return True
+
     match = _LETTER_BEFORE.search(text[:index])
     if match and len(match.group(1)) == 1:
         return True
+
     left_start = max(text.rfind(" ", 0, index), text.rfind("\n", 0, index)) + 1
     right_end = index + 1
     while right_end < len(text) and not text[right_end].isspace():
         right_end += 1
     token_full = text[left_start:right_end]
     period_is_inside_token = index < right_end - 1
+
     if period_is_inside_token and any(marker in token_full for marker in ("://", "@")):
         return True
     if period_is_inside_token and token_full.count(".") >= 2:
         return True
+
+    # Enterprise identifiers such as Java/package names, method references and
+    # dotted legal/version tokens are protected when the period connects two
+    # identifier-like spans. Final sentence punctuation remains unprotected.
+    if period_is_inside_token:
+        left = text[index - 1] if index > 0 else ""
+        right = text[index + 1] if index + 1 < len(text) else ""
+        if (left.isalnum() or left in "_)") and (right.isalnum() or right in "_("):
+            return True
+
     return False
 
 
@@ -163,8 +180,6 @@ def _looks_like_reporting_continuation(text: str, end: int, language: str, had_c
     if cursor >= len(text):
         return False
     next_char = text[cursor]
-    # Cased scripts: a lower-case continuation after a closing quote usually
-    # belongs to the same reporting sentence (e.g. Kazakh/Russian/English speech tags).
     return next_char.isalpha() and next_char.lower() != next_char.upper() and next_char.islower()
 
 
@@ -177,7 +192,6 @@ def _ellipsis_is_terminal(text: str, end: int, language: str) -> bool:
     next_char = text[cursor]
     if next_char.isalpha() and next_char.lower() != next_char.upper():
         return next_char.isupper()
-    # For CJK, sentence transitions normally do not require whitespace.
     if language in {"ja", "zh"}:
         return True
     return False
