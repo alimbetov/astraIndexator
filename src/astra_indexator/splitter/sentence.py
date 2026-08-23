@@ -58,8 +58,8 @@ def _period_is_protected(text: str, index: int, profile: SentenceBoundaryProfile
     if token in profile.abbreviations:
         return True
 
-    # Dotted abbreviations: t.e., т.е., т.б., e.g. The first internal dot is
-    # already protected above; this catches the final dot using the whole token.
+    # Dotted abbreviations: e.g., т.е., т.б. Internal periods are protected
+    # above; the final abbreviation period is protected by the full token.
     for abbreviation in profile.abbreviations:
         if token.endswith(abbreviation):
             return True
@@ -68,16 +68,18 @@ def _period_is_protected(text: str, index: int, profile: SentenceBoundaryProfile
     if match and len(match.group(1)) == 1 and match.group(1).isalpha():
         return True
 
-    # URL/email/path/package punctuation should not become a sentence boundary
-    # while the token continues without whitespace.
+    # URL/email punctuation is protected only while the token continues after
+    # the period. A prose terminal period immediately after a URL/email is a
+    # real sentence-boundary candidate.
     left_start = max(text.rfind(" ", 0, index), text.rfind("\n", 0, index)) + 1
     right_end = index + 1
     while right_end < len(text) and not text[right_end].isspace():
         right_end += 1
     token_full = text[left_start:right_end]
-    if any(marker in token_full for marker in ("://", "@")):
+    period_is_inside_token = index < right_end - 1
+    if period_is_inside_token and any(marker in token_full for marker in ("://", "@")):
         return True
-    if token_full.count(".") >= 2 and not token_full.endswith("."):
+    if period_is_inside_token and token_full.count(".") >= 2:
         return True
     return False
 
