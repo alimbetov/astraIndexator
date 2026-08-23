@@ -1,3 +1,3 @@
-from .settings import AcquisitionSettings
+from .settings import AcquisitionSettings, OcrSettings
 
-__all__ = ["AcquisitionSettings"]
+__all__ = ["AcquisitionSettings", "OcrSettings"]
