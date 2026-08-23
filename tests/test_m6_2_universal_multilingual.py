@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import importlib.util
+from uuid import uuid4
+
 import pytest
 
-from astra_indexator.splitter import SplitterProfile, split_sentences
+from astra_indexator.normalization import TextNormalizationService
+from astra_indexator.parser import (
+    DocumentElement,
+    ElementType,
+    ParsedDocument,
+    ParseQuality,
+    ParserIdentity,
+    QualityStatus,
+)
+from astra_indexator.splitter import LogicalSplitter, SplitterProfile, split_sentences
 from astra_indexator.splitter.sentence import count_words, grapheme_clusters
 
 
@@ -43,7 +55,6 @@ def test_greek_semicolon_is_locale_specific_question_mark_boundary():
         "Πρώτη πρόταση;",
         "Δεύτερη πρόταση.",
     )
-    # The same ASCII semicolon is not globally promoted to sentence terminal.
     assert split_sentences("First clause; second clause.", language_hint="en") == (
         "First clause; second clause.",
     )
@@ -77,8 +88,14 @@ def test_boundary_backend_is_part_of_validated_splitter_configuration():
         SplitterProfile(sentence_boundary_backend="unknown").validate()
 
 
+def test_icu_backend_is_fail_closed_when_optional_runtime_is_not_installed():
+    if importlib.util.find_spec("icu") is not None:
+        pytest.skip("PyICU installed in this environment")
+    with pytest.raises(RuntimeError, match="SPLITTER_ICU_UNAVAILABLE"):
+        split_sentences("One sentence. Two.", language_hint="en", backend="icu")
+
+
 def test_unicode_terminal_inventory_handles_non_latin_sentence_terminal_property():
-    # Ethiopic full stop and question mark are Unicode Sentence_Terminal characters.
     assert split_sentences("አንደኛ።ሁለተኛ፧", language_hint="am") == ("አንደኛ።", "ሁለተኛ፧")
 
 
@@ -88,3 +105,40 @@ def test_period_overloads_remain_protected_across_mixed_technical_text():
         "Version v1.2.3 is at api.example.com.",
         "Далее версия 2.0.1 работает.",
     )
+
+
+def test_complex_script_fragment_publishes_unreliable_word_count_in_unicode_mode():
+    text = "第一句。第二句。第三句。"
+    element = DocumentElement(
+        "zh-1",
+        ElementType.PARAGRAPH,
+        0,
+        text=text,
+        language_hint="zh",
+    )
+    parsed = ParsedDocument(
+        "astra-indexator-document-v1",
+        uuid4(),
+        1,
+        "a" * 64,
+        "TXT",
+        ParserIdentity("fixture", "v1", "default"),
+        (element,),
+        (),
+        ParseQuality(QualityStatus.GOOD, len(text), 0),
+    )
+    normalized = TextNormalizationService().normalize(parsed)
+    fragments = LogicalSplitter(SplitterProfile(
+        sentence_boundary_backend="unicode",
+        min_chars=1,
+        target_chars=500,
+        soft_max_chars=700,
+        hard_max_chars=1000,
+        target_words=2,
+        soft_max_words=3,
+        hard_max_words=4,
+        target_sentences=10,
+        hard_max_sentences=20,
+    )).split(normalized)
+    assert len(fragments) == 1
+    assert fragments[0].metadata["wordCountReliable"] is False
