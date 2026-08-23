@@ -27,6 +27,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ocr = [
+  "paddleocr>=3,<4",
+  "pypdfium2>=4,<5",
+]
 test = [
   "pytest>=8,<9",
   "testcontainers[postgres]>=4,<5",
