@@ -13,6 +13,7 @@ from .model import (
     ResolvedOcrInput,
 )
 from .policy import OcrDecisionPolicy, OcrDecisionResult
+from .readiness import OcrReadiness, check_ocr_readiness
 from .resolver import DefaultOcrInputResolver, OcrInputResolver
 from .service import NoopOcrMetrics, OcrMetrics, OcrPipelineService
 
@@ -21,5 +22,6 @@ __all__ = [
     "OcrEngine", "PaddleOcrEngine", "IsolatedPaddleOcrEngine",
     "OcrCandidateResult", "OcrDecision", "OcrMode", "OcrModelIdentity", "OcrObservation", "OcrPipelineResult",
     "OcrProfile", "OcrRequest", "ReconciliationAction", "ResolvedOcrInput", "OcrDecisionPolicy", "OcrDecisionResult",
-    "DefaultOcrInputResolver", "OcrInputResolver", "NoopOcrMetrics", "OcrMetrics", "OcrPipelineService",
+    "OcrReadiness", "check_ocr_readiness", "DefaultOcrInputResolver", "OcrInputResolver",
+    "NoopOcrMetrics", "OcrMetrics", "OcrPipelineService",
 ]
