@@ -17,10 +17,9 @@ from .model import (
     SplitDecision,
     SplitterProfile,
 )
-from .sentence import split_sentences
+from .sentence import count_words, grapheme_clusters, split_sentences
 
 
-_WORD = re.compile(r"\S+", re.UNICODE)
 _KK = set("ӘәҒғҚқҢңӨөҰұҮүҺһІі")
 _CYR = re.compile(r"[А-Яа-яЁёӘәҒғҚқҢңӨөҰұҮүҺһІі]")
 _LAT = re.compile(r"[A-Za-z]")
@@ -39,6 +38,8 @@ class _Unit:
     page_to: int | None
     language_hint: str | None
     sentence_count: int
+    word_count: int
+    word_guard_reliable: bool
     continuation_index: int = 0
     synthetic_context: str = ""
     forced: bool = False
@@ -49,10 +50,6 @@ class _Unit:
     @property
     def chars(self) -> int:
         return len(self.text)
-
-    @property
-    def words(self) -> int:
-        return len(_WORD.findall(self.text))
 
 
 def _canonical_profile_hash(profile: SplitterProfile) -> str:
@@ -113,12 +110,15 @@ class LogicalSplitter:
             for index, (units, reason, forced) in enumerate(groups)
         ]
         for fragment in fragments:
+            if fragment.statistics.char_count > self.profile.hard_max_chars:
+                raise RuntimeError("SPLITTER_FRAGMENT_EXCEEDS_HARD_GUARD:chars")
+            if fragment.statistics.sentence_count > self.profile.hard_max_sentences:
+                raise RuntimeError("SPLITTER_FRAGMENT_EXCEEDS_HARD_GUARD:sentences")
             if (
-                fragment.statistics.char_count > self.profile.hard_max_chars
-                or fragment.statistics.word_count > self.profile.hard_max_words
-                or fragment.statistics.sentence_count > self.profile.hard_max_sentences
+                fragment.metadata.get("wordCountReliable", True)
+                and fragment.statistics.word_count > self.profile.hard_max_words
             ):
-                raise RuntimeError("SPLITTER_FRAGMENT_EXCEEDS_HARD_GUARD")
+                raise RuntimeError("SPLITTER_FRAGMENT_EXCEEDS_HARD_GUARD:words")
         return tuple(fragments)
 
     def _iter_units(self, document: NormalizedDocument) -> Iterable[_Unit]:
@@ -155,7 +155,11 @@ class LogicalSplitter:
 
     def _text_units(self, element: NormalizedElement, text: str, hierarchy: tuple[str, ...], context: str) -> list[_Unit]:
         page = element.geometry.page_number if element.geometry else None
-        sentences = split_sentences(text, language_hint=element.language_hint) or (text,)
+        sentences = split_sentences(
+            text,
+            language_hint=element.language_hint,
+            backend=self.profile.sentence_boundary_backend,
+        ) or (text,)
 
         chunks: list[tuple[str, int, bool]] = []
         current: list[str] = []
@@ -169,19 +173,30 @@ class LogicalSplitter:
                 current_sentence_count = 0
 
         for sentence in sentences:
-            sentence_words = len(_WORD.findall(sentence))
-            if len(sentence) > self.profile.hard_max_chars or sentence_words > self.profile.hard_max_words:
+            sentence_words, words_reliable = count_words(
+                sentence,
+                language_hint=element.language_hint,
+                backend=self.profile.sentence_boundary_backend,
+            )
+            if (
+                len(sentence) > self.profile.hard_max_chars
+                or (words_reliable and sentence_words > self.profile.hard_max_words)
+            ):
                 emit_current()
-                for forced_chunk in self._force_text_chunks(sentence):
+                for forced_chunk in self._force_text_chunks(sentence, element.language_hint):
                     chunks.append((forced_chunk, 1, True))
                 continue
 
             candidate = " ".join([*current, sentence]).strip()
-            candidate_words = len(_WORD.findall(candidate))
+            candidate_words, candidate_words_reliable = count_words(
+                candidate,
+                language_hint=element.language_hint,
+                backend=self.profile.sentence_boundary_backend,
+            )
             candidate_sentences = current_sentence_count + 1
             if current and (
                 len(candidate) > self.profile.hard_max_chars
-                or candidate_words > self.profile.hard_max_words
+                or (candidate_words_reliable and candidate_words > self.profile.hard_max_words)
                 or candidate_sentences > self.profile.hard_max_sentences
             ):
                 emit_current()
@@ -194,6 +209,11 @@ class LogicalSplitter:
 
         result: list[_Unit] = []
         for index, (chunk, sentence_count, forced) in enumerate(chunks):
+            word_count, reliable = count_words(
+                chunk,
+                language_hint=element.language_hint,
+                backend=self.profile.sentence_boundary_backend,
+            )
             result.append(_Unit(
                 text=chunk,
                 element_ids=(element.source_element_id,),
@@ -203,6 +223,8 @@ class LogicalSplitter:
                 page_to=page,
                 language_hint=element.language_hint,
                 sentence_count=sentence_count,
+                word_count=word_count,
+                word_guard_reliable=reliable,
                 continuation_index=index,
                 synthetic_context=context,
                 forced=forced or len(chunks) > 1,
@@ -232,8 +254,14 @@ class LogicalSplitter:
             if not group_rows:
                 return
             index = len(units)
+            text = "\n".join(group_rows)
+            word_count, reliable = count_words(
+                text,
+                language_hint=element.language_hint,
+                backend=self.profile.sentence_boundary_backend,
+            )
             units.append(_Unit(
-                text="\n".join(group_rows),
+                text=text,
                 element_ids=(element.source_element_id,),
                 element_type=ElementType.TABLE,
                 hierarchy=hierarchy,
@@ -241,6 +269,8 @@ class LogicalSplitter:
                 page_to=page,
                 language_hint=element.language_hint,
                 sentence_count=0,
+                word_count=word_count,
+                word_guard_reliable=reliable,
                 continuation_index=index,
                 synthetic_context=(f"TABLE HEADER\n{header}" if index > 0 and self.profile.repeat_table_header else ""),
                 forced=index > 0,
@@ -252,12 +282,24 @@ class LogicalSplitter:
 
         for row_index, row in enumerate(rows):
             rendered = row_text(row)
-            rendered_words = len(_WORD.findall(rendered))
-            if len(rendered) > self.profile.hard_max_chars or rendered_words > self.profile.hard_max_words:
+            rendered_words, rendered_reliable = count_words(
+                rendered,
+                language_hint=element.language_hint,
+                backend=self.profile.sentence_boundary_backend,
+            )
+            if (
+                len(rendered) > self.profile.hard_max_chars
+                or (rendered_reliable and rendered_words > self.profile.hard_max_words)
+            ):
                 emit_group(row_index - 1)
-                forced_chunks = self._force_text_chunks(rendered)
+                forced_chunks = self._force_text_chunks(rendered, element.language_hint)
                 for chunk in forced_chunks:
                     index = len(units)
+                    chunk_words, chunk_reliable = count_words(
+                        chunk,
+                        language_hint=element.language_hint,
+                        backend=self.profile.sentence_boundary_backend,
+                    )
                     units.append(_Unit(
                         text=chunk,
                         element_ids=(element.source_element_id,),
@@ -267,6 +309,8 @@ class LogicalSplitter:
                         page_to=page,
                         language_hint=element.language_hint,
                         sentence_count=0,
+                        word_count=chunk_words,
+                        word_guard_reliable=chunk_reliable,
                         continuation_index=index,
                         synthetic_context=(f"TABLE HEADER\n{header}" if index > 0 and self.profile.repeat_table_header else ""),
                         forced=True,
@@ -278,9 +322,14 @@ class LogicalSplitter:
                 continue
 
             trial = "\n".join([*group_rows, rendered])
+            trial_words, trial_reliable = count_words(
+                trial,
+                language_hint=element.language_hint,
+                backend=self.profile.sentence_boundary_backend,
+            )
             if group_rows and (
                 len(trial) > self.profile.hard_max_chars
-                or len(_WORD.findall(trial)) > self.profile.hard_max_words
+                or (trial_reliable and trial_words > self.profile.hard_max_words)
             ):
                 emit_group(row_index - 1)
                 group_start = row_index
@@ -292,10 +341,10 @@ class LogicalSplitter:
         emit_group(len(rows) - 1)
         return units
 
-    def _force_text_chunks(self, text: str) -> list[str]:
+    def _force_text_chunks(self, text: str, language_hint: str | None) -> list[str]:
         words = text.split()
         if not words:
-            return [text[i:i + self.profile.hard_max_chars] for i in range(0, len(text), self.profile.hard_max_chars)] or [""]
+            return self._grapheme_bounded_chunks(text)
         chunks: list[str] = []
         current: list[str] = []
         for word in words:
@@ -303,16 +352,48 @@ class LogicalSplitter:
                 if current:
                     chunks.append(" ".join(current))
                     current = []
-                chunks.extend(word[i:i + self.profile.hard_max_chars] for i in range(0, len(word), self.profile.hard_max_chars))
+                chunks.extend(self._grapheme_bounded_chunks(word))
                 continue
             trial = " ".join([*current, word])
-            if current and (len(trial) > self.profile.hard_max_chars or len(current) + 1 > self.profile.hard_max_words):
+            trial_words, reliable = count_words(
+                trial,
+                language_hint=language_hint,
+                backend=self.profile.sentence_boundary_backend,
+            )
+            if current and (
+                len(trial) > self.profile.hard_max_chars
+                or (reliable and trial_words > self.profile.hard_max_words)
+            ):
                 chunks.append(" ".join(current))
                 current = [word]
             else:
                 current.append(word)
         if current:
             chunks.append(" ".join(current))
+        return chunks
+
+    def _grapheme_bounded_chunks(self, text: str) -> list[str]:
+        clusters = grapheme_clusters(text)
+        if not clusters:
+            return [""]
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+        for cluster in clusters:
+            cluster_len = len(cluster)
+            if current and current_len + cluster_len > self.profile.hard_max_chars:
+                chunks.append("".join(current))
+                current = []
+                current_len = 0
+            if cluster_len > self.profile.hard_max_chars:
+                # A single extended grapheme can theoretically exceed the configured
+                # character guard. Never split it internally; surface the invariant
+                # violation instead of corrupting Unicode text.
+                raise RuntimeError("SPLITTER_GRAPHEME_EXCEEDS_HARD_CHAR_GUARD")
+            current.append(cluster)
+            current_len += cluster_len
+        if current:
+            chunks.append("".join(current))
         return chunks
 
     def _consolidate_small_groups(
@@ -330,7 +411,7 @@ class LogicalSplitter:
                 and not self._small_exception(units)
                 and index + 1 < len(groups)
             ):
-                next_units, next_reason, next_forced = groups[index + 1]
+                next_units, _, next_forced = groups[index + 1]
                 combined = [*units, *next_units]
                 if (
                     not self._small_exception(next_units)
@@ -341,7 +422,7 @@ class LogicalSplitter:
                     index += 2
                     continue
             if out and self._size(units)[0] < self.profile.min_chars and not self._small_exception(units):
-                prev_units, prev_reason, prev_forced = out[-1]
+                prev_units, _, prev_forced = out[-1]
                 combined = [*prev_units, *units]
                 if (
                     not self._small_exception(prev_units)
@@ -375,25 +456,34 @@ class LogicalSplitter:
         return left_parent == right_parent
 
     def _reaches_target(self, units: list[_Unit]) -> bool:
-        chars, words, sentences = self._size(units)
-        return chars >= self.profile.target_chars or words >= self.profile.target_words or sentences >= self.profile.target_sentences
+        chars, words, sentences, reliable = self._size(units)
+        return (
+            chars >= self.profile.target_chars
+            or (reliable and words >= self.profile.target_words)
+            or sentences >= self.profile.target_sentences
+        )
 
     def _exceeds_soft(self, units: list[_Unit]) -> bool:
-        chars, words, _ = self._size(units)
-        return chars > self.profile.soft_max_chars or words > self.profile.soft_max_words
+        chars, words, _, reliable = self._size(units)
+        return chars > self.profile.soft_max_chars or (reliable and words > self.profile.soft_max_words)
 
     def _exceeds_hard(self, units: list[_Unit]) -> bool:
-        chars, words, sentences = self._size(units)
+        chars, words, sentences, reliable = self._size(units)
         return (
             chars > self.profile.hard_max_chars
-            or words > self.profile.hard_max_words
+            or (reliable and words > self.profile.hard_max_words)
             or sentences > self.profile.hard_max_sentences
         )
 
     @staticmethod
-    def _size(units: list[_Unit]) -> tuple[int, int, int]:
+    def _size(units: list[_Unit]) -> tuple[int, int, int, bool]:
         text = "\n".join(unit.text for unit in units)
-        return len(text), len(_WORD.findall(text)), sum(unit.sentence_count for unit in units)
+        return (
+            len(text),
+            sum(unit.word_count for unit in units),
+            sum(unit.sentence_count for unit in units),
+            all(unit.word_guard_reliable for unit in units),
+        )
 
     @staticmethod
     def _at_safe_boundary(previous: _Unit, current: _Unit) -> bool:
@@ -438,6 +528,8 @@ class LogicalSplitter:
         continuation = max((unit.continuation_index for unit in units), default=0)
         table_rows_from = [u.table_row_from for u in units if u.table_row_from is not None]
         table_rows_to = [u.table_row_to for u in units if u.table_row_to is not None]
+        word_count = sum(unit.word_count for unit in units)
+        word_count_reliable = all(unit.word_guard_reliable for unit in units)
         identity_payload = "\x1f".join([
             str(document.document_id),
             str(document.document_version),
@@ -449,6 +541,7 @@ class LogicalSplitter:
             self.profile.version,
             self.profile.profile_id,
             self.profile_config_hash,
+            self.profile.sentence_boundary_backend,
             fragment_type.value,
             str(continuation),
             str(min(table_rows_from) if table_rows_from else ""),
@@ -478,7 +571,7 @@ class LogicalSplitter:
             ),
             statistics=FragmentStatistics(
                 char_count=len(normalized_text),
-                word_count=len(_WORD.findall(normalized_text)),
+                word_count=word_count,
                 sentence_count=sentence_count,
             ),
             split=SplitDecision(
@@ -491,7 +584,12 @@ class LogicalSplitter:
             primary_language=primary,
             languages=languages,
             mixed_language=len(languages) > 1,
-            metadata={"splitterProfileConfigHash": self.profile_config_hash, "roles": roles},
+            metadata={
+                "splitterProfileConfigHash": self.profile_config_hash,
+                "roles": roles,
+                "sentenceBoundaryBackend": self.profile.sentence_boundary_backend,
+                "wordCountReliable": word_count_reliable,
+            },
         )
 
     @staticmethod
@@ -515,7 +613,7 @@ class LogicalSplitter:
         for unit in units:
             if unit.language_hint:
                 primary = unit.language_hint.lower().split("-", 1)[0]
-                if primary in {"ru", "kk", "en"} and primary not in hints:
+                if primary not in hints:
                     hints.append(primary)
         if hints:
             return tuple(hints)
