@@ -5,7 +5,6 @@ import hashlib
 import os
 import shutil
 import time
-import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +15,13 @@ from PIL import Image
 
 from astra_indexator.storage import ObjectStorage, StorageRef
 
+from .extended_formats import (
+    ExtendedFormatValidationError,
+    detect_csv,
+    detect_html,
+    validate_and_identify_zip,
+    validate_rtf,
+)
 from .metrics import AcquisitionMetrics, NoopAcquisitionMetrics
 from .workspace import WorkspaceCapacityError, WorkspaceManager
 
@@ -217,13 +223,49 @@ class SafeAcquisitionService:
             self._validate_image(path, "TIFF")
             fmt, mime = "TIFF", "image/tiff"
         elif prefix.startswith(b"PK\x03\x04"):
-            self._validate_docx(path)
-            fmt, mime = "DOCX", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            try:
+                fmt, mime = validate_and_identify_zip(path, self.policy)
+            except ExtendedFormatValidationError as exc:
+                raise AcquisitionError(exc.code, str(exc)) from exc
+        elif prefix.lstrip().startswith(b"{\\rtf"):
+            try:
+                validate_rtf(path)
+            except ExtendedFormatValidationError as exc:
+                raise AcquisitionError(exc.code, str(exc)) from exc
+            fmt, mime = "RTF", "application/rtf"
         else:
             self._validate_utf8_text(path)
-            fmt, mime = ("MARKDOWN", "text/markdown") if ext in {".md", ".markdown"} else ("TXT", "text/plain")
+            with path.open("r", encoding="utf-8") as stream:
+                sample = stream.read(65_536)
+            if detect_html(sample, ext):
+                fmt, mime = "HTML", "text/html"
+            else:
+                is_csv, delimiter, quotechar = detect_csv(sample, ext)
+                if is_csv:
+                    fmt, mime = "CSV", "text/csv"
+                    if delimiter:
+                        warnings.append(f"CSV_DELIMITER:{repr(delimiter)}")
+                    if quotechar:
+                        warnings.append(f"CSV_QUOTE:{repr(quotechar)}")
+                elif ext in {".md", ".markdown"}:
+                    fmt, mime = "MARKDOWN", "text/markdown"
+                else:
+                    fmt, mime = "TXT", "text/plain"
 
-        accepted_exts = {"PDF": {".pdf"}, "PNG": {".png"}, "JPEG": {".jpg", ".jpeg"}, "TIFF": {".tif", ".tiff"}, "DOCX": {".docx"}}.get(fmt)
+        accepted_exts = {
+            "PDF": {".pdf"},
+            "PNG": {".png"},
+            "JPEG": {".jpg", ".jpeg"},
+            "TIFF": {".tif", ".tiff"},
+            "DOCX": {".docx"},
+            "XLSX": {".xlsx"},
+            "PPTX": {".pptx"},
+            "CSV": {".csv", ".tsv"},
+            "HTML": {".html", ".htm"},
+            "RTF": {".rtf"},
+            "ODT": {".odt"},
+            "EPUB": {".epub"},
+        }.get(fmt)
         if accepted_exts and ext and ext not in accepted_exts:
             warnings.append("FILE_TYPE_MISMATCH")
         return fmt, mime, warnings
@@ -260,36 +302,3 @@ class SafeAcquisitionService:
             raise
         except Exception as exc:
             raise AcquisitionError("MALFORMED_IMAGE", "image validation failed") from exc
-
-    def _validate_docx(self, path: Path) -> None:
-        try:
-            with zipfile.ZipFile(path) as archive:
-                infos = archive.infolist()
-                if len(infos) > self.policy.max_container_entries:
-                    raise AcquisitionError("CONTAINER_RESOURCE_LIMIT", "too many OOXML entries")
-                total = 0
-                names: set[str] = set()
-                for info in infos:
-                    name = info.filename.replace("\\", "/")
-                    if name.startswith("/") or any(part == ".." for part in name.split("/")):
-                        raise AcquisitionError("CONTAINER_PATH_TRAVERSAL", "unsafe OOXML entry path")
-                    if name in names:
-                        raise AcquisitionError("CONTAINER_DUPLICATE_ENTRY", "duplicate OOXML entry name")
-                    names.add(name)
-                    if info.flag_bits & 0x1:
-                        raise AcquisitionError("CONTAINER_ENCRYPTED", "encrypted OOXML entries are unsupported")
-                    if info.file_size > self.policy.max_single_entry_uncompressed_bytes:
-                        raise AcquisitionError("CONTAINER_RESOURCE_LIMIT", "OOXML entry too large")
-                    total += info.file_size
-                    if total > self.policy.max_total_uncompressed_bytes:
-                        raise AcquisitionError("CONTAINER_RESOURCE_LIMIT", "OOXML uncompressed total too large")
-                    if info.file_size / max(info.compress_size, 1) > self.policy.max_compression_ratio:
-                        raise AcquisitionError("CONTAINER_RESOURCE_LIMIT", "OOXML compression ratio exceeds limit")
-                    if name.lower().endswith((".zip", ".docx", ".xlsx", ".pptx")) and self.policy.max_nested_container_depth == 0:
-                        raise AcquisitionError("CONTAINER_NESTING_LIMIT", "nested container processing is disabled")
-                if "[Content_Types].xml" not in names or "word/document.xml" not in names:
-                    raise AcquisitionError("UNSUPPORTED_ZIP_CONTAINER", "ZIP is not a DOCX package")
-        except AcquisitionError:
-            raise
-        except (zipfile.BadZipFile, OSError) as exc:
-            raise AcquisitionError("MALFORMED_CONTAINER", "OOXML container validation failed") from exc

@@ -6,6 +6,14 @@ from .base import (
     ParserError,
     QualityProfile,
 )
+from .extended_handlers import (
+    CsvDocumentHandler,
+    HtmlDocumentHandler,
+    OdtDocumentHandler,
+    RtfDocumentHandler,
+    XlsxDocumentHandler,
+)
+from .extended_fixes import EpubDocumentHandlerV1, PptxDocumentHandlerV1
 from .handlers import (
     DocxDocumentHandler,
     ImageDocumentHandler,
@@ -25,6 +33,10 @@ from .model import (
 )
 
 
+PptxDocumentHandler = PptxDocumentHandlerV1
+EpubDocumentHandler = EpubDocumentHandlerV1
+
+
 def default_registry() -> FileTypeHandlerRegistry:
     return FileTypeHandlerRegistry([
         TextDocumentHandler(),
@@ -34,11 +46,20 @@ def default_registry() -> FileTypeHandlerRegistry:
         ImageDocumentHandler("JPEG"),
         ImageDocumentHandler("PNG"),
         ImageDocumentHandler("TIFF"),
+        XlsxDocumentHandler(),
+        PptxDocumentHandler(),
+        CsvDocumentHandler(),
+        HtmlDocumentHandler(),
+        OdtDocumentHandler(),
+        RtfDocumentHandler(),
+        EpubDocumentHandler(),
     ])
 
 
 __all__ = [
     "DocumentParserService", "FileTypeHandlerRegistry", "ParseContext", "ParseLimits", "ParserError", "QualityProfile",
     "DocumentElement", "ElementType", "OcrCandidate", "ParsedDocument", "ParseQuality", "ParserIdentity", "QualityStatus", "SourceGeometry",
-    "TextDocumentHandler", "MarkdownDocumentHandler", "DocxDocumentHandler", "PdfDocumentHandler", "ImageDocumentHandler", "default_registry",
+    "TextDocumentHandler", "MarkdownDocumentHandler", "DocxDocumentHandler", "PdfDocumentHandler", "ImageDocumentHandler",
+    "XlsxDocumentHandler", "PptxDocumentHandler", "CsvDocumentHandler", "HtmlDocumentHandler", "OdtDocumentHandler", "RtfDocumentHandler", "EpubDocumentHandler",
+    "default_registry",
 ]
