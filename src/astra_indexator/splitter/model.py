@@ -69,6 +69,8 @@ class FragmentSource:
     element_to: str | None
     page_from: int | None = None
     page_to: int | None = None
+    table_row_from: int | None = None
+    table_row_to: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
