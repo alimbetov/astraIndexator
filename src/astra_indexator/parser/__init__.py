@@ -8,13 +8,12 @@ from .base import (
 )
 from .extended_handlers import (
     CsvDocumentHandler,
-    EpubDocumentHandler,
     HtmlDocumentHandler,
     OdtDocumentHandler,
-    PptxDocumentHandler,
     RtfDocumentHandler,
     XlsxDocumentHandler,
 )
+from .extended_fixes import EpubDocumentHandlerV1, PptxDocumentHandlerV1
 from .handlers import (
     DocxDocumentHandler,
     ImageDocumentHandler,
@@ -32,6 +31,10 @@ from .model import (
     QualityStatus,
     SourceGeometry,
 )
+
+
+PptxDocumentHandler = PptxDocumentHandlerV1
+EpubDocumentHandler = EpubDocumentHandlerV1
 
 
 def default_registry() -> FileTypeHandlerRegistry:
