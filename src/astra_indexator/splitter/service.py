@@ -68,7 +68,6 @@ class LogicalSplitter:
             if not unit.text:
                 continue
             if unit.element_type == ElementType.HEADING and buffer:
-                # Strong structural boundary: prefer ending prior coherent content.
                 flush("SECTION_BOUNDARY")
 
             if not buffer:
@@ -162,7 +161,7 @@ class LogicalSplitter:
                 language_hint=element.language_hint,
                 sentence_count=len(split_sentences(chunk, language_hint=element.language_hint)) or 1,
                 continuation_index=index,
-                synthetic_context=context if index > 0 else "",
+                synthetic_context=context,
                 forced=forced,
             ))
         return result
@@ -176,7 +175,6 @@ class LogicalSplitter:
             return self._text_units(element, text, hierarchy, "")
 
         def row_text(row: list[str]) -> str:
-            # This is a derived index representation only; canonical structure remains rows/cells.
             return "\t".join(str(cell) for cell in row)
 
         header = row_text(rows[0])
@@ -257,6 +255,12 @@ class LogicalSplitter:
 
     @staticmethod
     def _at_safe_boundary(previous: _Unit, current: _Unit) -> bool:
+        # A governing list introduction stays attached to at least the first item
+        # unless the hard guard makes that impossible.
+        if previous.element_type == ElementType.PARAGRAPH and previous.text.endswith(":") and current.element_type in {
+            ElementType.LIST, ElementType.LIST_ITEM
+        }:
+            return False
         return previous.element_ids != current.element_ids or previous.element_type in {
             ElementType.PARAGRAPH, ElementType.LIST_ITEM, ElementType.TABLE, ElementType.CODE_BLOCK
         }
@@ -274,7 +278,10 @@ class LogicalSplitter:
                 if element_id not in source_ids:
                     source_ids.append(element_id)
         pages = [page for unit in units for page in (unit.page_from, unit.page_to) if page is not None]
-        contexts = [unit.synthetic_context for unit in units if unit.synthetic_context]
+        contexts = [
+            unit.synthetic_context for unit in units
+            if unit.synthetic_context and unit.synthetic_context not in normalized_text
+        ]
         begins_with_heading = bool(units and units[0].element_type == ElementType.HEADING)
         hierarchy_context = hierarchy[:-1] if begins_with_heading and hierarchy else hierarchy
         context_parts = [*hierarchy_context, *contexts]
@@ -358,10 +365,12 @@ class LogicalSplitter:
                     hints.append(primary)
         if hints:
             return tuple(hints)
+
         detected: list[str] = []
-        if any(char in _KK for char in text):
+        has_kazakh_specific = any(char in _KK for char in text)
+        if has_kazakh_specific:
             detected.append("kk")
-        if _CYR.search(text) and "ru" not in detected:
+        elif _CYR.search(text):
             detected.append("ru")
         if _LAT.search(text):
             detected.append("en")
