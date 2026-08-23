@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -38,12 +38,20 @@ class OcrProfile:
     device: str = "cpu"
     min_confidence: float = 0.35
     hard_confidence_floor: float = 0.10
+    min_image_width: int = 24
+    min_image_height: int = 24
+    min_image_pixels: int = 1_024
     max_pages_per_job: int = 500
     max_pixels_per_page: int = 24_000_000
     max_total_pixels_per_job: int = 250_000_000
+    max_derived_bytes: int = 512 * 1024 * 1024
+    memory_soft_limit_bytes: int = 1024 * 1024 * 1024
+    memory_hard_limit_bytes: int = 1536 * 1024 * 1024
+    max_concurrent_pages_per_worker: int = 1
     timeout_per_candidate_seconds: float = 60.0
     timeout_per_job_seconds: float = 900.0
     render_dpi: int = 200
+    decision_policy_version: str = "ocr-decision-v1"
     preprocessing_version: str = "ocr-preprocess-v1"
     reconciliation_version: str = "ocr-reconcile-v1"
 
