@@ -26,8 +26,6 @@ PROFILES: dict[str, SentenceBoundaryProfile] = {
     "en": SentenceBoundaryProfile("sentence-en-v3", ("en",), _EN, _ALWAYS_EN),
     "ru": SentenceBoundaryProfile("sentence-ru-v3", ("ru",), _RU, _ALWAYS_RU),
     "kk": SentenceBoundaryProfile("sentence-kk-v3", ("kk",), _KK | _RU, _ALWAYS_KK | _ALWAYS_RU),
-    # Greek uses semicolon as a question mark; this is locale-specific and
-    # cannot be inferred from Unicode punctuation category alone.
     "el": SentenceBoundaryProfile("sentence-el-v1", ("el",), frozenset(), frozenset(), frozenset({";"})),
     "und": SentenceBoundaryProfile("sentence-unicode-generic-v1", ("und",), frozenset(), frozenset()),
     "mixed": SentenceBoundaryProfile(
@@ -106,19 +104,14 @@ def _abbreviation_is_protected(text: str, index: int, token: str, profile: Sente
 def _period_is_protected(text: str, index: int, profile: SentenceBoundaryProfile) -> bool:
     prev_char = text[index - 1] if index > 0 else ""
     next_char = text[index + 1] if index + 1 < len(text) else ""
-
-    # Decimal, semantic version, IPv4, domain and package-like internal dot.
     if prev_char.isalnum() and next_char.isalnum():
         return True
-
     token = _previous_token(text, index)
     if _abbreviation_is_protected(text, index, token, profile):
         return True
-
     match = _LETTER_BEFORE.search(text[:index])
     if match and len(match.group(1)) == 1:
         return True
-
     left_start = max(text.rfind(" ", 0, index), text.rfind("\n", 0, index)) + 1
     right_end = index + 1
     while right_end < len(text) and not text[right_end].isspace():
@@ -138,10 +131,7 @@ def _split_unicode(text: str, language_hint: str | None) -> tuple[str, ...]:
     start = 0
     i = 0
     length = len(text)
-
     while i < length:
-        # Blank-line paragraph boundaries are reliable even when the preceding
-        # line has no terminal punctuation.
         if text.startswith("\n\n", i):
             sentence = text[start:i].strip()
             if sentence:
@@ -150,7 +140,6 @@ def _split_unicode(text: str, language_hint: str | None) -> tuple[str, ...]:
                 i += 1
             start = i
             continue
-
         ch = text[i]
         if not _is_sentence_terminal(ch, profile):
             i += 1
@@ -158,20 +147,14 @@ def _split_unicode(text: str, language_hint: str | None) -> tuple[str, ...]:
         if ch == "." and _period_is_protected(text, i, profile):
             i += 1
             continue
-
         end = i + 1
         while end < length and _is_sentence_terminal(text[end], profile):
             end += 1
         while end < length and _is_closer(text[end]):
             end += 1
-
-        # UAX-style unambiguous sentence terminals such as CJK/Arabic/Indic
-        # punctuation do not require ASCII whitespace after them. A plain full
-        # stop remains conservative because it is highly overloaded.
         if end < length and not text[end].isspace() and ch == ".":
             i += 1
             continue
-
         sentence = text[start:end].strip()
         if sentence:
             out.append(sentence)
@@ -179,7 +162,6 @@ def _split_unicode(text: str, language_hint: str | None) -> tuple[str, ...]:
             end += 1
         start = end
         i = end
-
     tail = text[start:].strip()
     if tail:
         out.append(tail)
@@ -189,12 +171,9 @@ def _split_unicode(text: str, language_hint: str | None) -> tuple[str, ...]:
 def _split_icu(text: str, language_hint: str | None) -> tuple[str, ...]:
     try:
         import icu  # type: ignore
-    except ImportError as exc:  # pragma: no cover - optional production dependency
+    except ImportError as exc:  # pragma: no cover
         raise RuntimeError("SPLITTER_ICU_UNAVAILABLE") from exc
-
     locale_name = _locale_id(language_hint)
-    # CLDR/ICU sentence suppressions improve abbreviation handling where data
-    # is available. Unsupported locales simply use their locale/default rules.
     locale = icu.Locale(f"{locale_name}@ss=standard") if locale_name != "root" else icu.Locale.getRoot()
     iterator = icu.BreakIterator.createSentenceInstance(locale)
     iterator.setText(text)
@@ -208,12 +187,7 @@ def _split_icu(text: str, language_hint: str | None) -> tuple[str, ...]:
     return tuple(out)
 
 
-def split_sentences(
-    text: str,
-    *,
-    language_hint: str | None = None,
-    backend: str = "unicode",
-) -> tuple[str, ...]:
+def split_sentences(text: str, *, language_hint: str | None = None, backend: str = "unicode") -> tuple[str, ...]:
     if not text or not text.strip():
         return ()
     if backend == "unicode":
@@ -224,23 +198,12 @@ def split_sentences(
 
 
 def grapheme_clusters(text: str) -> tuple[str, ...]:
-    """Extended grapheme clusters (UAX #29-style `\X`) for split safety."""
+    r"""Extended grapheme clusters (UAX #29-style `\X`) for split safety."""
     return tuple(regex.findall(r"\X", text))
 
 
-def count_words(
-    text: str,
-    *,
-    language_hint: str | None = None,
-    backend: str = "unicode",
-) -> tuple[int, bool]:
-    """Return (count, reliable_for_word_guards).
-
-    Unicode fallback follows Unicode word-boundary behavior but deliberately
-    marks scripts that normally need dictionary segmentation as unreliable for
-    word-based chunk-size guards. Char/sentence guards remain authoritative.
-    ICU uses dictionary-aware word segmentation for supported complex scripts.
-    """
+def count_words(text: str, *, language_hint: str | None = None, backend: str = "unicode") -> tuple[int, bool]:
+    """Return ``(count, reliable_for_word_guards)``."""
     if not text:
         return 0, True
     if backend == "unicode":
@@ -249,12 +212,10 @@ def count_words(
         return count, reliable
     if backend != "icu":
         raise ValueError(f"SPLITTER_BOUNDARY_BACKEND_UNSUPPORTED:{backend}")
-
     try:
         import icu  # type: ignore
-    except ImportError as exc:  # pragma: no cover - optional production dependency
+    except ImportError as exc:  # pragma: no cover
         raise RuntimeError("SPLITTER_ICU_UNAVAILABLE") from exc
-
     locale = icu.Locale(_locale_id(language_hint))
     iterator = icu.BreakIterator.createWordInstance(locale)
     iterator.setText(text)
