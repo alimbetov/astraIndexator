@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 
 CRITICAL_KAZAKH = set("ӘәҒғҚқҢңӨөҰұҮүҺһІі")
+REQUIRED_RUNTIME_FILES = ("inference.onnx", "inference.yml")
 
 
 def sha256(path: Path) -> str:
@@ -18,10 +19,15 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def copy_tree(source: Path, target: Path) -> None:
+def copy_runtime_files(source: Path, target: Path) -> None:
     if target.exists():
         shutil.rmtree(target)
-    shutil.copytree(source, target)
+    target.mkdir(parents=True, exist_ok=True)
+    for name in REQUIRED_RUNTIME_FILES:
+        src = source / name
+        if not src.is_file():
+            raise SystemExit(f"Required runtime file is missing: {src}")
+        shutil.copy2(src, target / name)
 
 
 def main() -> int:
@@ -35,8 +41,11 @@ def main() -> int:
     args = parser.parse_args()
 
     for directory in (args.det_dir, args.rec_dir):
-        if not directory.is_dir() or not any(directory.rglob("*.onnx")):
-            raise SystemExit(f"ONNX model directory is invalid: {directory}")
+        if not directory.is_dir():
+            raise SystemExit(f"Model directory is invalid: {directory}")
+        for name in REQUIRED_RUNTIME_FILES:
+            if not (directory / name).is_file():
+                raise SystemExit(f"Required runtime file is missing: {directory / name}")
     if not args.dictionary.is_file():
         raise SystemExit(f"Dictionary is missing: {args.dictionary}")
 
@@ -48,9 +57,9 @@ def main() -> int:
     root = args.output
     if root.exists():
         shutil.rmtree(root)
-    (root / "det").parent.mkdir(parents=True, exist_ok=True)
-    copy_tree(args.det_dir, root / "det")
-    copy_tree(args.rec_dir, root / "rec")
+    root.mkdir(parents=True, exist_ok=True)
+    copy_runtime_files(args.det_dir, root / "det")
+    copy_runtime_files(args.rec_dir, root / "rec")
     shutil.copy2(args.dictionary, root / "rec" / "character_dict.txt")
 
     files = []
@@ -60,6 +69,8 @@ def main() -> int:
             continue
         files.append({"path": relative, "sha256": sha256(path), "sizeBytes": path.stat().st_size})
 
+    tenge_present = "₸" in dictionary_text
+    number_sign_present = "№" in dictionary_text
     manifest = {
         "schemaVersion": "astra-indexator-ocr-model-v1",
         "modelKind": "OCR",
@@ -75,6 +86,16 @@ def main() -> int:
         "textRecognitionModelDir": "rec",
         "candidate": "TZ-15A-CANDIDATE-A",
         "qualificationStatus": "CANDIDATE",
+        "upstream": {
+            "detector": "PaddlePaddle/PP-OCRv5_mobile_det_onnx",
+            "recognizer": "PaddlePaddle/cyrillic_PP-OCRv5_mobile_rec_onnx"
+        },
+        "criticalTokenCoverage": {
+            "kazakhCriticalAlphabet": True,
+            "numberSign": number_sign_present,
+            "tengeSymbol": tenge_present
+        },
+        "knownLimitations": ([] if tenge_present else ["Recognizer vocabulary does not contain U+20B8 KAZAKHSTANI TENGE SIGN (₸)."]),
         "files": files,
     }
     manifest_path = root / "manifest.json"
@@ -82,6 +103,7 @@ def main() -> int:
     print(f"bundle={root}")
     print(f"manifestSha256={sha256(manifest_path)}")
     print(f"files={len(files)}")
+    print(f"tengeSymbol={'PRESENT' if tenge_present else 'MISSING'}")
     return 0
 
 
