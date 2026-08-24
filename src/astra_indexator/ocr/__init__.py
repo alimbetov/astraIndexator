@@ -1,5 +1,5 @@
 from .bundle import NexusOcrBundlePreloader, OcrModelBundleError, VerifiedOcrModelBundle, verify_local_bundle
-from .engine import IsolatedPaddleOcrEngine, OcrEngine, PaddleOcrEngine
+from .engine import IsolatedPaddleOcrEngine, OcrEngine, PaddleOcrEngine, PaddleOnnxOcrEngine
 from .model import (
     OcrCandidateResult,
     OcrDecision,
@@ -19,7 +19,7 @@ from .service import NoopOcrMetrics, OcrMetrics, OcrPipelineService
 
 __all__ = [
     "NexusOcrBundlePreloader", "OcrModelBundleError", "VerifiedOcrModelBundle", "verify_local_bundle",
-    "OcrEngine", "PaddleOcrEngine", "IsolatedPaddleOcrEngine",
+    "OcrEngine", "PaddleOcrEngine", "PaddleOnnxOcrEngine", "IsolatedPaddleOcrEngine",
     "OcrCandidateResult", "OcrDecision", "OcrMode", "OcrModelIdentity", "OcrObservation", "OcrPipelineResult",
     "OcrProfile", "OcrRequest", "ReconciliationAction", "ResolvedOcrInput", "OcrDecisionPolicy", "OcrDecisionResult",
     "OcrReadiness", "check_ocr_readiness", "DefaultOcrInputResolver", "OcrInputResolver",

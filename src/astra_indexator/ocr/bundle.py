@@ -30,6 +30,20 @@ class VerifiedOcrModelBundle:
     def text_recognition_model_dir(self) -> Path:
         return self.root / self.manifest["textRecognitionModelDir"]
 
+    @property
+    def inference_engine(self) -> str | None:
+        value = self.manifest.get("inferenceEngine")
+        return str(value) if value else None
+
+    @property
+    def execution_provider(self) -> str | None:
+        value = self.manifest.get("executionProvider")
+        return str(value) if value else None
+
+    @property
+    def precision(self) -> str:
+        return str(self.manifest.get("precision", "fp32")).lower()
+
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -37,6 +51,21 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _validate_onnx_bundle(root: Path, manifest: dict[str, Any]) -> None:
+    if str(manifest.get("inferenceEngine", "")).lower() != "onnxruntime":
+        return
+    provider = str(manifest.get("executionProvider", ""))
+    if provider not in {"CPUExecutionProvider", "CUDAExecutionProvider", "TensorrtExecutionProvider"}:
+        raise OcrModelBundleError("OCR_MODEL_EXECUTION_PROVIDER_INVALID")
+    precision = str(manifest.get("precision", "fp32")).lower()
+    if precision not in {"fp32", "fp16", "int8"}:
+        raise OcrModelBundleError("OCR_MODEL_PRECISION_INVALID")
+    for directory_key in ("textDetectionModelDir", "textRecognitionModelDir"):
+        model_dir = root / str(manifest[directory_key])
+        if not any(path.is_file() and path.suffix.lower() == ".onnx" for path in model_dir.rglob("*.onnx")):
+            raise OcrModelBundleError(f"OCR_ONNX_MODEL_MISSING:{directory_key}")
 
 
 def verify_local_bundle(root: Path) -> VerifiedOcrModelBundle:
@@ -68,6 +97,7 @@ def verify_local_bundle(root: Path) -> VerifiedOcrModelBundle:
         relative = Path(manifest[directory_key])
         if relative.is_absolute() or ".." in relative.parts or not (root / relative).is_dir():
             raise OcrModelBundleError(f"OCR_MODEL_DIRECTORY_MISSING:{directory_key}")
+    _validate_onnx_bundle(root, manifest)
     manifest_digest = hashlib.sha256(manifest_path.read_bytes())
     for item in sorted(manifest["files"], key=lambda value: value["path"]):
         manifest_digest.update(item["path"].encode("utf-8"))
@@ -130,7 +160,6 @@ class NexusOcrBundlePreloader:
             if not download_url:
                 raise OcrModelBundleError(f"OCR_MODEL_DOWNLOAD_URL_MISSING:{relative.as_posix()}")
             self.download_file(str(download_url), target_root / relative, str(item["sha256"]))
-        # Manifest is the local commit marker and is published last.
         manifest_part = target_root / "manifest.json.part"
         manifest_part.write_bytes(manifest_bytes)
         manifest_part.replace(target_root / "manifest.json")

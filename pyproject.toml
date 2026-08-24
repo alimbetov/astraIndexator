@@ -32,6 +32,16 @@ ocr = [
   "paddleocr>=3,<4",
   "pypdfium2>=4,<5",
 ]
+ocr-onnx-cpu = [
+  "paddleocr>=3.5,<4",
+  "pypdfium2>=4,<5",
+  "onnxruntime>=1.23,<2",
+]
+ocr-onnx-gpu = [
+  "paddleocr>=3.5,<4",
+  "pypdfium2>=4,<5",
+  "onnxruntime-gpu>=1.23,<2",
+]
 linguistics = [
   "PyICU>=2.13,<3",
 ]
