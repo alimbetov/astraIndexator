@@ -51,6 +51,12 @@ test = [
   "reportlab>=4,<5",
   "pypdfium2>=4,<5",
 ]
+dev = [
+  "astra-indexator[test]",
+  "build>=1.2,<2",
+  "mypy>=1.11,<2",
+  "ruff>=0.6,<1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/astra_indexator"]
@@ -59,3 +65,27 @@ packages = ["src/astra_indexator"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["astra_indexator"]
+mypy_path = "src"
+check_untyped_defs = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
