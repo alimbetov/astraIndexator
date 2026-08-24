@@ -19,25 +19,57 @@ class OcrEngine(Protocol):
     def recognize(self, request: OcrRequest) -> tuple[OcrObservation, ...]: ...
 
 
+def _validate_onnx_runtime(bundle: VerifiedOcrModelBundle, device: str) -> None:
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "ONNX Runtime is not installed; install astra-indexator[ocr-onnx-cpu] "
+            "or the approved GPU runtime image"
+        ) from exc
+    expected = bundle.execution_provider or "CPUExecutionProvider"
+    available = set(ort.get_available_providers())
+    if expected not in available:
+        raise RuntimeError(f"OCR_ONNX_PROVIDER_UNAVAILABLE:{expected}")
+    normalized_device = device.lower()
+    if expected == "CPUExecutionProvider" and normalized_device != "cpu":
+        raise RuntimeError("OCR_ONNX_DEVICE_PROVIDER_MISMATCH:CPUExecutionProvider")
+    if expected == "CUDAExecutionProvider" and not normalized_device.startswith("gpu"):
+        raise RuntimeError("OCR_ONNX_DEVICE_PROVIDER_MISMATCH:CUDAExecutionProvider")
+    if expected == "TensorrtExecutionProvider":
+        raise RuntimeError("OCR_ONNX_TENSORRT_PROFILE_NOT_IMPLEMENTED")
+
+
 class PaddleOcrEngine:
-    """Direct PaddleOCR v3 adapter using only verified local model directories."""
+    """PaddleOCR adapter using only a verified local bundle.
+
+    `inferenceEngine=onnxruntime` in the immutable bundle manifest selects the
+    ONNX Runtime path. No model name is supplied to PaddleOCR, so document-time
+    inference has no reason to resolve/download an upstream model artifact.
+    """
 
     def __init__(self, bundle: VerifiedOcrModelBundle, *, device: str = "cpu"):
         if bundle.identity.engine.lower() != "paddleocr":
             raise ValueError("OCR bundle engine must be paddleocr")
+        inference_engine = bundle.inference_engine
+        if inference_engine == "onnxruntime":
+            _validate_onnx_runtime(bundle, device)
         try:
             from paddleocr import PaddleOCR
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("PaddleOCR runtime is not installed; install astra-indexator[ocr]") from exc
+            raise RuntimeError("PaddleOCR runtime is not installed; install an AstraIndexator OCR extra") from exc
         self._identity = bundle.identity
-        self._ocr = PaddleOCR(
-            text_detection_model_dir=str(bundle.text_detection_model_dir),
-            text_recognition_model_dir=str(bundle.text_recognition_model_dir),
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-            device=device,
-        )
+        kwargs = {
+            "text_detection_model_dir": str(bundle.text_detection_model_dir),
+            "text_recognition_model_dir": str(bundle.text_recognition_model_dir),
+            "use_doc_orientation_classify": False,
+            "use_doc_unwarping": False,
+            "use_textline_orientation": False,
+            "device": device,
+        }
+        if inference_engine:
+            kwargs["engine"] = inference_engine
+        self._ocr = PaddleOCR(**kwargs)
 
     @property
     def model_identity(self) -> OcrModelIdentity:
@@ -77,7 +109,9 @@ class PaddleOcrEngine:
                     continue
                 confidence = float(scores[index]) if index < len(scores) else 0.0
                 geometry = None
-                metadata = {}
+                metadata = {
+                    "inferenceEngine": bundle_engine if (bundle_engine := getattr(self._ocr, "engine", None)) else None
+                }
                 if index < len(polys) and polys[index]:
                     points = polys[index]
                     xs = [float(point[0]) for point in points]
@@ -92,13 +126,33 @@ class PaddleOcrEngine:
                         page_height=1.0,
                         coordinate_space="normalized-top-left",
                     )
-                    metadata = {"rawPolygon": [[float(p[0]), float(p[1])] for p in points],
-                                "rawCoordinateSpace": "ocr-image-pixels"}
-                observations.append(OcrObservation(text, confidence, block_order, request.candidate_id,
-                                                   request.source_element_id, request.page_number, geometry,
-                                                   self._identity, metadata))
+                    metadata.update({
+                        "rawPolygon": [[float(p[0]), float(p[1])] for p in points],
+                        "rawCoordinateSpace": "ocr-image-pixels",
+                    })
+                metadata = {key: value for key, value in metadata.items() if value is not None}
+                observations.append(OcrObservation(
+                    text,
+                    confidence,
+                    block_order,
+                    request.candidate_id,
+                    request.source_element_id,
+                    request.page_number,
+                    geometry,
+                    self._identity,
+                    metadata,
+                ))
                 block_order += 1
         return tuple(observations)
+
+
+class PaddleOnnxOcrEngine(PaddleOcrEngine):
+    """Explicit production baseline for verified PaddleOCR ONNX bundles."""
+
+    def __init__(self, bundle: VerifiedOcrModelBundle, *, device: str = "cpu"):
+        if bundle.inference_engine != "onnxruntime":
+            raise ValueError("OCR bundle inferenceEngine must be onnxruntime")
+        super().__init__(bundle, device=device)
 
 
 def _isolated_worker(bundle_root: str, device: str, requests: mp.Queue, responses: mp.Queue) -> None:  # pragma: no cover
@@ -118,11 +172,7 @@ def _isolated_worker(bundle_root: str, device: str, requests: mp.Queue, response
 
 
 class IsolatedPaddleOcrEngine:
-    """Production CPU/GPU wrapper with killable OCR worker process.
-
-    A candidate timeout terminates the OCR process, so the timeout is not merely
-    a caller-side ThreadPool timeout. The process is lazily restarted for the next request.
-    """
+    """Production CPU/GPU wrapper with killable OCR worker process."""
 
     def __init__(self, bundle: VerifiedOcrModelBundle, *, device: str = "cpu", startup_timeout_seconds: float = 120.0):
         self.bundle = bundle
@@ -152,9 +202,11 @@ class IsolatedPaddleOcrEngine:
             return
         self._requests = self._ctx.Queue()
         self._responses = self._ctx.Queue()
-        self._process = self._ctx.Process(target=_isolated_worker,
-                                          args=(str(self.bundle.root), self.device, self._requests, self._responses),
-                                          daemon=True)
+        self._process = self._ctx.Process(
+            target=_isolated_worker,
+            args=(str(self.bundle.root), self.device, self._requests, self._responses),
+            daemon=True,
+        )
         self._process.start()
         try:
             status, payload = self._responses.get(timeout=self.startup_timeout_seconds)
