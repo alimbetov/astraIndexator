@@ -5,17 +5,55 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  test:
+  quality:
+    name: P1-2 Quality Gates
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install
+          cache: pip
+
+      - name: Install quality tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check src tests
+
+      - name: Ruff format check
+        run: ruff format --check src tests
+
+      - name: Mypy
+        run: mypy src/astra_indexator
+
+      - name: Build package
+        run: python -m build
+
+  test:
+    name: Unit and PostgreSQL integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
-      - name: Unit and PostgreSQL integration tests
+
+      - name: Run tests
         run: pytest
