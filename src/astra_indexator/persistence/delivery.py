@@ -176,9 +176,7 @@ class DeliveryBatchRepository:
                 )
             return checkpoint
         if persisted.status != "PREPARED":
-            raise DeliveryIntegrityError(
-                f"unsupported persisted batch status {persisted.status!r}"
-            )
+            raise DeliveryIntegrityError(f"unsupported persisted batch status {persisted.status!r}")
         if checkpoint.next_batch_index != batch.batch_index:
             raise DeliverySequenceError(
                 f"cannot acknowledge batch {batch.batch_index}; durable next batch is "
