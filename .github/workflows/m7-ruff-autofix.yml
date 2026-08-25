@@ -25,7 +25,7 @@ jobs:
           pip install -e '.[dev]'
       - name: Apply Ruff safe fixes and formatting
         run: |
-          ruff check --fix src tests
+          ruff check --fix src tests || true
           ruff format src tests
       - name: Commit mechanical cleanup
         run: |
