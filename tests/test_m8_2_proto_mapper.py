@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 
 from astra_indexator.astravector import (
+    UINT32_MAX,
     AppendBlocksCommand,
     AstraVectorProtoMapper,
     LogicalBlock,
@@ -13,7 +14,6 @@ from astra_indexator.astravector import (
     SourceLink,
     SourceLocation,
     StartIngestionCommand,
-    UINT32_MAX,
     WireRangeError,
 )
 
