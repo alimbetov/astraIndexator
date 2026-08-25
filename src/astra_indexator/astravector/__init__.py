@@ -1,3 +1,8 @@
+from .batching import (
+    DeliveryBatchPlanningError,
+    DeterministicBatchPlanner,
+    PlannedDeliveryBatch,
+)
 from .canonical_hash import (
     HashLogicalBlock,
     HashSourceLink,
@@ -69,7 +74,9 @@ __all__ = [
     "AstraVectorProtoMapper",
     "CANONICAL_HASH_CONTRACT_VERSION",
     "CURRENT_WIRE_CONTRACT",
+    "DeliveryBatchPlanningError",
     "DeliveryCompletionLevel",
+    "DeterministicBatchPlanner",
     "DocumentVectorStatus",
     "FinalizeIngestionCommand",
     "GeneratedAstraVectorClient",
@@ -81,6 +88,7 @@ __all__ = [
     "IngestionSessionState",
     "IngestionStatus",
     "LogicalBlock",
+    "PlannedDeliveryBatch",
     "ProtoMappingError",
     "RetryDecision",
     "SourceLink",
