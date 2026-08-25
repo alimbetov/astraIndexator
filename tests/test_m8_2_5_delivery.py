@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from testcontainers.postgres import PostgresContainer
 
