@@ -67,7 +67,4 @@ def test_retry_policy_matches_session_contract() -> None:
         classify_grpc_failure(GrpcFailure("FAILED_PRECONDITION", "INGESTION_SESSION_FINALIZING"))
         == RetryDecision.RECONCILE_STATUS
     )
-    assert (
-        classify_grpc_failure(GrpcFailure("INVALID_ARGUMENT"))
-        == RetryDecision.PERMANENT_FAILURE
-    )
+    assert classify_grpc_failure(GrpcFailure("INVALID_ARGUMENT")) == RetryDecision.PERMANENT_FAILURE
