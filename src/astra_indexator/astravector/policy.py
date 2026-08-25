@@ -32,7 +32,11 @@ def classify_grpc_failure(failure: GrpcFailure) -> RetryDecision:
     if code == "ABORTED":
         return RetryDecision.RECONCILE_STATUS
     if code == "FAILED_PRECONDITION":
-        return RetryDecision.PERMANENT_FAILURE if "HASH_MISMATCH" in message else RetryDecision.RECONCILE_STATUS
+        return (
+            RetryDecision.PERMANENT_FAILURE
+            if "HASH_MISMATCH" in message
+            else RetryDecision.RECONCILE_STATUS
+        )
     if code == "RESOURCE_EXHAUSTED":
         size_markers = ("MAX_BLOCKS", "MAX_BATCH", "SIZE", "BYTES")
         if any(marker in message for marker in size_markers):
