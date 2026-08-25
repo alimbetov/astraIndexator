@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from astra_indexator.astravector.batching import PlannedDeliveryBatch
 from astra_indexator.astravector.canonical_hash import normalize_sha256_hex
+from astra_indexator.astravector.contracts import DocumentVectorStatus
 
 from .models import DeliveryBatch, DeliveryCheckpoint
 
@@ -37,13 +38,7 @@ class PreparedBatchState:
 
 
 class DeliveryBatchRepository:
-    """Transactional checkpoint/replay semantics for AstraVector Append delivery.
-
-    The caller owns transaction boundaries. ``prepare_batch`` must be committed before the
-    network call. ``mark_accepted`` is committed only after a validated AstraVector ack.
-    This intentionally leaves PREPARED behind when a worker crashes after remote acceptance;
-    the same deterministic index/hash is then safe to replay.
-    """
+    """Transactional checkpoint/replay semantics for AstraVector Append delivery."""
 
     def bind_session(
         self,
@@ -214,6 +209,25 @@ class DeliveryBatchRepository:
         checkpoint.last_error_code = error_code or None
         checkpoint.last_error_message = error_message or None
         checkpoint.updated_at = datetime.now(timezone.utc)
+        session.flush()
+        return checkpoint
+
+    def record_vector_status(
+        self,
+        session: Session,
+        *,
+        job_id: UUID,
+        status: DocumentVectorStatus,
+    ) -> DeliveryCheckpoint:
+        checkpoint = self._checkpoint_for_update(session, job_id)
+        checkpoint.vector_state_raw = status.raw_state
+        checkpoint.searchable = status.searchable
+        checkpoint.expected_bindings = status.expected_bindings
+        checkpoint.synced_bindings = status.synced_bindings
+        checkpoint.last_reconciled_at = datetime.now(timezone.utc)
+        checkpoint.last_error_code = None
+        checkpoint.last_error_message = status.message or None
+        checkpoint.updated_at = checkpoint.last_reconciled_at
         session.flush()
         return checkpoint
 
