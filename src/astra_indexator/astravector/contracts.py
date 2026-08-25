@@ -113,6 +113,17 @@ class FinalizeIngestionCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class FinalizeIngestionResult:
+    access_zone_id: UUID
+    document_id: UUID
+    document_version: int
+    raw_operation_state: str
+    message: str = ""
+    operation_id: str = ""
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class AbortIngestionCommand:
     ingestion_session_id: UUID
     reason: str
@@ -153,7 +164,7 @@ class AstraVectorIngestionPort(Protocol):
 
     def append(self, command: AppendBlocksCommand) -> AppendBlocksResult: ...
 
-    def finalize(self, command: FinalizeIngestionCommand) -> DocumentVectorStatus: ...
+    def finalize(self, command: FinalizeIngestionCommand) -> FinalizeIngestionResult: ...
 
     def abort(self, command: AbortIngestionCommand) -> IngestionStatus: ...
 
