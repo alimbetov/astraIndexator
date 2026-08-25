@@ -1,6 +1,13 @@
 from .base import Base
-from .db import create_engine_from_url, create_session_factory
-from .models import DeliveryBatch, DeliveryCheckpoint, IndexationJob, JobEvent, KnowledgeInventory, ProcessingAttempt
+from .db import create_database_engine, create_session_factory
+from .models import (
+    DeliveryBatch,
+    DeliveryCheckpoint,
+    IndexationJob,
+    JobEvent,
+    KnowledgeInventory,
+    ProcessingAttempt,
+)
 from .prepared_artifacts import PreparedArtifactCheckpoint
 
 __all__ = [
@@ -12,6 +19,6 @@ __all__ = [
     "KnowledgeInventory",
     "PreparedArtifactCheckpoint",
     "ProcessingAttempt",
-    "create_engine_from_url",
+    "create_database_engine",
     "create_session_factory",
 ]

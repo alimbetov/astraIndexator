@@ -4,8 +4,8 @@ Revision ID: 0003_prepared_artifact_checkpoint
 Revises: 0002_acquisition_evidence
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "0003_prepared_artifact_checkpoint"
@@ -27,6 +27,7 @@ def upgrade() -> None:
         ),
         sa.Column("artifact_id", sa.String(length=64), nullable=False),
         sa.Column("manifest_uri", sa.Text(), nullable=False),
+        sa.Column("manifest_sha256", sa.String(length=64), nullable=False),
         sa.Column("source_sha256", sa.String(length=64), nullable=False),
         sa.Column("compatibility_sha256", sa.String(length=64), nullable=False),
         sa.Column("element_count", sa.BigInteger(), nullable=False),

@@ -27,6 +27,7 @@ class PreparedArtifactCheckpoint(Base):
     )
     artifact_id: Mapped[str] = mapped_column(String(64), nullable=False)
     manifest_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     compatibility_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     element_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
