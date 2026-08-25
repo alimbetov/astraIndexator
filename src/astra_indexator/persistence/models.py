@@ -90,8 +90,8 @@ class IndexationJob(Base):
     external_revision: Mapped[str | None] = mapped_column(String(255))
 
     knowledge_type: Mapped[str | None] = mapped_column(String(32))
-    # Pre-M8 compatibility columns. New code uses requested_* for producer intent.
-    access_zone_code: Mapped[str] = mapped_column(String(4), nullable=False)
+    # Pre-M8 compatibility columns. UUID-only M8 selectors legitimately leave the code unset.
+    access_zone_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
     access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     requested_access_zone_code: Mapped[str | None] = mapped_column(String(4))
     requested_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
