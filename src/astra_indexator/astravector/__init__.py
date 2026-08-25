@@ -32,6 +32,7 @@ from .policy import (
     should_retry_finalize,
     vector_delivery_complete,
 )
+from .proto_mapper import AstraVectorProtoMapper, ProtoMappingError
 from .wire_contract import (
     ASTRAVECTOR_CARGO_BLOB_SHA,
     CANONICAL_HASH_CONTRACT_VERSION,
@@ -51,6 +52,7 @@ __all__ = [
     "AppendBlocksCommand",
     "AppendBlocksResult",
     "AstraVectorIngestionPort",
+    "AstraVectorProtoMapper",
     "CANONICAL_HASH_CONTRACT_VERSION",
     "CURRENT_WIRE_CONTRACT",
     "DeliveryCompletionLevel",
@@ -63,6 +65,7 @@ __all__ = [
     "IngestionSessionState",
     "IngestionStatus",
     "LogicalBlock",
+    "ProtoMappingError",
     "RetryDecision",
     "SourceLink",
     "SourceLocation",
