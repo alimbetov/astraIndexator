@@ -1,7 +1,7 @@
 """M8.2.5 durable DeliveryBatch replay constraints.
 
 Revision ID: 0005_m8_delivery_batch_replay
-Revises: 0004_m8_accesszone_ttl_lineage
+Revises: 0004_m8_zone_ttl
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0005_m8_delivery_batch_replay"
-down_revision = "0004_m8_accesszone_ttl_lineage"
+down_revision = "0004_m8_zone_ttl"
 branch_labels = None
 depends_on = None
 
