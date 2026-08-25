@@ -101,7 +101,7 @@ def test_m8_migration_backfills_non_empty_pre_m8_database() -> None:
     with PostgresContainer("postgres:16") as postgres:
         url = _psycopg_url(postgres.get_connection_url())
         cfg = _config(url)
-        command.upgrade(cfg, "0003_prepared_artifact_checkpoint")
+        command.upgrade(cfg, "0003_prepared_checkpoint")
         engine = create_engine(url)
         legacy_job_id = uuid4()
         with engine.begin() as connection:
