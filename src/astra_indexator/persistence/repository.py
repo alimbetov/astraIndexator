@@ -15,8 +15,11 @@ class NewIndexationJob:
     producer_request_id: UUID
     document_id: UUID
     document_version: int
-    access_zone_code: str
     source_uri: str
+    access_zone_code: str | None = None
+    access_zone_id: UUID | None = None
+    requested_access_zone_code: str | None = None
+    requested_access_zone_id: UUID | None = None
     knowledge_type: str | None = None
     external_revision: str | None = None
     requested_ttl_days: int | None = None
@@ -26,15 +29,27 @@ class NewIndexationJob:
     priority: int = 0
     max_attempts: int = 5
 
+    def __post_init__(self) -> None:
+        effective_id = self.requested_access_zone_id or self.access_zone_id
+        effective_code = self.requested_access_zone_code or self.access_zone_code
+        if effective_id is None and effective_code is None:
+            raise ValueError("AccessZone producer intent is required")
+        if self.requested_ttl_days is not None and self.requested_ttl_days < 0:
+            raise ValueError("requested_ttl_days must be non-negative")
+
 
 class IndexationJobRepository:
     """Persistence-only durable Inbox operations.
 
-    Claim/lease/fencing behavior deliberately belongs to M2.
+    Claim/lease/fencing behavior deliberately belongs to M2. M8 requested_*
+    columns are the authoritative producer delivery intent; legacy access_zone_*
+    columns are written only for backward compatibility.
     """
 
     def create_or_get(self, session: Session, command: NewIndexationJob) -> IndexationJob:
         job_id = uuid4()
+        requested_zone_id = command.requested_access_zone_id or command.access_zone_id
+        requested_zone_code = command.requested_access_zone_code or command.access_zone_code
         stmt = (
             insert(IndexationJob)
             .values(
@@ -44,7 +59,10 @@ class IndexationJobRepository:
                 document_version=command.document_version,
                 external_revision=command.external_revision,
                 knowledge_type=command.knowledge_type,
-                access_zone_code=command.access_zone_code,
+                access_zone_code=command.access_zone_code or requested_zone_code,
+                access_zone_id=command.access_zone_id or requested_zone_id,
+                requested_access_zone_code=requested_zone_code,
+                requested_access_zone_id=requested_zone_id,
                 requested_ttl_days=command.requested_ttl_days,
                 source_uri=command.source_uri,
                 source_file_name=command.source_file_name,
