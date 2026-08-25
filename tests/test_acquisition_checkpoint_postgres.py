@@ -40,7 +40,7 @@ def database_url() -> str:
 def _enqueue_and_claim(engine):
     repo = IndexationJobRepository()
     with Session(engine) as session:
-        job = repo.create_or_get(
+        repo.create_or_get(
             session,
             NewIndexationJob(
                 producer_request_id=uuid4(),

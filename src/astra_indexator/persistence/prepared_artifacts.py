@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,7 +25,9 @@ class PreparedArtifactCheckpoint(Base):
     __table_args__ = (
         CheckConstraint("lease_generation > 0", name="prepared_artifact_lease_generation_positive"),
         CheckConstraint("element_count >= 0", name="prepared_artifact_element_count_non_negative"),
-        CheckConstraint("fragment_count >= 0", name="prepared_artifact_fragment_count_non_negative"),
+        CheckConstraint(
+            "fragment_count >= 0", name="prepared_artifact_fragment_count_non_negative"
+        ),
         CheckConstraint(
             "requested_access_zone_code IS NULL OR requested_access_zone_code ~ '^[0-9]{4}$'",
             name="prepared_artifact_access_zone_code_format",

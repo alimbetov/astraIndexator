@@ -88,6 +88,7 @@ def test_leading_zero_access_zone_survives_round_trip(database_url: str) -> None
         document_id=uuid4(),
         document_version=1,
         access_zone_code="0000",
+        requested_access_zone_code="0000",
         source_uri="seaweed://sources/general.txt",
         status="PENDING",
     )

@@ -90,8 +90,8 @@ class IndexationJob(Base):
     external_revision: Mapped[str | None] = mapped_column(String(255))
 
     knowledge_type: Mapped[str | None] = mapped_column(String(32))
-    # Pre-M8 compatibility columns. New code uses requested_* for producer intent.
-    access_zone_code: Mapped[str] = mapped_column(String(4), nullable=False)
+    # Pre-M8 compatibility columns. UUID-only M8 selectors legitimately leave the code unset.
+    access_zone_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
     access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     requested_access_zone_code: Mapped[str | None] = mapped_column(String(4))
     requested_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
@@ -150,12 +150,16 @@ class ProcessingAttempt(Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
     job_id: Mapped[UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"), nullable=False
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"),
+        nullable=False,
     )
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
     lease_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
     worker_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     result: Mapped[str | None] = mapped_column(String(32))
     started_stage: Mapped[str | None] = mapped_column(String(64))
@@ -169,13 +173,25 @@ class DeliveryCheckpoint(Base):
     __tablename__ = "delivery_checkpoint"
     __table_args__ = (
         CheckConstraint("next_batch_index >= 0", name="next_batch_index_non_negative"),
-        CheckConstraint("last_accepted_batch_index IS NULL OR last_accepted_batch_index >= 0", name="last_accepted_batch_index_non_negative"),
-        CheckConstraint("expected_bindings IS NULL OR expected_bindings >= 0", name="expected_bindings_non_negative"),
-        CheckConstraint("synced_bindings IS NULL OR synced_bindings >= 0", name="synced_bindings_non_negative"),
+        CheckConstraint(
+            "last_accepted_batch_index IS NULL OR last_accepted_batch_index >= 0",
+            name="last_accepted_batch_index_non_negative",
+        ),
+        CheckConstraint(
+            "expected_bindings IS NULL OR expected_bindings >= 0",
+            name="expected_bindings_non_negative",
+        ),
+        CheckConstraint(
+            "synced_bindings IS NULL OR synced_bindings >= 0", name="synced_bindings_non_negative"
+        ),
         {"schema": SCHEMA},
     )
 
-    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"), primary_key=True)
+    job_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
     resolved_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     ingestion_session_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     next_batch_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
@@ -189,7 +205,9 @@ class DeliveryCheckpoint(Base):
     last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(String(128))
     last_error_message: Mapped[str | None] = mapped_column(Text)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class DeliveryBatch(Base):
@@ -197,11 +215,18 @@ class DeliveryBatch(Base):
     __table_args__ = (
         CheckConstraint("batch_index >= 0", name="batch_index_non_negative"),
         CheckConstraint("block_count >= 0", name="block_count_non_negative"),
-        CheckConstraint("serialized_bytes IS NULL OR serialized_bytes >= 0", name="serialized_bytes_non_negative"),
+        CheckConstraint(
+            "serialized_bytes IS NULL OR serialized_bytes >= 0",
+            name="serialized_bytes_non_negative",
+        ),
         {"schema": SCHEMA},
     )
 
-    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"), primary_key=True)
+    job_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
     batch_index: Mapped[int] = mapped_column(Integer, primary_key=True)
     batch_content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     block_count: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -213,30 +238,49 @@ class DeliveryBatch(Base):
 class JobEvent(Base):
     __tablename__ = "job_event"
     __table_args__ = (
-        CheckConstraint("lease_generation IS NULL OR lease_generation >= 0", name="event_lease_generation_non_negative"),
+        CheckConstraint(
+            "lease_generation IS NULL OR lease_generation >= 0",
+            name="event_lease_generation_non_negative",
+        ),
         Index("ix_job_event_job_created", "job_id", "created_at"),
         {"schema": SCHEMA},
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"), nullable=False)
-    attempt_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.processing_attempt.id", ondelete="SET NULL"))
+    job_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    attempt_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.processing_attempt.id", ondelete="SET NULL")
+    )
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     from_status: Mapped[str | None] = mapped_column(String(32))
     to_status: Mapped[str | None] = mapped_column(String(32))
     processing_stage: Mapped[str | None] = mapped_column(String(64))
     lease_generation: Mapped[int | None] = mapped_column(BigInteger)
     details: Mapped[dict | None] = mapped_column(JSONB)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class KnowledgeInventory(Base):
     __tablename__ = "knowledge_inventory"
     __table_args__ = (
         CheckConstraint("document_version > 0", name="inventory_document_version_positive"),
-        CheckConstraint("access_zone_code ~ '^[0-9]{4}$'", name="inventory_access_zone_code_format"),
-        CheckConstraint("logical_fragment_count IS NULL OR logical_fragment_count >= 0", name="logical_fragment_count_non_negative"),
-        CheckConstraint("logical_block_count IS NULL OR logical_block_count >= 0", name="logical_block_count_non_negative"),
+        CheckConstraint(
+            "access_zone_code ~ '^[0-9]{4}$'", name="inventory_access_zone_code_format"
+        ),
+        CheckConstraint(
+            "logical_fragment_count IS NULL OR logical_fragment_count >= 0",
+            name="logical_fragment_count_non_negative",
+        ),
+        CheckConstraint(
+            "logical_block_count IS NULL OR logical_block_count >= 0",
+            name="logical_block_count_non_negative",
+        ),
         Index("ix_knowledge_inventory_zone_searchable", "access_zone_code", "searchable"),
         Index("ix_knowledge_inventory_expiry", "effective_expires_at"),
         {"schema": SCHEMA},
@@ -244,7 +288,11 @@ class KnowledgeInventory(Base):
 
     document_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
     document_version: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     knowledge_type: Mapped[str | None] = mapped_column(String(32))
     access_zone_code: Mapped[str] = mapped_column(String(4), nullable=False)
     access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))

@@ -111,11 +111,17 @@ class PreparedArtifactCheckpointService:
         else:
             # Producer delivery intent is immutable across artifact replacement/replay.
             if checkpoint.requested_access_zone_id not in (None, requested_zone_id):
-                raise PreparedArtifactIdentityMismatch("AccessZone ID changed across checkpoint replay")
+                raise PreparedArtifactIdentityMismatch(
+                    "AccessZone ID changed across checkpoint replay"
+                )
             if checkpoint.requested_access_zone_code not in (None, requested_zone_code):
-                raise PreparedArtifactIdentityMismatch("AccessZone code changed across checkpoint replay")
+                raise PreparedArtifactIdentityMismatch(
+                    "AccessZone code changed across checkpoint replay"
+                )
             if checkpoint.requested_ttl_days not in (None, ttl_days):
-                raise PreparedArtifactIdentityMismatch("TTL intent changed across checkpoint replay")
+                raise PreparedArtifactIdentityMismatch(
+                    "TTL intent changed across checkpoint replay"
+                )
             for name, value in values.items():
                 setattr(checkpoint, name, value)
             checkpoint.updated_at = func.now()
