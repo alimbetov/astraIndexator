@@ -32,7 +32,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check src tests
 
-      - name: M8.1 scoped mypy
+      - name: M8 scoped mypy
         run: |
           mypy --follow-imports=silent \
             src/astra_indexator/domain/delivery_intent.py \
@@ -40,7 +40,9 @@ jobs:
             src/astra_indexator/persistence/prepared_artifacts.py \
             src/astra_indexator/persistence/repository.py \
             src/astra_indexator/application/coordinator.py \
-            src/astra_indexator/application/prepared_artifact_checkpoint.py
+            src/astra_indexator/application/prepared_artifact_checkpoint.py \
+            src/astra_indexator/astravector/wire_contract.py \
+            src/astra_indexator/astravector/canonical_hash.py
 
       - name: Baseline mypy debt report
         continue-on-error: true
