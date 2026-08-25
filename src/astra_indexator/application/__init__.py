@@ -14,6 +14,12 @@ from .prepared_artifact_checkpoint import (
     PreparedArtifactIdentityMismatch,
 )
 from .prepared_artifact_replay import PreparedArtifactReplayService
+from .vector_readiness import (
+    VectorReadinessOutcome,
+    VectorReadinessPending,
+    VectorReadinessRunner,
+    VectorReadinessTerminalError,
+)
 
 __all__ = [
     "AbortConflictError",
@@ -32,4 +38,8 @@ __all__ = [
     "PreparedArtifactCheckpointService",
     "PreparedArtifactIdentityMismatch",
     "PreparedArtifactReplayService",
+    "VectorReadinessOutcome",
+    "VectorReadinessPending",
+    "VectorReadinessRunner",
+    "VectorReadinessTerminalError",
 ]
