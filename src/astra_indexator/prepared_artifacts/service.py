@@ -80,7 +80,10 @@ def _manifest_dict(manifest: ArtifactManifest) -> dict[str, Any]:
             }
             for p in manifest.parts
         ],
-        "totals": {"elements": manifest.total_element_count, "fragments": manifest.total_fragment_count},
+        "totals": {
+            "elements": manifest.total_element_count,
+            "fragments": manifest.total_fragment_count,
+        },
     }
 
 
@@ -88,7 +91,9 @@ def manifest_bytes(manifest: ArtifactManifest) -> bytes:
     return canonical_json_bytes(_manifest_dict(manifest)) + b"\n"
 
 
-def _artifact_id(identity: ArtifactIdentity, compatibility_sha: str, parts: tuple[ArtifactPart, ...]) -> str:
+def _artifact_id(
+    identity: ArtifactIdentity, compatibility_sha: str, parts: tuple[ArtifactPart, ...]
+) -> str:
     seed = {
         "identity": {
             "documentId": str(identity.document_id),
@@ -108,7 +113,15 @@ def parse_manifest_bytes(payload: bytes) -> ArtifactManifest:
         raise ArtifactCorruptionError("prepared artifact manifest is not valid UTF-8 JSON") from exc
     if not isinstance(raw, dict):
         raise ArtifactCorruptionError("prepared artifact manifest root must be an object")
-    required = {"format", "artifactId", "identity", "compatibility", "compatibilitySha256", "parts", "totals"}
+    required = {
+        "format",
+        "artifactId",
+        "identity",
+        "compatibility",
+        "compatibilitySha256",
+        "parts",
+        "totals",
+    }
     if set(raw) != required:
         raise ArtifactCorruptionError("prepared artifact manifest fields are not canonical v1")
     try:
@@ -162,7 +175,9 @@ def parse_manifest_bytes(payload: bytes) -> ArtifactManifest:
     expected_compatibility_sha = _sha256(canonical_json_bytes(manifest.compatibility.as_dict()))
     if expected_compatibility_sha != manifest.compatibility_sha256:
         raise ArtifactCorruptionError("prepared artifact compatibility digest mismatch")
-    expected_artifact_id = _artifact_id(manifest.identity, manifest.compatibility_sha256, manifest.parts)
+    expected_artifact_id = _artifact_id(
+        manifest.identity, manifest.compatibility_sha256, manifest.parts
+    )
     if expected_artifact_id != manifest.artifact_id:
         raise ArtifactCorruptionError("prepared artifact id mismatch")
     return manifest
@@ -235,7 +250,9 @@ class PreparedArtifactPublisher:
                 return
             payload = b"".join(batch)
             path = f"parts/{stem}-{index:05d}.jsonl"
-            result.append((ArtifactPart(kind, path, _sha256(payload), len(batch), len(payload)), payload))
+            result.append(
+                (ArtifactPart(kind, path, _sha256(payload), len(batch), len(payload)), payload)
+            )
             batch = []
             batch_bytes = 0
             index += 1
@@ -243,7 +260,9 @@ class PreparedArtifactPublisher:
         for record in records:
             encoded = canonical_json_bytes(dict(record)) + b"\n"
             if len(encoded) > max_bytes:
-                raise ArtifactTooLargeError(f"single prepared artifact record exceeds byte limit: {stem}")
+                raise ArtifactTooLargeError(
+                    f"single prepared artifact record exceeds byte limit: {stem}"
+                )
             if batch and (len(batch) >= max_records or batch_bytes + len(encoded) > max_bytes):
                 flush()
             batch.append(encoded)
@@ -266,9 +285,15 @@ class PreparedArtifactReader:
         self._store = store
         self._prefix = prefix.strip("/")
 
-    def replay_decision(self, manifest: ArtifactManifest, expected: ArtifactCompatibility) -> ReplayDecision:
+    def replay_decision(
+        self, manifest: ArtifactManifest, expected: ArtifactCompatibility
+    ) -> ReplayDecision:
         expected_sha = _sha256(canonical_json_bytes(expected.as_dict()))
-        return ReplayDecision.REPLAY if expected_sha == manifest.compatibility_sha256 else ReplayDecision.REPROCESS
+        return (
+            ReplayDecision.REPLAY
+            if expected_sha == manifest.compatibility_sha256
+            else ReplayDecision.REPROCESS
+        )
 
     def load_manifest(self, key: str, *, expected_sha256: str | None = None) -> ArtifactManifest:
         payload = self._store.get(key)
@@ -283,9 +308,16 @@ class PreparedArtifactReader:
         for part in manifest.parts:
             records = tuple(self._stream_part(f"{root}/{part.path}", part))
             (elements if part.kind == "ELEMENTS" else fragments).extend(records)
-        if len(elements) != manifest.total_element_count or len(fragments) != manifest.total_fragment_count:
-            raise ArtifactCorruptionError("prepared artifact manifest totals do not match loaded records")
-        return PreparedArtifact(manifest=manifest, elements=tuple(elements), fragments=tuple(fragments))
+        if (
+            len(elements) != manifest.total_element_count
+            or len(fragments) != manifest.total_fragment_count
+        ):
+            raise ArtifactCorruptionError(
+                "prepared artifact manifest totals do not match loaded records"
+            )
+        return PreparedArtifact(
+            manifest=manifest, elements=tuple(elements), fragments=tuple(fragments)
+        )
 
     def _stream_part(self, key: str, part: ArtifactPart) -> Iterator[dict[str, Any]]:
         digest = hashlib.sha256()
@@ -307,9 +339,13 @@ class PreparedArtifactReader:
                 try:
                     record = json.loads(line)
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    raise ArtifactCorruptionError(f"prepared artifact JSONL corruption: {part.path}") from exc
+                    raise ArtifactCorruptionError(
+                        f"prepared artifact JSONL corruption: {part.path}"
+                    ) from exc
                 if not isinstance(record, dict):
-                    raise ArtifactCorruptionError(f"prepared artifact record is not an object: {part.path}")
+                    raise ArtifactCorruptionError(
+                        f"prepared artifact record is not an object: {part.path}"
+                    )
                 record_count += 1
                 yield record
         if buffer:

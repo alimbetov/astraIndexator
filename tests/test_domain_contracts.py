@@ -3,8 +3,8 @@ from uuid import uuid4
 import pytest
 
 from astra_indexator.domain.contracts import (
-    AccessZoneCode,
     CANONICAL_ACCESS_ZONES,
+    AccessZoneCode,
     DocumentIdentity,
     KnowledgeType,
 )

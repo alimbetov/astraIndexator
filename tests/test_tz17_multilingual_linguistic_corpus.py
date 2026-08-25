@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
+from pathlib import Path
 
 import pytest
 
-from astra_indexator.verification.linguistic import evaluate_corpus, load_corpus, verify_corpus_gates
-
+from astra_indexator.verification.linguistic import (
+    evaluate_corpus,
+    load_corpus,
+    verify_corpus_gates,
+)
 
 CORPUS = Path(__file__).parent / "fixtures" / "linguistic" / "corpus-v1.json"
 
@@ -50,14 +53,16 @@ def test_false_split_and_missed_split_are_scored_separately(tmp_path: Path):
         "schemaVersion": "astra-indexator-linguistic-corpus-v1",
         "fixtureVersion": "test",
         "languages": ["en"],
-        "cases": [{
-            "id": "scoring",
-            "language": "en",
-            "backend": "unicode",
-            "text": "One. Two. Three.",
-            "expectedBoundaries": [4, 9],
-            "expectedSentences": ["One.", "Two.", "Three."],
-        }],
+        "cases": [
+            {
+                "id": "scoring",
+                "language": "en",
+                "backend": "unicode",
+                "text": "One. Two. Three.",
+                "expectedBoundaries": [4, 9],
+                "expectedSentences": ["One.", "Two.", "Three."],
+            }
+        ],
         "gates": {"minimumLanguages": 1},
     }
     path = tmp_path / "corpus.json"
@@ -70,20 +75,27 @@ def test_false_split_and_missed_split_are_scored_separately(tmp_path: Path):
 
 def test_duplicate_case_ids_are_rejected(tmp_path: Path):
     path = tmp_path / "bad.json"
-    path.write_text(json.dumps({
-        "schemaVersion": "astra-indexator-linguistic-corpus-v1",
-        "fixtureVersion": "bad",
-        "cases": [
-            {"id": "x", "language": "en", "text": "A."},
-            {"id": "x", "language": "en", "text": "B."},
-        ],
-    }), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": "astra-indexator-linguistic-corpus-v1",
+                "fixtureVersion": "bad",
+                "cases": [
+                    {"id": "x", "language": "en", "text": "A."},
+                    {"id": "x", "language": "en", "text": "B."},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="CASE_ID_INVALID"):
         load_corpus(path)
 
 
 def test_unknown_schema_is_rejected(tmp_path: Path):
     path = tmp_path / "bad.json"
-    path.write_text(json.dumps({"schemaVersion": "v0", "fixtureVersion": "x", "cases": [{}]}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"schemaVersion": "v0", "fixtureVersion": "x", "cases": [{}]}), encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="SCHEMA_UNSUPPORTED"):
         load_corpus(path)

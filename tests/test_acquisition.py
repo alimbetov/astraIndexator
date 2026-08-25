@@ -25,7 +25,9 @@ class FakeStorage:
 
 
 def _service(tmp_path: Path, payload: bytes, **policy_kwargs) -> SafeAcquisitionService:
-    return SafeAcquisitionService(FakeStorage(payload), tmp_path, AcquisitionPolicy(**policy_kwargs))
+    return SafeAcquisitionService(
+        FakeStorage(payload), tmp_path, AcquisitionPolicy(**policy_kwargs)
+    )
 
 
 def test_pdf_is_streamed_hashed_and_promoted(tmp_path: Path) -> None:
@@ -123,7 +125,9 @@ def test_minimal_docx_container_is_admitted(tmp_path: Path) -> None:
 
 
 def test_docx_path_traversal_is_rejected(tmp_path: Path) -> None:
-    payload = _docx({"[Content_Types].xml": b"<Types/>", "word/document.xml": b"<document/>", "../evil": b"x"})
+    payload = _docx(
+        {"[Content_Types].xml": b"<Types/>", "word/document.xml": b"<document/>", "../evil": b"x"}
+    )
     with pytest.raises(AcquisitionError) as exc:
         _service(tmp_path, payload).acquire(
             source_uri="seaweed://documents/a.docx",

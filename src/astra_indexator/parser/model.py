@@ -108,6 +108,13 @@ def deterministic_element_id(
     element_type: ElementType,
 ) -> str:
     payload = "\x1f".join(
-        [str(document_id), str(document_version), source_sha256, detected_format, locator, element_type.value]
+        [
+            str(document_id),
+            str(document_version),
+            source_sha256,
+            detected_format,
+            locator,
+            element_type.value,
+        ]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

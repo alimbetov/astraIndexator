@@ -16,7 +16,9 @@ class PreparedArtifactCheckpoint(Base):
     __table_args__ = (
         CheckConstraint("lease_generation > 0", name="prepared_artifact_lease_generation_positive"),
         CheckConstraint("element_count >= 0", name="prepared_artifact_element_count_non_negative"),
-        CheckConstraint("fragment_count >= 0", name="prepared_artifact_fragment_count_non_negative"),
+        CheckConstraint(
+            "fragment_count >= 0", name="prepared_artifact_fragment_count_non_negative"
+        ),
         {"schema": SCHEMA},
     )
 
@@ -33,5 +35,9 @@ class PreparedArtifactCheckpoint(Base):
     element_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
     fragment_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
     lease_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

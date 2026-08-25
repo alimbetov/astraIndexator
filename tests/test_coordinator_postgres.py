@@ -171,11 +171,15 @@ def test_expired_lease_is_reclaimed_and_generation_increments(database_url: str)
         session.rollback()
 
     with Session(engine) as session:
-        attempts = session.execute(
-            select(ProcessingAttempt)
-            .where(ProcessingAttempt.job_id == job_id)
-            .order_by(ProcessingAttempt.attempt_number)
-        ).scalars().all()
+        attempts = (
+            session.execute(
+                select(ProcessingAttempt)
+                .where(ProcessingAttempt.job_id == job_id)
+                .order_by(ProcessingAttempt.attempt_number)
+            )
+            .scalars()
+            .all()
+        )
         assert len(attempts) == 2
         assert attempts[0].result == "LEASE_EXPIRED"
         assert attempts[1].lease_generation == second.token.lease_generation

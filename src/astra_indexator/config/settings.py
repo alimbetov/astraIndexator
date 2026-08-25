@@ -52,7 +52,12 @@ class AcquisitionSettings(BaseSettings):
             raise ValueError("max_compression_ratio must be > 1")
         if self.max_nested_container_depth < 0:
             raise ValueError("max_nested_container_depth must be >= 0")
-        if min(self.connect_timeout_seconds, self.read_timeout_seconds, self.total_deadline_seconds) <= 0:
+        if (
+            min(
+                self.connect_timeout_seconds, self.read_timeout_seconds, self.total_deadline_seconds
+            )
+            <= 0
+        ):
             raise ValueError("acquisition timeouts must be positive")
         if self.total_deadline_seconds < self.connect_timeout_seconds:
             raise ValueError("total_deadline_seconds must be >= connect_timeout_seconds")
@@ -93,6 +98,7 @@ class OcrSettings(BaseSettings):
 
     def to_profile(self):
         from astra_indexator.ocr.model import OcrProfile
+
         return OcrProfile(
             profile_id=self.profile_id,
             languages=self.language_tuple,
@@ -122,9 +128,16 @@ class OcrSettings(BaseSettings):
         if not (0 <= self.hard_confidence_floor <= self.min_confidence <= 1):
             raise ValueError("OCR confidence thresholds must satisfy 0 <= hard floor <= min <= 1")
         positive = (
-            self.min_image_width, self.min_image_height, self.min_image_pixels, self.max_pages_per_job,
-            self.max_pixels_per_page, self.max_total_pixels_per_job, self.max_derived_bytes,
-            self.memory_soft_limit_bytes, self.memory_hard_limit_bytes, self.max_concurrent_pages_per_worker,
+            self.min_image_width,
+            self.min_image_height,
+            self.min_image_pixels,
+            self.max_pages_per_job,
+            self.max_pixels_per_page,
+            self.max_total_pixels_per_job,
+            self.max_derived_bytes,
+            self.memory_soft_limit_bytes,
+            self.memory_hard_limit_bytes,
+            self.max_concurrent_pages_per_worker,
             self.render_dpi,
         )
         if min(positive) <= 0:

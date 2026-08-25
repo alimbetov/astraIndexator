@@ -48,7 +48,9 @@ def identity() -> ArtifactIdentity:
     return ArtifactIdentity(uuid4(), 7, "a" * 64)
 
 
-def compatibility(*, splitter_version: str = "logical-v1", hard_max_chars: int = 12000) -> ArtifactCompatibility:
+def compatibility(
+    *, splitter_version: str = "logical-v1", hard_max_chars: int = 12000
+) -> ArtifactCompatibility:
     return ArtifactCompatibility(
         schema_version="prepared-v1",
         parser_name="canonical",
@@ -155,8 +157,14 @@ def test_replay_requires_full_effective_pipeline_compatibility() -> None:
     )
     manifest = published.manifest
     assert reader.replay_decision(manifest, compatibility()) is ReplayDecision.REPLAY
-    assert reader.replay_decision(manifest, compatibility(splitter_version="logical-v2")) is ReplayDecision.REPROCESS
-    assert reader.replay_decision(manifest, compatibility(hard_max_chars=16000)) is ReplayDecision.REPROCESS
+    assert (
+        reader.replay_decision(manifest, compatibility(splitter_version="logical-v2"))
+        is ReplayDecision.REPROCESS
+    )
+    assert (
+        reader.replay_decision(manifest, compatibility(hard_max_chars=16000))
+        is ReplayDecision.REPROCESS
+    )
 
 
 def test_manifest_is_loaded_and_verified_from_durable_bytes() -> None:
@@ -171,7 +179,9 @@ def test_manifest_is_loaded_and_verified_from_durable_bytes() -> None:
         elements=[{"elementId": "e1"}],
         fragments=[{"fragmentId": "f1"}],
     )
-    restored = reader.load_manifest(published.manifest_key, expected_sha256=published.manifest_sha256)
+    restored = reader.load_manifest(
+        published.manifest_key, expected_sha256=published.manifest_sha256
+    )
     assert restored == published.manifest
     replay = reader.load(restored)
     assert replay.elements[0]["elementId"] == "e1"

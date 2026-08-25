@@ -40,9 +40,12 @@ class SeaweedFilerStorage:
         last_modified = response.headers.get("last-modified")
         return ObjectHead(
             exists=True,
-            size_bytes=int(response.headers["content-length"]) if response.headers.get("content-length") else None,
+            size_bytes=int(response.headers["content-length"])
+            if response.headers.get("content-length")
+            else None,
             etag=response.headers.get("etag"),
-            version_id=response.headers.get("x-seaweedfs-version-id") or response.headers.get("x-amz-version-id"),
+            version_id=response.headers.get("x-seaweedfs-version-id")
+            or response.headers.get("x-amz-version-id"),
             content_type=response.headers.get("content-type"),
             last_modified=parsedate_to_datetime(last_modified) if last_modified else None,
         )

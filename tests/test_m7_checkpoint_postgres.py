@@ -156,7 +156,9 @@ def test_expired_lease_cannot_install_checkpoint(database_url: str) -> None:
     published = _published(claimed, document_id, store)
     with engine.begin() as conn:
         conn.execute(
-            text("UPDATE astra_indexator.indexation_job SET lease_until=now()-interval '1 second' WHERE id=:id"),
+            text(
+                "UPDATE astra_indexator.indexation_job SET lease_until=now()-interval '1 second' WHERE id=:id"
+            ),
             {"id": claimed.token.job_id},
         )
     with Session(engine) as session:

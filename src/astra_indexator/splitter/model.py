@@ -39,7 +39,9 @@ class SplitterProfile:
     def validate(self) -> None:
         if self.sentence_boundary_backend not in {"unicode", "icu"}:
             raise ValueError("SPLITTER_PROFILE_INVALID:sentence_boundary_backend")
-        if not (0 < self.min_chars <= self.target_chars <= self.soft_max_chars <= self.hard_max_chars):
+        if not (
+            0 < self.min_chars <= self.target_chars <= self.soft_max_chars <= self.hard_max_chars
+        ):
             raise ValueError("SPLITTER_PROFILE_INVALID:char_limits")
         if not (0 < self.target_words <= self.soft_max_words <= self.hard_max_words):
             raise ValueError("SPLITTER_PROFILE_INVALID:word_limits")

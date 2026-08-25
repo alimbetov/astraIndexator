@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import csv
-import io
-from pathlib import Path
 from typing import Any
 
 from bs4 import BeautifulSoup, Tag
@@ -58,8 +56,12 @@ class XlsxDocumentHandler:
     format_name = "XLSX"
 
     def parse(self, source: AcquiredSource, context: ParseContext):
-        formula_wb = load_workbook(source.local_path, read_only=True, data_only=False, keep_links=False)
-        value_wb = load_workbook(source.local_path, read_only=True, data_only=True, keep_links=False)
+        formula_wb = load_workbook(
+            source.local_path, read_only=True, data_only=False, keep_links=False
+        )
+        value_wb = load_workbook(
+            source.local_path, read_only=True, data_only=True, keep_links=False
+        )
         try:
             if len(formula_wb.sheetnames) > context.limits.max_sheets:
                 raise ParserError("PARSER_SHEET_LIMIT", "workbook sheet limit exceeded")
@@ -86,12 +88,18 @@ class XlsxDocumentHandler:
                             continue
                         non_empty_cells += 1
                         if non_empty_cells > context.limits.max_non_empty_cells:
-                            raise ParserError("PARSER_CELL_LIMIT", "workbook non-empty cell limit exceeded")
+                            raise ParserError(
+                                "PARSER_CELL_LIMIT", "workbook non-empty cell limit exceeded"
+                            )
                         formula_text = raw if isinstance(raw, str) and raw.startswith("=") else None
-                        display_value = cached if cached is not None else (None if formula_text else raw)
+                        display_value = (
+                            cached if cached is not None else (None if formula_text else raw)
+                        )
                         rendered = "" if display_value is None else str(display_value)
                         if len(rendered) > context.limits.max_cell_chars:
-                            raise ParserError("PARSER_CELL_TEXT_LIMIT", "cell text exceeds configured limit")
+                            raise ParserError(
+                                "PARSER_CELL_TEXT_LIMIT", "cell text exceeds configured limit"
+                            )
                         cells.append(
                             {
                                 "address": f_cell.coordinate,
@@ -112,7 +120,11 @@ class XlsxDocumentHandler:
                     paired = []
                     if headers and row_index > 1:
                         for idx, value in enumerate(values_for_text):
-                            key = headers[idx] if idx < len(headers) and headers[idx] else f"column_{idx + 1}"
+                            key = (
+                                headers[idx]
+                                if idx < len(headers) and headers[idx]
+                                else f"column_{idx + 1}"
+                            )
                             paired.append(f"{key}: {value}")
                     text = "; ".join(paired or values_for_text)
                     start_col = cells[0]["address"]
@@ -168,7 +180,10 @@ class PptxDocumentHandler:
             ordered_shapes = sorted(
                 list(slide.shapes),
                 key=lambda shape: (
-                    0 if getattr(shape, "is_placeholder", False) and getattr(shape.placeholder_format, "type", None) == 1 else 1,
+                    0
+                    if getattr(shape, "is_placeholder", False)
+                    and getattr(shape.placeholder_format, "type", None) == 1
+                    else 1,
                     int(getattr(shape, "top", 0)),
                     int(getattr(shape, "left", 0)),
                     int(getattr(shape, "shape_id", 0)),
@@ -190,19 +205,38 @@ class PptxDocumentHandler:
                     page_height=float(presentation.slide_height),
                     coordinate_space="emu-top-left",
                 )
-                source_locator = {"slideNumber": slide_number, "shapeId": shape_id, "shapeIndex": shape_index}
+                source_locator = {
+                    "slideNumber": slide_number,
+                    "shapeId": shape_id,
+                    "shapeIndex": shape_index,
+                }
                 if getattr(shape, "has_table", False):
                     rows = [[cell.text for cell in row.cells] for row in shape.table.rows]
                     _append(
-                        elements, source, context, ElementType.TABLE, locator,
+                        elements,
+                        source,
+                        context,
+                        ElementType.TABLE,
+                        locator,
                         text="\n".join(" | ".join(row) for row in rows),
-                        geometry=geometry, source_locator=source_locator,
-                        metadata={"rows": rows, "rowCount": len(rows), "columnCount": len(rows[0]) if rows else 0},
+                        geometry=geometry,
+                        source_locator=source_locator,
+                        metadata={
+                            "rows": rows,
+                            "rowCount": len(rows),
+                            "columnCount": len(rows[0]) if rows else 0,
+                        },
                     )
                 elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                     element = _append(
-                        elements, source, context, ElementType.IMAGE, locator,
-                        geometry=geometry, source_locator=source_locator, role="SLIDE_IMAGE",
+                        elements,
+                        source,
+                        context,
+                        ElementType.IMAGE,
+                        locator,
+                        geometry=geometry,
+                        source_locator=source_locator,
+                        role="SLIDE_IMAGE",
                     )
                     candidates.append(
                         OcrCandidate(
@@ -224,7 +258,9 @@ class PptxDocumentHandler:
                         placeholder_type = str(shape.placeholder_format.type)
                     is_title = shape is slide.shapes.title
                     _append(
-                        elements, source, context,
+                        elements,
+                        source,
+                        context,
                         ElementType.HEADING if is_title else ElementType.PARAGRAPH,
                         locator,
                         text=text,
@@ -234,15 +270,23 @@ class PptxDocumentHandler:
                         metadata={"placeholderType": placeholder_type},
                     )
             if slide.has_notes_slide:
-                notes_text = "\n".join(
-                    shape.text.strip()
-                    for shape in slide.notes_slide.notes_text_frame.paragraphs
-                    if getattr(shape, "text", "").strip()
-                ) if getattr(slide.notes_slide, "notes_text_frame", None) else ""
+                notes_text = (
+                    "\n".join(
+                        shape.text.strip()
+                        for shape in slide.notes_slide.notes_text_frame.paragraphs
+                        if getattr(shape, "text", "").strip()
+                    )
+                    if getattr(slide.notes_slide, "notes_text_frame", None)
+                    else ""
+                )
                 if notes_text:
                     _append(
-                        elements, source, context, ElementType.PARAGRAPH,
-                        f"slide:{slide_number}:notes", text=notes_text,
+                        elements,
+                        source,
+                        context,
+                        ElementType.PARAGRAPH,
+                        f"slide:{slide_number}:notes",
+                        text=notes_text,
                         role="SPEAKER_NOTES",
                         source_locator={"slideNumber": slide_number, "notesScope": True},
                     )
@@ -269,18 +313,34 @@ class CsvDocumentHandler:
                 if len(row) > context.limits.max_columns:
                     raise ParserError("PARSER_COLUMN_LIMIT", "CSV column limit exceeded")
                 if any(len(cell) > context.limits.max_cell_chars for cell in row):
-                    raise ParserError("PARSER_CELL_TEXT_LIMIT", "CSV cell text exceeds configured limit")
+                    raise ParserError(
+                        "PARSER_CELL_TEXT_LIMIT", "CSV cell text exceeds configured limit"
+                    )
                 if headers is None:
                     headers = row
                 paired = []
                 for index, value in enumerate(row):
-                    key = headers[index] if headers and index < len(headers) and headers[index] else f"column_{index + 1}"
+                    key = (
+                        headers[index]
+                        if headers and index < len(headers) and headers[index]
+                        else f"column_{index + 1}"
+                    )
                     paired.append(f"{key}: {value}")
                 _append(
-                    elements, source, context, ElementType.TABLE, f"row:{row_index}",
-                    text="; ".join(paired), role="TABLE_ROW",
+                    elements,
+                    source,
+                    context,
+                    ElementType.TABLE,
+                    f"row:{row_index}",
+                    text="; ".join(paired),
+                    role="TABLE_ROW",
                     source_locator={"rowIndex": row_index, "columnStart": 1, "columnEnd": len(row)},
-                    metadata={"cells": row, "headers": headers or [], "delimiter": dialect.delimiter, "quoteChar": dialect.quotechar},
+                    metadata={
+                        "cells": row,
+                        "headers": headers or [],
+                        "delimiter": dialect.delimiter,
+                        "quoteChar": dialect.quotechar,
+                    },
                 )
         return _doc(source, context, "csv-stream-v1", elements, [], [])
 
@@ -314,14 +374,33 @@ class HtmlDocumentHandler:
         elements: list[DocumentElement] = []
         for tag in nodes:
             name = tag.name.lower()
-            if name not in {"title", "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table", "pre", "code", "img"}:
+            if name not in {
+                "title",
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "h5",
+                "h6",
+                "p",
+                "li",
+                "table",
+                "pre",
+                "code",
+                "img",
+            }:
                 continue
             locator = _dom_path(tag)
             source_locator = {"domPath": locator, "elementId": tag.get("id")}
             if name == "img":
                 _append(
-                    elements, source, context, ElementType.IMAGE, locator,
-                    role="HTML_IMAGE_REFERENCE", source_locator=source_locator,
+                    elements,
+                    source,
+                    context,
+                    ElementType.IMAGE,
+                    locator,
+                    role="HTML_IMAGE_REFERENCE",
+                    source_locator=source_locator,
                     metadata={"src": tag.get("src"), "alt": tag.get("alt")},
                 )
                 continue
@@ -343,7 +422,16 @@ class HtmlDocumentHandler:
             else:
                 kind = ElementType.PARAGRAPH
                 level = None
-            _append(elements, source, context, kind, locator, text=text, level=level, source_locator=source_locator)
+            _append(
+                elements,
+                source,
+                context,
+                kind,
+                locator,
+                text=text,
+                level=level,
+                source_locator=source_locator,
+            )
         return _doc(source, context, "beautifulsoup-lxml", elements, [], [])
 
 
@@ -354,10 +442,17 @@ class RtfDocumentHandler:
         raw = source.local_path.read_text(encoding="latin-1")
         text = rtf_to_text(raw)
         elements: list[DocumentElement] = []
-        for paragraph_index, paragraph in enumerate(p.strip() for p in text.splitlines() if p.strip()):
+        for paragraph_index, paragraph in enumerate(
+            p.strip() for p in text.splitlines() if p.strip()
+        ):
             _append(
-                elements, source, context, ElementType.PARAGRAPH, f"paragraph:{paragraph_index}",
-                text=paragraph, source_locator={"paragraphIndex": paragraph_index},
+                elements,
+                source,
+                context,
+                ElementType.PARAGRAPH,
+                f"paragraph:{paragraph_index}",
+                text=paragraph,
+                source_locator={"paragraphIndex": paragraph_index},
             )
         return _doc(source, context, "striprtf-v1", elements, [], ["RTF_STRUCTURE_PARTIAL"])
 
@@ -386,7 +481,12 @@ class OdtDocumentHandler:
                     else:
                         kind = ElementType.PARAGRAPH
                     _append(
-                        elements, source, context, kind, f"node:{index}", text=text,
+                        elements,
+                        source,
+                        context,
+                        kind,
+                        f"node:{index}",
+                        text=text,
                         section_path=section_path,
                         source_locator={"odfNodeIndex": index, "odfType": local},
                     )
@@ -416,13 +516,26 @@ class EpubDocumentHandler:
             soup = BeautifulSoup(item.get_content(), "lxml")
             for tag in soup(["script", "style", "noscript", "template"]):
                 tag.decompose()
-            for local_index, tag in enumerate(soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table", "pre", "img"])):
+            for local_index, tag in enumerate(
+                soup.find_all(
+                    ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table", "pre", "img"]
+                )
+            ):
                 locator = f"spine:{spine_index}:node:{local_index}"
-                source_locator = {"spineIndex": spine_index, "href": item.file_name, "domPath": _dom_path(tag)}
+                source_locator = {
+                    "spineIndex": spine_index,
+                    "href": item.file_name,
+                    "domPath": _dom_path(tag),
+                }
                 if tag.name == "img":
                     _append(
-                        elements, source, context, ElementType.IMAGE, locator,
-                        role="EPUB_IMAGE_REFERENCE", source_locator=source_locator,
+                        elements,
+                        source,
+                        context,
+                        ElementType.IMAGE,
+                        locator,
+                        role="EPUB_IMAGE_REFERENCE",
+                        source_locator=source_locator,
                         metadata={"src": tag.get("src"), "alt": tag.get("alt")},
                     )
                     continue
@@ -444,5 +557,14 @@ class EpubDocumentHandler:
                 else:
                     kind = ElementType.PARAGRAPH
                     level = None
-                _append(elements, source, context, kind, locator, text=text, level=level, source_locator=source_locator)
+                _append(
+                    elements,
+                    source,
+                    context,
+                    kind,
+                    locator,
+                    text=text,
+                    level=level,
+                    source_locator=source_locator,
+                )
         return _doc(source, context, "ebooklib-html-structured", elements, [], [])

@@ -57,14 +57,20 @@ def _validate_onnx_bundle(root: Path, manifest: dict[str, Any]) -> None:
     if str(manifest.get("inferenceEngine", "")).lower() != "onnxruntime":
         return
     provider = str(manifest.get("executionProvider", ""))
-    if provider not in {"CPUExecutionProvider", "CUDAExecutionProvider", "TensorrtExecutionProvider"}:
+    if provider not in {
+        "CPUExecutionProvider",
+        "CUDAExecutionProvider",
+        "TensorrtExecutionProvider",
+    }:
         raise OcrModelBundleError("OCR_MODEL_EXECUTION_PROVIDER_INVALID")
     precision = str(manifest.get("precision", "fp32")).lower()
     if precision not in {"fp32", "fp16", "int8"}:
         raise OcrModelBundleError("OCR_MODEL_PRECISION_INVALID")
     for directory_key in ("textDetectionModelDir", "textRecognitionModelDir"):
         model_dir = root / str(manifest[directory_key])
-        if not any(path.is_file() and path.suffix.lower() == ".onnx" for path in model_dir.rglob("*.onnx")):
+        if not any(
+            path.is_file() and path.suffix.lower() == ".onnx" for path in model_dir.rglob("*.onnx")
+        ):
             raise OcrModelBundleError(f"OCR_ONNX_MODEL_MISSING:{directory_key}")
 
 
@@ -77,8 +83,16 @@ def verify_local_bundle(root: Path) -> VerifiedOcrModelBundle:
         raise OcrModelBundleError("OCR_MODEL_MANIFEST_UNSUPPORTED")
     if manifest.get("modelKind", "OCR") != "OCR":
         raise OcrModelBundleError("OCR_MODEL_KIND_INVALID")
-    required = ["modelId", "engine", "engineVersion", "artifactRevision", "languages", "files",
-                "textDetectionModelDir", "textRecognitionModelDir"]
+    required = [
+        "modelId",
+        "engine",
+        "engineVersion",
+        "artifactRevision",
+        "languages",
+        "files",
+        "textDetectionModelDir",
+        "textRecognitionModelDir",
+    ]
     missing = [key for key in required if key not in manifest]
     if missing:
         raise OcrModelBundleError(f"OCR_MODEL_MANIFEST_INVALID:{','.join(missing)}")
@@ -116,7 +130,9 @@ def verify_local_bundle(root: Path) -> VerifiedOcrModelBundle:
 class NexusOcrBundlePreloader:
     """Explicit startup/init utility; never used from per-document recognition."""
 
-    def __init__(self, *, client: httpx.Client, allowed_origin: str = "https://nexus.astrabase.asia"):
+    def __init__(
+        self, *, client: httpx.Client, allowed_origin: str = "https://nexus.astrabase.asia"
+    ):
         self.client = client
         parsed = urlparse(allowed_origin)
         self.allowed_origin = f"{parsed.scheme}://{parsed.netloc}"
@@ -143,7 +159,9 @@ class NexusOcrBundlePreloader:
             raise OcrModelBundleError("OCR_MODEL_DOWNLOAD_CHECKSUM_MISMATCH")
         temporary.replace(target)
 
-    def preload(self, *, manifest_url: str, expected_manifest_sha256: str, target_root: Path) -> VerifiedOcrModelBundle:
+    def preload(
+        self, *, manifest_url: str, expected_manifest_sha256: str, target_root: Path
+    ) -> VerifiedOcrModelBundle:
         self._validate_url(manifest_url)
         response = self.client.get(manifest_url)
         response.raise_for_status()

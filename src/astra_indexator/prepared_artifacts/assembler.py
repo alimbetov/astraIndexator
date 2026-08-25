@@ -26,11 +26,21 @@ class PreparedArtifactAssembler:
         ocr_model_id: str | None = None,
         ocr_artifact_revision: str | None = None,
         ocr_manifest_sha256: str | None = None,
-    ) -> tuple[ArtifactIdentity, ArtifactCompatibility, tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    ) -> tuple[
+        ArtifactIdentity,
+        ArtifactCompatibility,
+        tuple[dict[str, Any], ...],
+        tuple[dict[str, Any], ...],
+    ]:
         for fragment in fragments:
-            if fragment.document_id != document.document_id or fragment.document_version != document.document_version:
+            if (
+                fragment.document_id != document.document_id
+                or fragment.document_version != document.document_version
+            ):
                 raise ValueError("M7_ASSEMBLER_FRAGMENT_IDENTITY_MISMATCH")
-        identity = ArtifactIdentity(document.document_id, document.document_version, document.source_sha256)
+        identity = ArtifactIdentity(
+            document.document_id, document.document_version, document.source_sha256
+        )
         compatibility = ArtifactCompatibility(
             schema_version="prepared-v1",
             parser_name=parser_name,

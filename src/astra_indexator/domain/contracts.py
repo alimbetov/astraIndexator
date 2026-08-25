@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
-import re
 from uuid import UUID
-
 
 _ACCESS_ZONE_RE = re.compile(r"^[0-9]{4}$")
 

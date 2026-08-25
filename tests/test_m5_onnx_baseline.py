@@ -28,10 +28,12 @@ def _bundle(tmp_path, *, provider="CPUExecutionProvider", include_rec_onnx=True)
     dictionary.write_text("Ә\nҒ\nҚ\nҢ\nӨ\nҰ\nҮ\nҺ\nІ\nA\n", encoding="utf-8")
     files = []
     for path in (det_file, rec_file, dictionary):
-        files.append({
-            "path": path.relative_to(root).as_posix(),
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        })
+        files.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
     manifest = {
         "schemaVersion": "astra-indexator-ocr-model-v1",
         "modelKind": "OCR",
@@ -106,5 +108,7 @@ def test_cuda_profile_requires_gpu_device_and_cuda_provider(tmp_path, monkeypatc
     fake_ort = types.ModuleType("onnxruntime")
     fake_ort.get_available_providers = lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]
     monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
-    with pytest.raises(RuntimeError, match="OCR_ONNX_DEVICE_PROVIDER_MISMATCH:CUDAExecutionProvider"):
+    with pytest.raises(
+        RuntimeError, match="OCR_ONNX_DEVICE_PROVIDER_MISMATCH:CUDAExecutionProvider"
+    ):
         PaddleOnnxOcrEngine(bundle, device="cpu")

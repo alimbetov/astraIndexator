@@ -10,8 +10,16 @@ import pytest
 from pydantic import ValidationError
 
 from astra_indexator.acquisition.metrics import NoopAcquisitionMetrics
-from astra_indexator.acquisition.service import AcquisitionError, AcquisitionPolicy, SafeAcquisitionService
-from astra_indexator.acquisition.workspace import WorkspaceCapacityError, WorkspaceManager, WorkspacePolicy
+from astra_indexator.acquisition.service import (
+    AcquisitionError,
+    AcquisitionPolicy,
+    SafeAcquisitionService,
+)
+from astra_indexator.acquisition.workspace import (
+    WorkspaceCapacityError,
+    WorkspaceManager,
+    WorkspacePolicy,
+)
 from astra_indexator.config import AcquisitionSettings
 from astra_indexator.storage.object_storage import ObjectHead, StorageRef
 
@@ -48,7 +56,13 @@ def test_typed_settings_reject_invalid_limits(monkeypatch) -> None:
 
 def test_workspace_preflight_rejects_attempt_above_policy(tmp_path: Path) -> None:
     manager = WorkspaceManager(
-        WorkspacePolicy(tmp_path, min_free_bytes=1, reserve_bytes=0, max_attempt_bytes=10, orphan_grace_seconds=1)
+        WorkspacePolicy(
+            tmp_path,
+            min_free_bytes=1,
+            reserve_bytes=0,
+            max_attempt_bytes=10,
+            orphan_grace_seconds=1,
+        )
     )
     with pytest.raises(WorkspaceCapacityError):
         manager.preflight(expected_bytes=11)
@@ -56,7 +70,9 @@ def test_workspace_preflight_rejects_attempt_above_policy(tmp_path: Path) -> Non
 
 def test_nested_container_rejected_by_default(tmp_path: Path) -> None:
     payload = _docx(embedded=True)
-    service = SafeAcquisitionService(MemoryStorage(payload), tmp_path, AcquisitionPolicy(max_nested_container_depth=0))
+    service = SafeAcquisitionService(
+        MemoryStorage(payload), tmp_path, AcquisitionPolicy(max_nested_container_depth=0)
+    )
     with pytest.raises(AcquisitionError) as exc:
         service.acquire(
             source_uri="seaweed://documents/source.docx",

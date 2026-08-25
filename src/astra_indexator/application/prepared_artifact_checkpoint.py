@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from astra_indexator.application.coordinator import LeaseLostError, LeaseToken
 from astra_indexator.persistence.models import IndexationJob, JobEvent
 from astra_indexator.persistence.prepared_artifacts import PreparedArtifactCheckpoint
-from astra_indexator.prepared_artifacts.model import ArtifactManifest, PublishedArtifact
+from astra_indexator.prepared_artifacts.model import PublishedArtifact
 
 
 class PreparedArtifactIdentityMismatch(RuntimeError):
@@ -70,7 +70,9 @@ class PreparedArtifactCheckpointService:
             or job.source_content_hash is None
             or manifest.identity.source_sha256 != job.source_content_hash
         ):
-            raise PreparedArtifactIdentityMismatch("prepared artifact identity does not match locked indexation job")
+            raise PreparedArtifactIdentityMismatch(
+                "prepared artifact identity does not match locked indexation job"
+            )
 
         resolved_uri = manifest_uri or published.manifest_key
         checkpoint = session.get(PreparedArtifactCheckpoint, token.job_id)

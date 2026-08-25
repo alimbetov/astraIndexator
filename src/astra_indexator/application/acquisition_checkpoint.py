@@ -50,7 +50,9 @@ class AcquisitionCheckpoint:
             },
         )
         if result.rowcount != 1:
-            raise LeaseLostError("cannot install acquisition checkpoint with stale or expired lease")
+            raise LeaseLostError(
+                "cannot install acquisition checkpoint with stale or expired lease"
+            )
 
         session.add(
             JobEvent(

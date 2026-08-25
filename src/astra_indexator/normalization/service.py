@@ -13,7 +13,6 @@ from astra_indexator.parser import DocumentElement, ElementType, ParsedDocument
 
 from .model import NormalizationProfile, NormalizationStats, NormalizedDocument, NormalizedElement
 
-
 _HORIZONTAL_WS = re.compile(r"[\t\v\f ]+")
 _C0 = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _PROTECTED_TOKEN = re.compile(
@@ -34,7 +33,9 @@ def _canonical_profile_hash(profile: NormalizationProfile) -> str:
 
 
 def _overlaps_protected_span(text: str, start: int, end: int) -> bool:
-    return any(match.start() < end and match.end() > start for match in _PROTECTED_TOKEN.finditer(text))
+    return any(
+        match.start() < end and match.end() > start for match in _PROTECTED_TOKEN.finditer(text)
+    )
 
 
 class TextNormalizationService:
@@ -61,7 +62,11 @@ class TextNormalizationService:
             counters.update(local)
             warnings.extend(normalized.warnings)
 
-        furniture_ids = self._classify_page_furniture(normalized_pre) if self.profile.page_furniture_suppression else set()
+        furniture_ids = (
+            self._classify_page_furniture(normalized_pre)
+            if self.profile.page_furniture_suppression
+            else set()
+        )
         for index, element in enumerate(normalized_pre):
             if element.source_element_id in furniture_ids:
                 normalized_pre[index] = replace(
@@ -74,16 +79,18 @@ class TextNormalizationService:
 
         profile_hash = _canonical_profile_hash(self.profile)
         upstream = upstream_processing_fingerprint or "NO_UPSTREAM_PROCESSING_FINGERPRINT"
-        fingerprint_payload = "\x1f".join([
-            upstream,
-            document.source_sha256,
-            document.parser.name,
-            document.parser.version,
-            document.parser.profile,
-            self.profile.profile_id,
-            self.profile.version,
-            profile_hash,
-        ])
+        fingerprint_payload = "\x1f".join(
+            [
+                upstream,
+                document.source_sha256,
+                document.parser.name,
+                document.parser.version,
+                document.parser.profile,
+                self.profile.profile_id,
+                self.profile.version,
+                profile_hash,
+            ]
+        )
         fingerprint = hashlib.sha256(fingerprint_payload.encode("utf-8")).hexdigest()
         stats = NormalizationStats(
             elements_input=len(document.elements),
@@ -219,9 +226,11 @@ class TextNormalizationService:
             for match in reversed(matches):
                 start = max(0, match.start() - 64)
                 end = min(len(value), match.end() + 64)
-                if _overlaps_protected_span(value[start:end], match.start() - start, match.end() - start):
+                if _overlaps_protected_span(
+                    value[start:end], match.start() - start, match.end() - start
+                ):
                     continue
-                value = value[:match.start()] + value[match.end():]
+                value = value[: match.start()] + value[match.end() :]
                 counters["dehyphenations_applied"] += 1
 
         lines = value.split("\n")
@@ -273,13 +282,23 @@ class TextNormalizationService:
             if not key:
                 continue
             g = element.geometry
-            assert g is not None and g.page_height is not None and g.y0 is not None and g.y1 is not None
+            assert (
+                g is not None
+                and g.page_height is not None
+                and g.y0 is not None
+                and g.y1 is not None
+            )
             center = ((g.y0 + g.y1) / 2.0) / float(g.page_height)
-            near_edge = center <= self.profile.furniture_edge_fraction or center >= (1.0 - self.profile.furniture_edge_fraction)
+            near_edge = center <= self.profile.furniture_edge_fraction or center >= (
+                1.0 - self.profile.furniture_edge_fraction
+            )
             if near_edge:
                 occurrences.setdefault(key, []).append(element)
 
-        required = max(self.profile.furniture_min_pages, math.ceil(len(pages) * self.profile.furniture_min_fraction))
+        required = max(
+            self.profile.furniture_min_pages,
+            math.ceil(len(pages) * self.profile.furniture_min_fraction),
+        )
         suppressed: set[str] = set()
         for group in occurrences.values():
             distinct_pages = {e.geometry.page_number for e in group if e.geometry is not None}

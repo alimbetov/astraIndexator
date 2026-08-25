@@ -46,7 +46,9 @@ class ArtifactCompatibility:
 
     def __post_init__(self) -> None:
         ocr_fields = (self.ocr_model_id, self.ocr_artifact_revision, self.ocr_manifest_sha256)
-        if any(value is not None for value in ocr_fields) and not all(value is not None for value in ocr_fields):
+        if any(value is not None for value in ocr_fields) and not all(
+            value is not None for value in ocr_fields
+        ):
             raise ValueError("OCR compatibility identity must be complete or fully absent")
         if self.ocr_manifest_sha256 is not None:
             _validate_sha256("ocrManifestSha256", self.ocr_manifest_sha256)
@@ -106,9 +108,13 @@ class ArtifactManifest:
         paths = [part.path for part in self.parts]
         if len(paths) != len(set(paths)):
             raise ValueError("artifact part paths must be unique")
-        if self.total_element_count != sum(p.record_count for p in self.parts if p.kind == "ELEMENTS"):
+        if self.total_element_count != sum(
+            p.record_count for p in self.parts if p.kind == "ELEMENTS"
+        ):
             raise ValueError("totalElementCount does not match parts")
-        if self.total_fragment_count != sum(p.record_count for p in self.parts if p.kind == "FRAGMENTS"):
+        if self.total_fragment_count != sum(
+            p.record_count for p in self.parts if p.kind == "FRAGMENTS"
+        ):
             raise ValueError("totalFragmentCount does not match parts")
 
 

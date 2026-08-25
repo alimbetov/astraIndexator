@@ -10,7 +10,13 @@ from docx.shared import Inches
 from PIL import Image
 
 from astra_indexator.acquisition import AcquiredSource
-from astra_indexator.parser import DocumentParserService, ElementType, ParseContext, QualityStatus, default_registry
+from astra_indexator.parser import (
+    DocumentParserService,
+    ElementType,
+    ParseContext,
+    QualityStatus,
+    default_registry,
+)
 from astra_indexator.storage import StorageRef
 
 
@@ -36,7 +42,9 @@ def _ctx(source: AcquiredSource) -> ParseContext:
     return ParseContext(uuid4(), uuid4(), uuid4(), 1, source.sha256)
 
 
-def test_docx_embedded_image_keeps_body_order_without_forcing_whole_document_ocr(tmp_path: Path) -> None:
+def test_docx_embedded_image_keeps_body_order_without_forcing_whole_document_ocr(
+    tmp_path: Path,
+) -> None:
     image_path = tmp_path / "embedded.png"
     Image.new("RGB", (64, 32), "white").save(image_path)
 

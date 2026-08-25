@@ -12,7 +12,12 @@ from openpyxl import Workbook
 from pptx import Presentation
 
 from astra_indexator.acquisition import AcquiredSource, SafeAcquisitionService
-from astra_indexator.parser import DocumentParserService, ElementType, ParseContext, default_registry
+from astra_indexator.parser import (
+    DocumentParserService,
+    ElementType,
+    ParseContext,
+    default_registry,
+)
 from astra_indexator.storage import StorageRef
 
 
@@ -115,7 +120,7 @@ def test_html_is_offline_structured_dom_without_script_content(tmp_path: Path) -
 
 def test_rtf_admission_and_paragraph_conversion(tmp_path: Path) -> None:
     path = tmp_path / "sample.rtf"
-    path.write_bytes(br"{\rtf1\ansi First paragraph.\par Second paragraph.}")
+    path.write_bytes(rb"{\rtf1\ansi First paragraph.\par Second paragraph.}")
     fmt, _, _ = _validator(tmp_path)._validate(path, path.name)
     assert fmt == "RTF"
     result = _parse(path, fmt)
@@ -163,7 +168,9 @@ def test_epub_uses_spine_order_and_href_provenance(tmp_path: Path) -> None:
     assert headings[0].source_locator["href"] == "one.xhtml"
 
 
-def test_plain_delimited_text_is_not_promoted_to_csv_without_stable_evidence(tmp_path: Path) -> None:
+def test_plain_delimited_text_is_not_promoted_to_csv_without_stable_evidence(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "note.txt"
     path.write_text("alpha,beta\nonly one narrative line afterwards\n", encoding="utf-8")
     fmt, _, _ = _validator(tmp_path)._validate(path, path.name)

@@ -100,7 +100,9 @@ class TextDocumentHandler:
                 return
             elements.append(
                 DocumentElement(
-                    element_id=_eid(source, context, f"paragraph:{paragraph_index}", ElementType.PARAGRAPH),
+                    element_id=_eid(
+                        source, context, f"paragraph:{paragraph_index}", ElementType.PARAGRAPH
+                    ),
                     type=ElementType.PARAGRAPH,
                     order_index=len(elements),
                     text=text,
@@ -133,7 +135,9 @@ class MarkdownDocumentHandler:
         code: list[str] = []
         paragraph: list[str] = []
 
-        def emit(kind: ElementType, text: str, locator: str, *, level: int | None = None, metadata=None) -> None:
+        def emit(
+            kind: ElementType, text: str, locator: str, *, level: int | None = None, metadata=None
+        ) -> None:
             elements.append(
                 DocumentElement(
                     element_id=_eid(source, context, locator, kind),
@@ -151,7 +155,11 @@ class MarkdownDocumentHandler:
 
         def flush_paragraph(line_no: int) -> None:
             if paragraph:
-                emit(ElementType.PARAGRAPH, "\n".join(paragraph).strip(), f"paragraph-ending-line:{line_no}")
+                emit(
+                    ElementType.PARAGRAPH,
+                    "\n".join(paragraph).strip(),
+                    f"paragraph-ending-line:{line_no}",
+                )
                 paragraph.clear()
 
         with source.local_path.open("r", encoding="utf-8") as stream:
@@ -251,7 +259,9 @@ class DocxDocumentHandler:
                 rows = [[cell.text for cell in row.cells] for row in table.rows]
                 elements.append(
                     DocumentElement(
-                        element_id=_eid(source, context, f"table:{table_index - 1}", ElementType.TABLE),
+                        element_id=_eid(
+                            source, context, f"table:{table_index - 1}", ElementType.TABLE
+                        ),
                         type=ElementType.TABLE,
                         order_index=len(elements),
                         section_path=tuple(section_path),
@@ -325,7 +335,12 @@ class ImageDocumentHandler:
                 )
                 candidates.append(
                     OcrCandidate(
-                        f"ocr:{element_id}", "PAGE", frame + 1, "standalone_image", element_id, geometry
+                        f"ocr:{element_id}",
+                        "PAGE",
+                        frame + 1,
+                        "standalone_image",
+                        element_id,
+                        geometry,
                     )
                 )
             return _doc(
@@ -344,7 +359,10 @@ def _pdf_lines(words: list[dict], *, tolerance: float = 3.0) -> list[dict]:
     groups: list[list[dict]] = []
     for word in ordered:
         top = float(word.get("top", 0))
-        if not groups or abs(top - statistics.median(float(w.get("top", 0)) for w in groups[-1])) > tolerance:
+        if (
+            not groups
+            or abs(top - statistics.median(float(w.get("top", 0)) for w in groups[-1])) > tolerance
+        ):
             groups.append([word])
         else:
             groups[-1].append(word)
@@ -394,17 +412,34 @@ def _reading_order_v1(lines: list[dict], page_width: float) -> list[dict]:
     previous_bottom = float("-inf")
     for boundary in boundaries:
         band = [line for line in narrow if previous_bottom <= line["top"] < boundary["top"]]
-        result.extend(sorted((line for line in band if line in left), key=lambda line: (line["top"], line["x0"])))
-        result.extend(sorted((line for line in band if line in right), key=lambda line: (line["top"], line["x0"])))
+        result.extend(
+            sorted(
+                (line for line in band if line in left), key=lambda line: (line["top"], line["x0"])
+            )
+        )
+        result.extend(
+            sorted(
+                (line for line in band if line in right), key=lambda line: (line["top"], line["x0"])
+            )
+        )
         leftovers = [line for line in band if line not in left and line not in right]
         result.extend(sorted(leftovers, key=lambda line: (line["top"], line["x0"])))
         result.append(boundary)
         previous_bottom = boundary["bottom"]
 
     tail = [line for line in narrow if line["top"] >= previous_bottom]
-    result.extend(sorted((line for line in tail if line in left), key=lambda line: (line["top"], line["x0"])))
-    result.extend(sorted((line for line in tail if line in right), key=lambda line: (line["top"], line["x0"])))
-    result.extend(sorted((line for line in tail if line not in left and line not in right), key=lambda line: (line["top"], line["x0"])))
+    result.extend(
+        sorted((line for line in tail if line in left), key=lambda line: (line["top"], line["x0"]))
+    )
+    result.extend(
+        sorted((line for line in tail if line in right), key=lambda line: (line["top"], line["x0"]))
+    )
+    result.extend(
+        sorted(
+            (line for line in tail if line not in left and line not in right),
+            key=lambda line: (line["top"], line["x0"]),
+        )
+    )
     return result
 
 
@@ -413,13 +448,10 @@ def _pdf_element_kind(line: dict, median_font_size: float) -> tuple[ElementType,
     if re.match(r"^\s*(?:[-•*+] |\d+[.)]\s+)", text):
         return ElementType.LIST_ITEM, None
     font_size = float(line.get("fontSize", 0.0))
-    heading_signal = (
-        len(text) <= 180
-        and (
-            (median_font_size > 0 and font_size >= median_font_size * 1.15)
-            or (line.get("bold") and font_size >= median_font_size)
-            or bool(re.match(r"^(?:\d+(?:\.\d+)*[.)]?|[A-ZА-ЯӘҒҚҢӨҰҮҺІ][.)])\s+\S+", text))
-        )
+    heading_signal = len(text) <= 180 and (
+        (median_font_size > 0 and font_size >= median_font_size * 1.15)
+        or (line.get("bold") and font_size >= median_font_size)
+        or bool(re.match(r"^(?:\d+(?:\.\d+)*[.)]?|[A-ZА-ЯӘҒҚҢӨҰҮҺІ][.)])\s+\S+", text))
     )
     return (ElementType.HEADING, 1) if heading_signal else (ElementType.PARAGRAPH, None)
 
@@ -437,11 +469,14 @@ class PdfDocumentHandler:
             if len(pdf.pages) > context.limits.max_pages:
                 raise ParserError("PARSER_PAGE_LIMIT", "PDF page limit exceeded")
             for page_number, page in enumerate(pdf.pages, start=1):
-                words = page.extract_words(
-                    use_text_flow=False,
-                    keep_blank_chars=False,
-                    extra_attrs=["fontname", "size"],
-                ) or []
+                words = (
+                    page.extract_words(
+                        use_text_flow=False,
+                        keep_blank_chars=False,
+                        extra_attrs=["fontname", "size"],
+                    )
+                    or []
+                )
                 text_chars = sum(len(str(word.get("text", ""))) for word in words)
                 images = page.images or []
                 page_area = max(float(page.width) * float(page.height), 1.0)
@@ -560,4 +595,6 @@ class PdfDocumentHandler:
                 )
                 if len(elements) > context.limits.max_elements:
                     raise ParserError("PARSER_ELEMENT_LIMIT", "parser element limit exceeded")
-        return _doc(source, context, "pdfplumber-layout", elements, candidates, warnings, page_modes)
+        return _doc(
+            source, context, "pdfplumber-layout", elements, candidates, warnings, page_modes
+        )

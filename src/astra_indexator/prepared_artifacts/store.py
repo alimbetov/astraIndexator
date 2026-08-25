@@ -27,7 +27,9 @@ class SeaweedPreparedArtifactStore:
         self._bucket = bucket.strip("/")
         if not self._bucket:
             raise ValueError("artifact bucket must not be blank")
-        self._client = client or httpx.Client(timeout=httpx.Timeout(30.0, connect=5.0), follow_redirects=True)
+        self._client = client or httpx.Client(
+            timeout=httpx.Timeout(30.0, connect=5.0), follow_redirects=True
+        )
 
     @property
     def bucket(self) -> str:
@@ -66,6 +68,8 @@ class SeaweedPreparedArtifactStore:
     def put_if_absent(self, key: str, data: bytes, *, content_type: str) -> bool:
         if self.exists(key):
             return False
-        response = self._client.put(self._url(key), content=data, headers={"content-type": content_type})
+        response = self._client.put(
+            self._url(key), content=data, headers={"content-type": content_type}
+        )
         response.raise_for_status()
         return True
