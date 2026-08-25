@@ -37,9 +37,7 @@ def test_matching_singular_and_plural_are_correlation_compatible() -> None:
 
 def test_uuid_singular_and_code_may_coexist_as_correlation_assertion() -> None:
     zone_id = uuid4()
-    intent = normalize_delivery_intent(
-        {"accessZoneId": str(zone_id), "accessZoneCode": "1500"}
-    )
+    intent = normalize_delivery_intent({"accessZoneId": str(zone_id), "accessZoneCode": "1500"})
     assert intent.access_zone.access_zone_id == zone_id
     assert str(intent.access_zone.access_zone_code) == "1500"
 
