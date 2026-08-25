@@ -10,17 +10,14 @@ from sqlalchemy.orm import Session
 
 from astra_indexator.astravector.contracts import (
     AstraVectorIngestionPort,
+    AstraVectorTransportError,
     DocumentVectorStatus,
     FinalizeIngestionCommand,
     FinalizeIngestionResult,
     IngestionSessionState,
     IngestionStatus,
 )
-from astra_indexator.astravector.grpc_adapter import AstraVectorGrpcError
-from astra_indexator.persistence.delivery import (
-    DeliveryBatchRepository,
-    DeliveryIntegrityError,
-)
+from astra_indexator.persistence.delivery import DeliveryBatchRepository, DeliveryIntegrityError
 
 
 _AMBIGUOUS_FINALIZE_CODES = frozenset(
@@ -126,7 +123,7 @@ class FinalizeReconciliationRunner:
                 finalize_attempts += 1
                 try:
                     result = self._port.finalize(command)
-                except AstraVectorGrpcError as exc:
+                except AstraVectorTransportError as exc:
                     if exc.code not in _AMBIGUOUS_FINALIZE_CODES:
                         raise
                     last_status = self._observe_status(job_id, ingestion_session_id)
