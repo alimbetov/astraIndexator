@@ -18,7 +18,6 @@ from astra_indexator.astravector.contracts import (
 )
 from astra_indexator.persistence.delivery import DeliveryBatchRepository, DeliveryIntegrityError
 
-
 _AMBIGUOUS_FINALIZE_CODES = frozenset(
     {
         "DEADLINE_EXCEEDED",
