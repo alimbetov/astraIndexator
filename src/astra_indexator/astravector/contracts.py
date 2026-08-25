@@ -6,6 +6,15 @@ from typing import Mapping, Protocol, Sequence
 from uuid import UUID
 
 
+class AstraVectorTransportError(RuntimeError):
+    """Transport-level failure exposed through the AstraVector application port."""
+
+    def __init__(self, *, code: str, message: str) -> None:
+        super().__init__(f"AstraVector transport {code}: {message}")
+        self.code = code
+        self.message = message
+
+
 class IngestionSessionState(str, Enum):
     ACTIVE = "ACTIVE"
     FINALIZING = "FINALIZING"
