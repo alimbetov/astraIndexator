@@ -51,6 +51,7 @@ jobs:
             src/astra_indexator/application/coordinator.py \
             src/astra_indexator/application/prepared_artifact_checkpoint.py \
             src/astra_indexator/application/append_delivery.py \
+            src/astra_indexator/application/finalize_reconciliation.py \
             src/astra_indexator/astravector/wire_contract.py \
             src/astra_indexator/astravector/canonical_hash.py \
             src/astra_indexator/astravector/contracts.py \
