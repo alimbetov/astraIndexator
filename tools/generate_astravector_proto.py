@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import urllib.request
@@ -22,7 +23,11 @@ def _git_blob_sha(content: bytes) -> str:
 
 def _fetch_proto() -> bytes:
     url = f"https://api.github.com/repos/{REPOSITORY}/git/blobs/{PROTO_BLOB_SHA}"
-    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=30) as response:
         payload = json.load(response)
     content = base64.b64decode(payload["content"])
