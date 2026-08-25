@@ -89,9 +89,7 @@ class AppendDeliveryRunner:
                 )
                 continue
 
-            result = self._port.append(
-                batch.command(ingestion_session_id=ingestion_session_id)
-            )
+            result = self._port.append(batch.command(ingestion_session_id=ingestion_session_id))
 
             with self._session_factory() as session:
                 with session.begin():
