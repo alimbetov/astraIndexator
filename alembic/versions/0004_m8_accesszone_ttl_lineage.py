@@ -1,15 +1,15 @@
 """M8.1 durable AccessZone/TTL lineage.
 
-Revision ID: 0004_m8_accesszone_ttl_lineage
-Revises: 0003_prepared_artifact_checkpoint
+Revision ID: 0004_m8_zone_ttl
+Revises: 0003_prepared_checkpoint
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0004_m8_accesszone_ttl_lineage"
-down_revision = "0003_prepared_artifact_checkpoint"
+revision = "0004_m8_zone_ttl"
+down_revision = "0003_prepared_checkpoint"
 branch_labels = None
 depends_on = None
 
