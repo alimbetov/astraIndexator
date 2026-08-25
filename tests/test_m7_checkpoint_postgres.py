@@ -10,12 +10,24 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from testcontainers.postgres import PostgresContainer
 
-from astra_indexator.application.coordinator import JobCoordinator, LeaseLostError
-from astra_indexator.application.prepared_artifact_checkpoint import PreparedArtifactCheckpointService
+from astra_indexator.application import (
+    JobCoordinator,
+    LeaseLostError,
+    PreparedArtifactCheckpointService,
+    PreparedArtifactIdentityMismatch,
+    PreparedArtifactReplayService,
+)
 from astra_indexator.persistence.repository import IndexationJobRepository, NewIndexationJob
-from astra_indexator.prepared_artifacts import ArtifactCompatibility, ArtifactIdentity, PreparedArtifactPublisher
+from astra_indexator.prepared_artifacts import (
+    ArtifactCompatibility,
+    ArtifactIdentity,
+    PreparedArtifactPublisher,
+    PreparedArtifactReader,
+    ReplayDecision,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
+SOURCE_SHA = "a" * 64
 
 
 class MemoryStore:
@@ -29,14 +41,23 @@ class MemoryStore:
         return True
 
     def get(self, key: str) -> bytes:
+        if key not in self.objects:
+            raise FileNotFoundError(key)
         return self.objects[key]
+
+    def iter_bytes(self, key: str, *, chunk_size: int = 64 * 1024):
+        payload = self.get(key)
+        for offset in range(0, len(payload), chunk_size):
+            yield payload[offset : offset + chunk_size]
 
     def exists(self, key: str) -> bool:
         return key in self.objects
 
 
 def _psycopg_url(url: str) -> str:
-    return url.replace("postgresql+psycopg2://", "postgresql+psycopg://").replace("postgresql://", "postgresql+psycopg://")
+    return url.replace("postgresql+psycopg2://", "postgresql+psycopg://").replace(
+        "postgresql://", "postgresql+psycopg://"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -64,6 +85,7 @@ def _claim(engine):
                 knowledge_type="TECHNICAL",
                 source_uri="seaweed://documents/m7.pdf",
                 source_file_name="m7.pdf",
+                source_content_hash=SOURCE_SHA,
             ),
         )
         session.commit()
@@ -74,15 +96,11 @@ def _claim(engine):
     return claimed, document_id
 
 
-def _manifest(claimed, document_id):
-    store = MemoryStore()
-    publisher = PreparedArtifactPublisher(store)
-    # Unit publication fencing is tested separately. Here PostgreSQL fencing
-    # is exercised at authoritative checkpoint installation.
-    return publisher.publish(
+def _published(claimed, document_id, store: MemoryStore):
+    return PreparedArtifactPublisher(store).publish(
         token=claimed.token,
         assert_current_lease=lambda _: None,
-        identity=ArtifactIdentity(document_id, 1, "a" * 64),
+        identity=ArtifactIdentity(document_id, 1, SOURCE_SHA),
         compatibility=ArtifactCompatibility(
             schema_version="prepared-v1",
             parser_name="canonical",
@@ -97,33 +115,45 @@ def _manifest(claimed, document_id):
     )
 
 
-def test_checkpoint_is_authoritative_and_fenced(database_url: str) -> None:
+def test_checkpoint_is_authoritative_and_restart_replay_works(database_url: str) -> None:
     engine = create_engine(database_url)
     claimed, document_id = _claim(engine)
-    manifest = _manifest(claimed, document_id)
+    store = MemoryStore()
+    published = _published(claimed, document_id, store)
     service = PreparedArtifactCheckpointService()
-    uri = f"seaweed://prepared/{manifest.artifact_id}/manifest.json"
     with Session(engine) as session:
-        installed = service.install(session, claimed.token, manifest=manifest, manifest_uri=uri)
+        installed = service.install(session, claimed.token, published=published)
         session.commit()
-    assert installed.artifact_id == manifest.artifact_id
-
+    assert installed.artifact_id == published.manifest.artifact_id
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT artifact_id, manifest_uri, lease_generation, element_count, fragment_count FROM astra_indexator.prepared_artifact_checkpoint WHERE job_id=:id"),
+            text(
+                "SELECT artifact_id, manifest_uri, manifest_sha256, lease_generation, element_count, fragment_count "
+                "FROM astra_indexator.prepared_artifact_checkpoint WHERE job_id=:id"
+            ),
             {"id": claimed.token.job_id},
         ).one()
-        assert row.artifact_id == manifest.artifact_id
-        assert row.manifest_uri == uri
+        assert row.artifact_id == published.manifest.artifact_id
+        assert row.manifest_sha256 == published.manifest_sha256
         assert row.lease_generation == claimed.token.lease_generation
         assert row.element_count == 1
         assert row.fragment_count == 1
+    with Session(engine) as restarted_session:
+        decision, replay = PreparedArtifactReplayService(PreparedArtifactReader(store)).replay(
+            restarted_session,
+            job_id=claimed.token.job_id,
+            expected=published.manifest.compatibility,
+        )
+    assert decision is ReplayDecision.REPLAY
+    assert replay is not None
+    assert replay.fragments[0]["fragmentId"] == "f1"
 
 
 def test_expired_lease_cannot_install_checkpoint(database_url: str) -> None:
     engine = create_engine(database_url)
     claimed, document_id = _claim(engine)
-    manifest = _manifest(claimed, document_id)
+    store = MemoryStore()
+    published = _published(claimed, document_id, store)
     with engine.begin() as conn:
         conn.execute(
             text("UPDATE astra_indexator.indexation_job SET lease_until=now()-interval '1 second' WHERE id=:id"),
@@ -131,10 +161,47 @@ def test_expired_lease_cannot_install_checkpoint(database_url: str) -> None:
         )
     with Session(engine) as session:
         with pytest.raises(LeaseLostError):
-            PreparedArtifactCheckpointService().install(
-                session,
-                claimed.token,
-                manifest=manifest,
-                manifest_uri="seaweed://prepared/stale/manifest.json",
-            )
+            PreparedArtifactCheckpointService().install(session, claimed.token, published=published)
         session.rollback()
+
+
+def test_checkpoint_rejects_foreign_artifact_identity(database_url: str) -> None:
+    engine = create_engine(database_url)
+    claimed, _ = _claim(engine)
+    store = MemoryStore()
+    foreign = PreparedArtifactPublisher(store).publish(
+        token=claimed.token,
+        assert_current_lease=lambda _: None,
+        identity=ArtifactIdentity(uuid4(), 1, SOURCE_SHA),
+        compatibility=ArtifactCompatibility(
+            schema_version="prepared-v1",
+            parser_name="canonical",
+            parser_version="m4-v1",
+            parser_profile="default",
+            normalizer_version="m6-v1",
+            splitter_profile="default",
+            splitter_version="logical-v1",
+        ),
+        elements=[],
+        fragments=[],
+    )
+    with Session(engine) as session:
+        with pytest.raises(PreparedArtifactIdentityMismatch):
+            PreparedArtifactCheckpointService().install(session, claimed.token, published=foreign)
+        session.rollback()
+
+
+def test_manifest_without_postgres_checkpoint_is_non_authoritative(database_url: str) -> None:
+    engine = create_engine(database_url)
+    claimed, document_id = _claim(engine)
+    store = MemoryStore()
+    published = _published(claimed, document_id, store)
+    assert store.exists(published.manifest_key)
+    with Session(engine) as session:
+        decision, replay = PreparedArtifactReplayService(PreparedArtifactReader(store)).replay(
+            session,
+            job_id=claimed.token.job_id,
+            expected=published.manifest.compatibility,
+        )
+    assert decision is ReplayDecision.REPROCESS
+    assert replay is None
