@@ -1,3 +1,10 @@
+from .abort_reconciliation import (
+    AbortConflictError,
+    AbortDeliveryOutcome,
+    AbortReconciliationPending,
+    AbortReconciliationRunner,
+    AbortResolution,
+)
 from .acquisition_checkpoint import AcquisitionCheckpoint
 from .append_delivery import AppendDeliveryRunner, BatchDeliveryOutcome
 from .coordinator import ClaimedJob, JobCoordinator, LeaseLostError, LeaseToken
@@ -9,6 +16,11 @@ from .prepared_artifact_checkpoint import (
 from .prepared_artifact_replay import PreparedArtifactReplayService
 
 __all__ = [
+    "AbortConflictError",
+    "AbortDeliveryOutcome",
+    "AbortReconciliationPending",
+    "AbortReconciliationRunner",
+    "AbortResolution",
     "AcquisitionCheckpoint",
     "AppendDeliveryRunner",
     "BatchDeliveryOutcome",
