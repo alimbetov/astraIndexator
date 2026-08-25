@@ -27,6 +27,8 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Generate pinned AstraVector gRPC client
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python tools/generate_astravector_proto.py
           test -f src/astra_indexator/astravector/generated/astravector_embedding_pb2.py
