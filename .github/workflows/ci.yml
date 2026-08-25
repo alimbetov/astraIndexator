@@ -35,7 +35,7 @@ jobs:
           test -f src/astra_indexator/astravector/generated/astravector_embedding_pb2_grpc.py
 
       - name: Ruff lint
-        run: ruff check --fix --diff src tests tools
+        run: ruff check src tests tools
 
       - name: Ruff format check
         run: ruff format --check src tests tools
