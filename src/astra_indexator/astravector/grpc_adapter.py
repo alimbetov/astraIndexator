@@ -9,6 +9,10 @@ import grpc
 from .contracts import (
     AppendBlocksCommand,
     AppendBlocksResult,
+    DocumentVectorStatus,
+    FinalizeIngestionCommand,
+    FinalizeIngestionResult,
+    IngestionStatus,
     StartIngestionCommand,
     StartIngestionResult,
     map_session_state,
@@ -158,11 +162,148 @@ class AstraVectorGrpcAdapter:
             warnings=warnings,
         )
 
+    def finalize(self, command: FinalizeIngestionCommand) -> FinalizeIngestionResult:
+        request = self._mapper.finalize_request(command)
+        try:
+            response = self._stub.FinalizeLogicalDocumentIngestion(
+                request,
+                timeout=self._config.deadline_seconds,
+                metadata=self._metadata(),
+            )
+        except grpc.RpcError as exc:
+            raise self._transport_error(exc) from exc
+
+        document = getattr(response, "document", None)
+        operation = getattr(response, "operation", None)
+        try:
+            access_zone_id = UUID(str(document.access_zone_id))
+            document_id = UUID(str(document.document_id))
+            document_version = int(document.document_version)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="FinalizeLogicalDocumentIngestion returned malformed document identity",
+            ) from exc
+        if document_version <= 0:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="FinalizeLogicalDocumentIngestion returned non-positive document_version",
+            )
+
+        raw_operation_state = self._operation_state_name(getattr(operation, "state", 0))
+        warnings = tuple(self._warning_text(item) for item in getattr(operation, "warnings", ()))
+        return FinalizeIngestionResult(
+            access_zone_id=access_zone_id,
+            document_id=document_id,
+            document_version=document_version,
+            raw_operation_state=raw_operation_state,
+            message=str(getattr(operation, "message", "")),
+            operation_id=str(getattr(operation, "operation_id", "")),
+            warnings=warnings,
+        )
+
+    def get_ingestion_status(self, ingestion_session_id: UUID) -> IngestionStatus:
+        request = self._mapper.ingestion_status_request(ingestion_session_id)
+        try:
+            response = self._stub.GetLogicalDocumentIngestionStatus(
+                request,
+                timeout=self._config.deadline_seconds,
+                metadata=self._metadata(),
+            )
+        except grpc.RpcError as exc:
+            raise self._transport_error(exc) from exc
+
+        try:
+            response_session_id = UUID(str(response.ingestion_session_id))
+            received_batches = int(response.received_batches)
+            received_blocks = int(response.received_blocks)
+            received_bytes = int(response.received_bytes)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="GetLogicalDocumentIngestionStatus returned malformed response",
+            ) from exc
+        if response_session_id != ingestion_session_id:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="GetLogicalDocumentIngestionStatus returned a different ingestion_session_id",
+            )
+        if min(received_batches, received_blocks, received_bytes) < 0:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="GetLogicalDocumentIngestionStatus returned negative counters",
+            )
+
+        raw_status = str(getattr(response, "status", ""))
+        return IngestionStatus(
+            ingestion_session_id=response_session_id,
+            raw_status=raw_status,
+            state=map_session_state(raw_status),
+            received_batches=received_batches,
+            received_blocks=received_blocks,
+            received_bytes=received_bytes,
+            expires_at=str(getattr(response, "expires_at", "")),
+            error_code=str(getattr(response, "error_code", "")),
+            error_message=str(getattr(response, "error_message", "")),
+        )
+
+    def get_document_vector_status(
+        self,
+        *,
+        access_zone_id: UUID,
+        document_id: UUID,
+        document_version: int,
+    ) -> DocumentVectorStatus:
+        request = self._mapper.document_vector_status_request(
+            access_zone_id=access_zone_id,
+            document_id=document_id,
+            document_version=document_version,
+        )
+        try:
+            response = self._stub.GetDocumentVectorStatus(
+                request,
+                timeout=self._config.deadline_seconds,
+                metadata=self._metadata(),
+            )
+        except grpc.RpcError as exc:
+            raise self._transport_error(exc) from exc
+
+        status = getattr(response, "status", None)
+        try:
+            progress = float(status.progress_percent)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="GetDocumentVectorStatus returned malformed status",
+            ) from exc
+        if progress < 0.0 or progress > 100.0:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="GetDocumentVectorStatus returned progress outside 0..100",
+            )
+
+        return DocumentVectorStatus(
+            raw_state=self._operation_state_name(getattr(status, "state", 0)),
+            progress_percent=progress,
+            searchable=bool(getattr(status, "searchable", False)),
+            ready_to_activate=bool(getattr(status, "ready_to_activate", False)),
+            message=str(getattr(status, "message", "")),
+        )
+
     def close(self) -> None:
         self._channel.close()
 
     def _metadata(self) -> tuple[tuple[str, str], ...]:
         return tuple((key, value) for key, value in self._config.metadata.items())
+
+    def _operation_state_name(self, value: object) -> str:
+        enum_type = getattr(self._generated.pb, "OperationState", None)
+        if enum_type is not None and hasattr(enum_type, "Name"):
+            try:
+                return str(enum_type.Name(int(value)))
+            except (TypeError, ValueError):
+                pass
+        return str(value)
 
     @staticmethod
     def _transport_error(exc: grpc.RpcError) -> AstraVectorGrpcError:
