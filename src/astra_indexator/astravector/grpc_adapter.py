@@ -9,6 +9,7 @@ import grpc
 from .contracts import (
     AppendBlocksCommand,
     AppendBlocksResult,
+    AstraVectorTransportError,
     DocumentVectorStatus,
     FinalizeIngestionCommand,
     FinalizeIngestionResult,
@@ -21,9 +22,9 @@ from .generated_loader import GeneratedAstraVectorClient, load_generated_client
 from .proto_mapper import AstraVectorProtoMapper
 
 
-class AstraVectorGrpcError(RuntimeError):
+class AstraVectorGrpcError(AstraVectorTransportError):
     def __init__(self, *, code: str, message: str) -> None:
-        super().__init__(f"AstraVector gRPC {code}: {message}")
+        RuntimeError.__init__(self, f"AstraVector gRPC {code}: {message}")
         self.code = code
         self.message = message
 
@@ -174,6 +175,11 @@ class AstraVectorGrpcAdapter:
             raise self._transport_error(exc) from exc
 
         document = getattr(response, "document", None)
+        if document is None:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="FinalizeLogicalDocumentIngestion returned no document identity",
+            )
         operation = getattr(response, "operation", None)
         try:
             access_zone_id = UUID(str(document.access_zone_id))
@@ -269,6 +275,11 @@ class AstraVectorGrpcAdapter:
             raise self._transport_error(exc) from exc
 
         status = getattr(response, "status", None)
+        if status is None:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="GetDocumentVectorStatus returned no status",
+            )
         try:
             progress = float(status.progress_percent)
         except (AttributeError, TypeError, ValueError) as exc:
@@ -297,10 +308,20 @@ class AstraVectorGrpcAdapter:
         return tuple((key, value) for key, value in self._config.metadata.items())
 
     def _operation_state_name(self, value: object) -> str:
+        if isinstance(value, int):
+            numeric_value = value
+        elif isinstance(value, str):
+            try:
+                numeric_value = int(value)
+            except ValueError:
+                return value
+        else:
+            return str(value)
+
         enum_type = getattr(self._generated.pb, "OperationState", None)
         if enum_type is not None and hasattr(enum_type, "Name"):
             try:
-                return str(enum_type.Name(int(value)))
+                return str(enum_type.Name(numeric_value))
             except (TypeError, ValueError):
                 pass
         return str(value)
