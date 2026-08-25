@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any, TypeVar
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 from uuid import UUID
 
 from .contracts import AccessZoneCode, AccessZoneIntent, DeliveryIntent, TtlIntent
-
-T = TypeVar("T")
 
 
 class DeliveryIntentValidationError(ValueError):
@@ -14,13 +12,7 @@ class DeliveryIntentValidationError(ValueError):
 
 
 def normalize_delivery_intent(payload: Mapping[str, Any]) -> DeliveryIntent:
-    """Normalize Spring compatibility fields into one immutable producer intent.
-
-    Accepted compatibility aliases are accessZoneId/accessZoneIds and
-    accessZoneCode/accessZoneCodes. Singular and plural forms may coexist only
-    when they assert the same single value. Multiple distinct zones are rejected;
-    AstraIndexator never fans one document version out across zones.
-    """
+    """Normalize Spring compatibility fields into one immutable producer intent."""
 
     zone_id = _normalize_selector(
         singular=payload.get("accessZoneId"),
@@ -56,7 +48,7 @@ def _normalize_selector(
     singular: Any,
     plural: Any,
     field: str,
-    parser: Any,
+    parser: Callable[[Any, str], Any],
 ) -> Any:
     single = None if singular is None else parser(singular, field)
     values: list[Any] = []
@@ -64,8 +56,6 @@ def _normalize_selector(
         if isinstance(plural, (str, bytes)) or not isinstance(plural, Sequence):
             raise DeliveryIntentValidationError(f"{field}s must be an array")
         values = [parser(value, f"{field}s") for value in plural]
-        if not values:
-            values = []
 
     distinct = list(dict.fromkeys(values))
     if len(distinct) > 1:
