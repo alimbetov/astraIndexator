@@ -1,6 +1,6 @@
 """M7 prepared artifact checkpoint.
 
-Revision ID: 0003_prepared_artifact_checkpoint
+Revision ID: 0003_prepared_checkpoint
 Revises: 0002_acquisition_evidence
 """
 
@@ -8,7 +8,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0003_prepared_artifact_checkpoint"
+revision = "0003_prepared_checkpoint"
 down_revision = "0002_acquisition_evidence"
 branch_labels = None
 depends_on = None
