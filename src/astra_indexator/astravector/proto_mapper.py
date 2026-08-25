@@ -119,7 +119,7 @@ class AstraVectorProtoMapper:
     def abort_request(self, command: AbortIngestionCommand) -> Any:
         return self._pb.AbortLogicalDocumentIngestionRequest(
             ingestion_session_id=str(command.ingestion_session_id),
-            reason=command.reason.strip(),
+            reason=self._required_text(command.reason, "reason"),
         )
 
     def ingestion_status_request(self, ingestion_session_id: Any) -> Any:
