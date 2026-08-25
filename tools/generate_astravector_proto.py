@@ -33,7 +33,9 @@ def _fetch_proto() -> bytes:
     content = base64.b64decode(payload["content"])
     actual = _git_blob_sha(content)
     if actual != PROTO_BLOB_SHA:
-        raise RuntimeError(f"AstraVector proto blob mismatch: expected {PROTO_BLOB_SHA}, got {actual}")
+        raise RuntimeError(
+            f"AstraVector proto blob mismatch: expected {PROTO_BLOB_SHA}, got {actual}"
+        )
     return content
 
 
