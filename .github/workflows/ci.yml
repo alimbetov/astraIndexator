@@ -26,11 +26,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Generate pinned AstraVector gRPC client
+        run: |
+          python tools/generate_astravector_proto.py
+          test -f src/astra_indexator/astravector/generated/astravector_embedding_pb2.py
+          test -f src/astra_indexator/astravector/generated/astravector_embedding_pb2_grpc.py
+
       - name: Ruff lint
-        run: ruff check src tests
+        run: ruff check src tests tools
 
       - name: Ruff format check
-        run: ruff format --check src tests
+        run: ruff format --check src tests tools
 
       - name: M8 scoped mypy
         run: |
@@ -45,7 +51,9 @@ jobs:
             src/astra_indexator/astravector/canonical_hash.py \
             src/astra_indexator/astravector/contracts.py \
             src/astra_indexator/astravector/policy.py \
-            src/astra_indexator/astravector/proto_mapper.py
+            src/astra_indexator/astravector/proto_mapper.py \
+            src/astra_indexator/astravector/generated_loader.py \
+            src/astra_indexator/astravector/grpc_adapter.py
 
       - name: Baseline mypy debt report
         continue-on-error: true
