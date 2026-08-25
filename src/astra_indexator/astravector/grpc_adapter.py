@@ -7,6 +7,7 @@ from uuid import UUID
 import grpc
 
 from .contracts import (
+    AbortIngestionCommand,
     AppendBlocksCommand,
     AppendBlocksResult,
     AstraVectorTransportError,
@@ -206,6 +207,41 @@ class AstraVectorGrpcAdapter:
             message=str(getattr(operation, "message", "")),
             operation_id=str(getattr(operation, "operation_id", "")),
             warnings=warnings,
+        )
+
+    def abort(self, command: AbortIngestionCommand) -> IngestionStatus:
+        request = self._mapper.abort_request(command)
+        try:
+            response = self._stub.AbortLogicalDocumentIngestion(
+                request,
+                timeout=self._config.deadline_seconds,
+                metadata=self._metadata(),
+            )
+        except grpc.RpcError as exc:
+            raise self._transport_error(exc) from exc
+
+        try:
+            response_session_id = UUID(str(response.ingestion_session_id))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="AbortLogicalDocumentIngestion returned malformed ingestion_session_id",
+            ) from exc
+        if response_session_id != command.ingestion_session_id:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="AbortLogicalDocumentIngestion returned a different ingestion_session_id",
+            )
+
+        raw_status = str(getattr(response, "status", ""))
+        return IngestionStatus(
+            ingestion_session_id=response_session_id,
+            raw_status=raw_status,
+            state=map_session_state(raw_status),
+            received_batches=0,
+            received_blocks=0,
+            received_bytes=0,
+            expires_at="",
         )
 
     def get_ingestion_status(self, ingestion_session_id: UUID) -> IngestionStatus:
