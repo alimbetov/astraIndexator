@@ -160,7 +160,9 @@ def _execute(runner: FinalizeReconciliationRunner):  # type: ignore[no-untyped-d
 
 def test_timeout_then_active_retries_exact_same_finalize_command() -> None:
     timeout = AstraVectorGrpcError(code="DEADLINE_EXCEEDED", message="deadline")
-    port = _Port(finalize_steps=[timeout, _finalized()], statuses=[_status(IngestionSessionState.ACTIVE)])
+    port = _Port(
+        finalize_steps=[timeout, _finalized()], statuses=[_status(IngestionSessionState.ACTIVE)]
+    )
     repository = _Repository()
 
     outcome = _execute(_runner(port, repository))
