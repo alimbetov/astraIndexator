@@ -108,9 +108,7 @@ def _execute(runner: AbortReconciliationRunner):  # type: ignore[no-untyped-def]
 def test_direct_abort_ack_is_terminal_success() -> None:
     port = _Port(abort_steps=[_status(IngestionSessionState.ABORTED)], statuses=[])
     repository = _Repository()
-
     outcome = _execute(_runner(port, repository))
-
     assert outcome.resolution is AbortResolution.DIRECT_ACK
     assert outcome.status.state is IngestionSessionState.ABORTED
     assert len(port.abort_commands) == 1
@@ -119,14 +117,9 @@ def test_direct_abort_ack_is_terminal_success() -> None:
 
 def test_timeout_then_aborted_reconciles_without_second_abort() -> None:
     timeout = AstraVectorGrpcError(code="DEADLINE_EXCEEDED", message="deadline")
-    port = _Port(
-        abort_steps=[timeout],
-        statuses=[_status(IngestionSessionState.ABORTED)],
-    )
+    port = _Port(abort_steps=[timeout], statuses=[_status(IngestionSessionState.ABORTED)])
     repository = _Repository()
-
     outcome = _execute(_runner(port, repository))
-
     assert outcome.resolution is AbortResolution.RECONCILED_ABORTED
     assert len(port.abort_commands) == 1
     assert port.status_calls == 1
@@ -139,9 +132,7 @@ def test_timeout_then_active_retries_exact_same_abort_command() -> None:
         statuses=[_status(IngestionSessionState.ACTIVE)],
     )
     repository = _Repository()
-
     outcome = _execute(_runner(port, repository))
-
     assert outcome.resolution is AbortResolution.DIRECT_ACK
     assert len(port.abort_commands) == 2
     assert port.abort_commands[0] == port.abort_commands[1]
@@ -158,25 +149,34 @@ def test_timeout_then_finalizing_polls_and_never_replays_abort() -> None:
         ],
     )
     repository = _Repository()
-
     outcome = _execute(_runner(port, repository))
-
     assert outcome.resolution is AbortResolution.RECONCILED_ABORTED
     assert len(port.abort_commands) == 1
     assert port.status_calls == 3
 
 
-def test_timeout_then_completed_is_conflict_not_new_version() -> None:
+def test_timeout_then_finalizing_to_completed_is_conflict_without_second_abort() -> None:
     timeout = AstraVectorGrpcError(code="DEADLINE_EXCEEDED", message="deadline")
     port = _Port(
         abort_steps=[timeout],
-        statuses=[_status(IngestionSessionState.COMPLETED)],
+        statuses=[
+            _status(IngestionSessionState.FINALIZING),
+            _status(IngestionSessionState.COMPLETED),
+        ],
     )
     repository = _Repository()
-
     with pytest.raises(AbortConflictError, match="completed successfully"):
         _execute(_runner(port, repository))
+    assert len(port.abort_commands) == 1
+    assert port.status_calls == 2
 
+
+def test_timeout_then_completed_is_conflict_not_new_version() -> None:
+    timeout = AstraVectorGrpcError(code="DEADLINE_EXCEEDED", message="deadline")
+    port = _Port(abort_steps=[timeout], statuses=[_status(IngestionSessionState.COMPLETED)])
+    repository = _Repository()
+    with pytest.raises(AbortConflictError, match="completed successfully"):
+        _execute(_runner(port, repository))
     assert len(port.abort_commands) == 1
 
 
@@ -187,9 +187,7 @@ def test_timeout_then_existing_terminal_state_is_recovery_success(
     timeout = AstraVectorGrpcError(code="UNKNOWN", message="ambiguous")
     port = _Port(abort_steps=[timeout], statuses=[_status(state)])
     repository = _Repository()
-
     outcome = _execute(_runner(port, repository))
-
     assert outcome.resolution is AbortResolution.ALREADY_TERMINAL
     assert outcome.status.state is state
     assert len(port.abort_commands) == 1
