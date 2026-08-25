@@ -59,6 +59,7 @@ dev = [
   "grpcio-tools>=1.74,<2",
   "mypy>=1.11,<2",
   "ruff>=0.6,<1",
+  "types-grpcio>=1.0,<2",
 ]
 
 [tool.hatch.build.targets.wheel]
