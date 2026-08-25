@@ -1,8 +1,4 @@
-from .batching import (
-    DeliveryBatchPlanningError,
-    DeterministicBatchPlanner,
-    PlannedDeliveryBatch,
-)
+from .batching import DeliveryBatchPlanningError, DeterministicBatchPlanner, PlannedDeliveryBatch
 from .canonical_hash import (
     HashLogicalBlock,
     HashSourceLink,
@@ -31,21 +27,17 @@ from .contracts import (
     StartIngestionResult,
     map_session_state,
 )
-from .generated_loader import (
-    GeneratedAstraVectorClient,
-    GeneratedClientUnavailable,
-    load_generated_client,
-)
-from .grpc_adapter import (
-    AstraVectorGrpcAdapter,
-    AstraVectorGrpcConfig,
-    AstraVectorGrpcError,
-    create_grpc_channel,
-)
+from .generated_loader import GeneratedAstraVectorClient, GeneratedClientUnavailable, load_generated_client
+from .grpc_adapter import AstraVectorGrpcAdapter, AstraVectorGrpcConfig, AstraVectorGrpcError, create_grpc_channel
 from .policy import (
+    ActivationReadinessPolicy,
     GrpcFailure,
     RetryDecision,
+    VectorReadinessDecision,
+    VectorReadinessDisposition,
+    VectorReadinessIntegrityError,
     classify_grpc_failure,
+    evaluate_vector_readiness,
     should_retry_finalize,
     vector_delivery_complete,
 )
@@ -66,6 +58,7 @@ from .wire_contract import (
 __all__ = [
     "ASTRAVECTOR_CARGO_BLOB_SHA",
     "AbortIngestionCommand",
+    "ActivationReadinessPolicy",
     "AppendBlocksCommand",
     "AppendBlocksResult",
     "AstraVectorGrpcAdapter",
@@ -99,6 +92,9 @@ __all__ = [
     "StartIngestionResult",
     "UINT32_MAX",
     "UINT64_MAX",
+    "VectorReadinessDecision",
+    "VectorReadinessDisposition",
+    "VectorReadinessIntegrityError",
     "WireContractRevision",
     "WireRangeError",
     "canonical_batch_bytes",
@@ -106,6 +102,7 @@ __all__ = [
     "compute_batch_content_hash",
     "compute_final_content_hash",
     "create_grpc_channel",
+    "evaluate_vector_readiness",
     "load_generated_client",
     "map_session_state",
     "normalize_sha256_hex",
