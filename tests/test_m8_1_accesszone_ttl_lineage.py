@@ -12,14 +12,20 @@ from astra_indexator.domain.contracts import (
 )
 
 
-@pytest.mark.parametrize("code", ["0000", "0001", "0010", "0100", "0999", "1500", "9999"])
+@pytest.mark.parametrize(
+    "code",
+    ["0000", "0001", "0010", "0100", "0999", "1500", "9999"],
+)
 def test_access_zone_preserves_four_digit_code(code: str) -> None:
     zone = AccessZoneCode(code)
     assert str(zone) == code
     assert len(str(zone)) == 4
 
 
-@pytest.mark.parametrize("code", ["0", "001", "10000", "-001", "ABCD", " 100", "100 "])
+@pytest.mark.parametrize(
+    "code",
+    ["0", "001", "10000", "-001", "ABCD", " 100", "100 "],
+)
 def test_access_zone_rejects_non_wire_codes(code: str) -> None:
     with pytest.raises(ValueError):
         AccessZoneCode(code)
