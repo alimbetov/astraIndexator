@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import unicodedata
+from dataclasses import dataclass
 
 import regex
 
@@ -15,8 +15,45 @@ class SentenceBoundaryProfile:
     extra_terminal_chars: frozenset[str] = frozenset()
 
 
-_EN = frozenset({"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "etc.", "e.g.", "i.e.", "vs.", "fig.", "no.", "sec.", "art."})
-_RU = frozenset({"г.", "гг.", "т.е.", "т.д.", "т.п.", "др.", "стр.", "рис.", "им.", "см.", "напр.", "п.", "пп.", "ст.", "табл.", "разд."})
+_EN = frozenset(
+    {
+        "mr.",
+        "mrs.",
+        "ms.",
+        "dr.",
+        "prof.",
+        "sr.",
+        "jr.",
+        "etc.",
+        "e.g.",
+        "i.e.",
+        "vs.",
+        "fig.",
+        "no.",
+        "sec.",
+        "art.",
+    }
+)
+_RU = frozenset(
+    {
+        "г.",
+        "гг.",
+        "т.е.",
+        "т.д.",
+        "т.п.",
+        "др.",
+        "стр.",
+        "рис.",
+        "им.",
+        "см.",
+        "напр.",
+        "п.",
+        "пп.",
+        "ст.",
+        "табл.",
+        "разд.",
+    }
+)
 _KK = frozenset({"ж.", "т.б.", "т.с.с.", "мыс."})
 _DE = frozenset({"dr.", "prof.", "hr.", "fr.", "bzw.", "z.b.", "u.a.", "ziff.", "abs.", "art."})
 _FR = frozenset({"m.", "mme.", "mlle.", "dr.", "pr.", "art.", "l’art.", "etc."})
@@ -25,10 +62,16 @@ _PT = frozenset({"sr.", "sra.", "dr.", "dra.", "prof.", "etc."})
 _IT = frozenset({"dott.", "dott.ssa.", "sig.", "sig.ra.", "prof.", "ecc."})
 _TR = frozenset({"dr.", "prof.", "sn.", "vb.", "vs."})
 
-_ALWAYS_EN = frozenset({"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "fig.", "no.", "sec.", "art."})
-_ALWAYS_RU = frozenset({"г.", "гг.", "стр.", "рис.", "им.", "см.", "напр.", "п.", "пп.", "ст.", "табл.", "разд."})
+_ALWAYS_EN = frozenset(
+    {"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "fig.", "no.", "sec.", "art."}
+)
+_ALWAYS_RU = frozenset(
+    {"г.", "гг.", "стр.", "рис.", "им.", "см.", "напр.", "п.", "пп.", "ст.", "табл.", "разд."}
+)
 _ALWAYS_KK = frozenset({"ж.", "мыс."})
-_ALWAYS_DE = frozenset({"dr.", "prof.", "hr.", "fr.", "bzw.", "z.b.", "u.a.", "ziff.", "abs.", "art."})
+_ALWAYS_DE = frozenset(
+    {"dr.", "prof.", "hr.", "fr.", "bzw.", "z.b.", "u.a.", "ziff.", "abs.", "art."}
+)
 _ALWAYS_FR = frozenset({"m.", "mme.", "mlle.", "dr.", "pr.", "art.", "l’art."})
 _ALWAYS_ES = frozenset({"sr.", "sra.", "srta.", "dr.", "dra.", "ud.", "uds."})
 _ALWAYS_PT = frozenset({"sr.", "sra.", "dr.", "dra.", "prof."})
@@ -45,8 +88,12 @@ PROFILES: dict[str, SentenceBoundaryProfile] = {
     "pt": SentenceBoundaryProfile("sentence-pt-v1", ("pt",), _PT, _ALWAYS_PT),
     "it": SentenceBoundaryProfile("sentence-it-v1", ("it",), _IT, _ALWAYS_IT),
     "tr": SentenceBoundaryProfile("sentence-tr-v1", ("tr",), _TR, _ALWAYS_TR),
-    "el": SentenceBoundaryProfile("sentence-el-v1", ("el",), frozenset(), frozenset(), frozenset({";"})),
-    "und": SentenceBoundaryProfile("sentence-unicode-generic-v2", ("und",), frozenset(), frozenset()),
+    "el": SentenceBoundaryProfile(
+        "sentence-el-v1", ("el",), frozenset(), frozenset(), frozenset({";"})
+    ),
+    "und": SentenceBoundaryProfile(
+        "sentence-unicode-generic-v2", ("und",), frozenset(), frozenset()
+    ),
     "mixed": SentenceBoundaryProfile(
         "sentence-mixed-ru-kk-en-v5",
         ("ru", "kk", "en"),
@@ -107,7 +154,7 @@ def _previous_token(text: str, period_index: int) -> str:
         if ch.isspace() or _is_closer(ch) or unicodedata.category(ch) in {"Ps", "Pi"}:
             break
         start -= 1
-    return text[start:period_index + 1].casefold()
+    return text[start : period_index + 1].casefold()
 
 
 def _next_lexical_char(text: str, index: int) -> str:
@@ -117,10 +164,14 @@ def _next_lexical_char(text: str, index: int) -> str:
     return text[cursor] if cursor < len(text) else ""
 
 
-def _abbreviation_is_protected(text: str, index: int, token: str, profile: SentenceBoundaryProfile) -> bool:
+def _abbreviation_is_protected(
+    text: str, index: int, token: str, profile: SentenceBoundaryProfile
+) -> bool:
     if token in profile.always_nonterminal:
         return True
-    if token not in profile.abbreviations and not any(token.endswith(abbr) for abbr in profile.abbreviations):
+    if token not in profile.abbreviations and not any(
+        token.endswith(abbr) for abbr in profile.abbreviations
+    ):
         return False
     next_char = _next_lexical_char(text, index)
     if not next_char:
@@ -168,7 +219,9 @@ def _period_is_protected(text: str, index: int, profile: SentenceBoundaryProfile
     return False
 
 
-def _looks_like_reporting_continuation(text: str, end: int, language: str, had_closer: bool) -> bool:
+def _looks_like_reporting_continuation(
+    text: str, end: int, language: str, had_closer: bool
+) -> bool:
     if not had_closer or end >= len(text):
         return False
     immediate = text[end:]
@@ -270,7 +323,9 @@ def _split_icu(text: str, language_hint: str | None) -> tuple[str, ...]:
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("SPLITTER_ICU_UNAVAILABLE") from exc
     locale_name = _locale_id(language_hint)
-    locale = icu.Locale(f"{locale_name}@ss=standard") if locale_name != "root" else icu.Locale.getRoot()
+    locale = (
+        icu.Locale(f"{locale_name}@ss=standard") if locale_name != "root" else icu.Locale.getRoot()
+    )
     iterator = icu.BreakIterator.createSentenceInstance(locale)
     iterator.setText(text)
     out: list[str] = []
@@ -283,7 +338,9 @@ def _split_icu(text: str, language_hint: str | None) -> tuple[str, ...]:
     return tuple(out)
 
 
-def split_sentences(text: str, *, language_hint: str | None = None, backend: str = "unicode") -> tuple[str, ...]:
+def split_sentences(
+    text: str, *, language_hint: str | None = None, backend: str = "unicode"
+) -> tuple[str, ...]:
     if not text or not text.strip():
         return ()
     if backend == "unicode":
@@ -298,7 +355,9 @@ def grapheme_clusters(text: str) -> tuple[str, ...]:
     return tuple(regex.findall(r"\X", text))
 
 
-def count_words(text: str, *, language_hint: str | None = None, backend: str = "unicode") -> tuple[int, bool]:
+def count_words(
+    text: str, *, language_hint: str | None = None, backend: str = "unicode"
+) -> tuple[int, bool]:
     """Return ``(count, reliable_for_word_guards)``."""
     if not text:
         return 0, True

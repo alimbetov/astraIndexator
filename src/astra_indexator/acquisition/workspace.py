@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from astra_indexator.persistence.models import IndexationJob, ProcessingAttempt
@@ -49,7 +49,11 @@ class WorkspaceManager:
 
     def enforce_attempt_usage(self, job_id: UUID, attempt_id: UUID) -> None:
         root = self.attempt_root(job_id, attempt_id)
-        total = sum(path.stat().st_size for path in root.rglob("*") if path.is_file()) if root.exists() else 0
+        total = (
+            sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+            if root.exists()
+            else 0
+        )
         if total > self.policy.max_attempt_bytes:
             raise WorkspaceCapacityError("attempt workspace exceeds max_attempt_bytes")
 

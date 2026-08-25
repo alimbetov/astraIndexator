@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _psycopg_url(url: str) -> str:
-    return url.replace("postgresql+psycopg2://", "postgresql+psycopg://").replace("postgresql://", "postgresql+psycopg://")
+    return url.replace("postgresql+psycopg2://", "postgresql+psycopg://").replace(
+        "postgresql://", "postgresql+psycopg://"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -39,14 +41,20 @@ def _claim(engine):
         job = IndexationJobRepository().create_or_get(
             session,
             NewIndexationJob(
-                producer_request_id=uuid4(), document_id=uuid4(), document_version=1,
-                access_zone_code="0600", knowledge_type="TECHNICAL",
-                source_uri="seaweed://documents/source.txt", source_file_name="source.txt",
+                producer_request_id=uuid4(),
+                document_id=uuid4(),
+                document_version=1,
+                access_zone_code="0600",
+                knowledge_type="TECHNICAL",
+                source_uri="seaweed://documents/source.txt",
+                source_file_name="source.txt",
             ),
         )
         session.commit()
     with Session(engine) as session:
-        claimed = JobCoordinator().claim_next(session, worker_id="scavenger-worker", lease_seconds=60)
+        claimed = JobCoordinator().claim_next(
+            session, worker_id="scavenger-worker", lease_seconds=60
+        )
         assert claimed is not None
         session.commit()
         return claimed
@@ -76,7 +84,12 @@ def test_expired_attempt_workspace_is_scavenged(database_url: str, tmp_path: Pat
     old = time.time() - 3600
     os.utime(root, (old, old))
     with engine.begin() as conn:
-        conn.execute(text("UPDATE astra_indexator.indexation_job SET lease_until=now()-interval '1 second' WHERE id=:id"), {"id": claimed.token.job_id})
+        conn.execute(
+            text(
+                "UPDATE astra_indexator.indexation_job SET lease_until=now()-interval '1 second' WHERE id=:id"
+            ),
+            {"id": claimed.token.job_id},
+        )
     with Session(engine) as session:
         deleted = manager.scavenge(session, now_epoch=time.time())
     assert root in deleted

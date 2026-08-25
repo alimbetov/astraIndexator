@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from astra_indexator.verification.linguistic import evaluate_corpus, load_corpus, verify_corpus_gates
+from astra_indexator.verification.linguistic import (
+    evaluate_corpus,
+    load_corpus,
+    verify_corpus_gates,
+)
 
-CORPUS = Path(__file__).parent / "fixtures" / "linguistic" / "corpus-v3-enterprise-legal-technical.json"
+CORPUS = (
+    Path(__file__).parent / "fixtures" / "linguistic" / "corpus-v3-enterprise-legal-technical.json"
+)
 
 
 def test_v3_corpus_has_enterprise_legal_technical_depth():

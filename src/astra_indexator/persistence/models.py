@@ -17,7 +17,8 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -30,8 +31,22 @@ class IndexationJob(Base):
     __table_args__ = (
         CheckConstraint("document_version > 0", name="document_version_positive"),
         CheckConstraint("access_zone_code ~ '^[0-9]{4}$'", name="access_zone_code_format"),
-        CheckConstraint("requested_ttl_days IS NULL OR requested_ttl_days >= 0", name="requested_ttl_days_non_negative"),
-        CheckConstraint("source_size_bytes IS NULL OR source_size_bytes >= 0", name="source_size_bytes_non_negative"),
+        CheckConstraint(
+            "requested_access_zone_code IS NULL OR requested_access_zone_code ~ '^[0-9]{4}$'",
+            name="requested_access_zone_code_format",
+        ),
+        CheckConstraint(
+            "requested_access_zone_id IS NOT NULL OR requested_access_zone_code IS NOT NULL",
+            name="requested_access_zone_selector_present",
+        ),
+        CheckConstraint(
+            "requested_ttl_days IS NULL OR requested_ttl_days >= 0",
+            name="requested_ttl_days_non_negative",
+        ),
+        CheckConstraint(
+            "source_size_bytes IS NULL OR source_size_bytes >= 0",
+            name="source_size_bytes_non_negative",
+        ),
         CheckConstraint("lease_generation >= 0", name="lease_generation_non_negative"),
         CheckConstraint("attempt_count >= 0", name="attempt_count_non_negative"),
         CheckConstraint("max_attempts > 0", name="max_attempts_positive"),
@@ -75,8 +90,11 @@ class IndexationJob(Base):
     external_revision: Mapped[str | None] = mapped_column(String(255))
 
     knowledge_type: Mapped[str | None] = mapped_column(String(32))
+    # Pre-M8 compatibility columns. New code uses requested_* for producer intent.
     access_zone_code: Mapped[str] = mapped_column(String(4), nullable=False)
     access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    requested_access_zone_code: Mapped[str | None] = mapped_column(String(4))
+    requested_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     requested_ttl_days: Mapped[int | None] = mapped_column(Integer)
 
     source_uri: Mapped[str] = mapped_column(Text, nullable=False)
@@ -84,12 +102,16 @@ class IndexationJob(Base):
     source_content_hash: Mapped[str | None] = mapped_column(String(128))
     source_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
 
-    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'PENDING'"))
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'PENDING'")
+    )
     processing_stage: Mapped[str | None] = mapped_column(String(64))
     priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
 
     worker_id: Mapped[str | None] = mapped_column(String(255))
-    lease_generation: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    lease_generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
     lease_acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -97,14 +119,20 @@ class IndexationJob(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("5"))
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
 
     last_error_code: Mapped[str | None] = mapped_column(String(128))
     last_error_message: Mapped[str | None] = mapped_column(Text)
     processing_fingerprint: Mapped[str | None] = mapped_column(String(128))
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -113,13 +141,17 @@ class ProcessingAttempt(Base):
     __table_args__ = (
         CheckConstraint("attempt_number > 0", name="attempt_number_positive"),
         CheckConstraint("lease_generation > 0", name="attempt_lease_generation_positive"),
-        UniqueConstraint("job_id", "attempt_number", name="uq_processing_attempt_job_attempt_number"),
+        UniqueConstraint(
+            "job_id", "attempt_number", name="uq_processing_attempt_job_attempt_number"
+        ),
         Index("ix_processing_attempt_job", "job_id", "started_at"),
         {"schema": SCHEMA},
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
-    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"), nullable=False
+    )
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
     lease_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
     worker_id: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -144,7 +176,7 @@ class DeliveryCheckpoint(Base):
     )
 
     job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"), primary_key=True)
-    access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    resolved_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     ingestion_session_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     next_batch_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     last_accepted_batch_index: Mapped[int | None] = mapped_column(Integer)

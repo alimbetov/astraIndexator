@@ -19,15 +19,24 @@ class OcrDecisionPolicy:
             return OcrDecisionResult(OcrDecision.UNSUPPORTED, ("UNSUPPORTED_CANDIDATE_SCOPE",))
 
         page_mode = None
-        if candidate.page_number is not None and candidate.page_number <= len(document.quality.page_modes):
+        if candidate.page_number is not None and candidate.page_number <= len(
+            document.quality.page_modes
+        ):
             page_mode = document.quality.page_modes[candidate.page_number - 1]
         if candidate.scope == "PAGE":
-            if page_mode == "NATIVE_TEXT" and candidate.reason not in {"standalone_image", "low_native_text"}:
+            if page_mode == "NATIVE_TEXT" and candidate.reason not in {
+                "standalone_image",
+                "low_native_text",
+            }:
                 return OcrDecisionResult(OcrDecision.NOT_REQUIRED, ("TRUSTED_NATIVE_PAGE",))
-            return OcrDecisionResult(OcrDecision.REQUIRED, (candidate.reason, page_mode or "PAGE_CANDIDATE"))
+            return OcrDecisionResult(
+                OcrDecision.REQUIRED, (candidate.reason, page_mode or "PAGE_CANDIDATE")
+            )
         if candidate.scope == "REGION":
             return OcrDecisionResult(OcrDecision.REQUIRED, (candidate.reason, "REGION_CANDIDATE"))
-        return OcrDecisionResult(OcrDecision.REQUIRED, (candidate.reason, "EMBEDDED_IMAGE_CANDIDATE"))
+        return OcrDecisionResult(
+            OcrDecision.REQUIRED, (candidate.reason, "EMBEDDED_IMAGE_CANDIDATE")
+        )
 
     def decide(
         self,
@@ -47,9 +56,16 @@ class OcrDecisionPolicy:
             # M4 intentionally allows optional embedded-image candidates in an otherwise
             # healthy native document. Disabling OCR must not downgrade the whole document
             # merely because such an advisory candidate exists.
-            if candidate.scope == "EMBEDDED_IMAGE" and document.quality.status != QualityStatus.OCR_REQUIRED:
-                return OcrDecisionResult(OcrDecision.NOT_REQUIRED, ("OCR_DISABLED_OPTIONAL_IMAGE", candidate.reason))
+            if (
+                candidate.scope == "EMBEDDED_IMAGE"
+                and document.quality.status != QualityStatus.OCR_REQUIRED
+            ):
+                return OcrDecisionResult(
+                    OcrDecision.NOT_REQUIRED, ("OCR_DISABLED_OPTIONAL_IMAGE", candidate.reason)
+                )
             if needed.decision == OcrDecision.REQUIRED:
-                return OcrDecisionResult(OcrDecision.REQUIRED_BUT_DISABLED, ("OCR_DISABLED", *needed.reason_codes))
+                return OcrDecisionResult(
+                    OcrDecision.REQUIRED_BUT_DISABLED, ("OCR_DISABLED", *needed.reason_codes)
+                )
             return needed
         return needed

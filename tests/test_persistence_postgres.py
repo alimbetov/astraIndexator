@@ -143,14 +143,22 @@ def test_active_document_version_is_unique_per_zone(database_url: str) -> None:
         session.add_all(
             [
                 IndexationJob(
-                    id=uuid4(), producer_request_id=uuid4(), document_id=document_id,
-                    document_version=7, access_zone_code="0300",
-                    source_uri="seaweed://sources/a.pdf", status="PENDING",
+                    id=uuid4(),
+                    producer_request_id=uuid4(),
+                    document_id=document_id,
+                    document_version=7,
+                    access_zone_code="0300",
+                    source_uri="seaweed://sources/a.pdf",
+                    status="PENDING",
                 ),
                 IndexationJob(
-                    id=uuid4(), producer_request_id=uuid4(), document_id=document_id,
-                    document_version=7, access_zone_code="0300",
-                    source_uri="seaweed://sources/a-copy.pdf", status="PENDING",
+                    id=uuid4(),
+                    producer_request_id=uuid4(),
+                    document_id=document_id,
+                    document_version=7,
+                    access_zone_code="0300",
+                    source_uri="seaweed://sources/a-copy.pdf",
+                    status="PENDING",
                 ),
             ]
         )

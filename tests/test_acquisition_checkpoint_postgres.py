@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _psycopg_url(url: str) -> str:
-    return url.replace("postgresql+psycopg2://", "postgresql+psycopg://").replace("postgresql://", "postgresql+psycopg://")
+    return url.replace("postgresql+psycopg2://", "postgresql+psycopg://").replace(
+        "postgresql://", "postgresql+psycopg://"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -84,7 +86,9 @@ def test_acquisition_checkpoint_is_fenced_and_persists_evidence(database_url: st
 
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT source_content_hash, source_size_bytes, source_detected_format, source_validation_profile, processing_stage FROM astra_indexator.indexation_job WHERE id=:id"),
+            text(
+                "SELECT source_content_hash, source_size_bytes, source_detected_format, source_validation_profile, processing_stage FROM astra_indexator.indexation_job WHERE id=:id"
+            ),
             {"id": claimed.token.job_id},
         ).one()
         assert row.source_content_hash == "a" * 64
@@ -98,7 +102,12 @@ def test_expired_lease_cannot_install_acquisition_checkpoint(database_url: str) 
     engine = create_engine(database_url)
     claimed = _enqueue_and_claim(engine)
     with engine.begin() as conn:
-        conn.execute(text("UPDATE astra_indexator.indexation_job SET lease_until=now()-interval '1 second' WHERE id=:id"), {"id": claimed.token.job_id})
+        conn.execute(
+            text(
+                "UPDATE astra_indexator.indexation_job SET lease_until=now()-interval '1 second' WHERE id=:id"
+            ),
+            {"id": claimed.token.job_id},
+        )
 
     with Session(engine) as session:
         with pytest.raises(LeaseLostError):

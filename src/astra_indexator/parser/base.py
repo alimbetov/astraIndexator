@@ -72,7 +72,9 @@ class FileTypeHandlerRegistry:
         key = detected_format.upper()
         handler = self._handlers.get(key)
         if handler is None:
-            raise ParserError("PARSER_UNSUPPORTED_FORMAT", f"no parser handler for detected format {key}")
+            raise ParserError(
+                "PARSER_UNSUPPORTED_FORMAT", f"no parser handler for detected format {key}"
+            )
         return handler
 
 
@@ -82,7 +84,10 @@ class DocumentParserService:
 
     def parse(self, source: AcquiredSource, context: ParseContext) -> ParsedDocument:
         if source.sha256.lower() != context.source_sha256.lower():
-            raise ParserError("PARSER_SOURCE_HASH_MISMATCH", "ParseContext source hash differs from acquired source")
+            raise ParserError(
+                "PARSER_SOURCE_HASH_MISMATCH",
+                "ParseContext source hash differs from acquired source",
+            )
 
         result = self.registry.resolve(source.detected_format).parse(source, context)
         quality = result.quality
@@ -92,11 +97,17 @@ class DocumentParserService:
         # contain embedded images that M5 can inspect independently.
         required_page_modes = {"SCANNED_IMAGE", "LOW_SIGNAL"}
         page_requires_ocr = any(mode in required_page_modes for mode in quality.page_modes)
-        if quality.status == QualityStatus.OCR_REQUIRED and quality.native_text_chars > 0 and not page_requires_ocr:
+        if (
+            quality.status == QualityStatus.OCR_REQUIRED
+            and quality.native_text_chars > 0
+            and not page_requires_ocr
+        ):
             quality = replace(quality, status=QualityStatus.GOOD)
 
         # Partial-structure diagnostics must not be hidden behind a GOOD result.
-        if quality.status == QualityStatus.GOOD and any(warning.endswith("_PARTIAL") for warning in quality.warnings):
+        if quality.status == QualityStatus.GOOD and any(
+            warning.endswith("_PARTIAL") for warning in quality.warnings
+        ):
             quality = replace(quality, status=QualityStatus.PARTIAL)
 
         if quality is not result.quality:

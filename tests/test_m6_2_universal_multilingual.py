@@ -61,7 +61,9 @@ def test_greek_semicolon_is_locale_specific_question_mark_boundary():
 
 
 def test_blank_line_is_a_strong_paragraph_boundary_without_terminal_punctuation():
-    assert split_sentences("Heading-like text\n\nNext paragraph without punctuation", language_hint="en") == (
+    assert split_sentences(
+        "Heading-like text\n\nNext paragraph without punctuation", language_hint="en"
+    ) == (
         "Heading-like text",
         "Next paragraph without punctuation",
     )
@@ -74,8 +76,12 @@ def test_combining_marks_and_emoji_zwj_sequences_remain_extended_graphemes():
 
 def test_unicode_word_count_marks_complex_scripts_unreliable_for_word_guards():
     en_count, en_reliable = count_words("one two three", language_hint="en", backend="unicode")
-    zh_count, zh_reliable = count_words("这是一个没有空格的中文句子", language_hint="zh", backend="unicode")
-    th_count, th_reliable = count_words("ภาษาไทยไม่มีการเว้นวรรคทุกคำ", language_hint="th", backend="unicode")
+    zh_count, zh_reliable = count_words(
+        "这是一个没有空格的中文句子", language_hint="zh", backend="unicode"
+    )
+    th_count, th_reliable = count_words(
+        "ภาษาไทยไม่มีการเว้นวรรคทุกคำ", language_hint="th", backend="unicode"
+    )
     assert en_count == 3 and en_reliable is True
     assert zh_count >= 1 and zh_reliable is False
     assert th_count >= 1 and th_reliable is False
@@ -128,17 +134,19 @@ def test_complex_script_fragment_publishes_unreliable_word_count_in_unicode_mode
         ParseQuality(QualityStatus.GOOD, len(text), 0),
     )
     normalized = TextNormalizationService().normalize(parsed)
-    fragments = LogicalSplitter(SplitterProfile(
-        sentence_boundary_backend="unicode",
-        min_chars=1,
-        target_chars=500,
-        soft_max_chars=700,
-        hard_max_chars=1000,
-        target_words=2,
-        soft_max_words=3,
-        hard_max_words=4,
-        target_sentences=10,
-        hard_max_sentences=20,
-    )).split(normalized)
+    fragments = LogicalSplitter(
+        SplitterProfile(
+            sentence_boundary_backend="unicode",
+            min_chars=1,
+            target_chars=500,
+            soft_max_chars=700,
+            hard_max_chars=1000,
+            target_words=2,
+            soft_max_words=3,
+            hard_max_words=4,
+            target_sentences=10,
+            hard_max_sentences=20,
+        )
+    ).split(normalized)
     assert len(fragments) == 1
     assert fragments[0].metadata["wordCountReliable"] is False

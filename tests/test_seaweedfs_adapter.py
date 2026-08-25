@@ -11,7 +11,14 @@ def test_filer_head_and_streaming_get() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.raw_path == b"/documents/original/a%20b.txt"
         if request.method == "HEAD":
-            return httpx.Response(200, headers={"content-length": str(len(payload)), "etag": '"etag-1"', "content-type": "text/plain"})
+            return httpx.Response(
+                200,
+                headers={
+                    "content-length": str(len(payload)),
+                    "etag": '"etag-1"',
+                    "content-type": "text/plain",
+                },
+            )
         if request.method == "GET":
             return httpx.Response(200, content=payload)
         return httpx.Response(405)

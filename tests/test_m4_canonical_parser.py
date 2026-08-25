@@ -72,7 +72,9 @@ def test_txt_is_structured_and_deterministic(tmp_path: Path) -> None:
 
 def test_markdown_preserves_headings_lists_and_code(tmp_path: Path) -> None:
     path = tmp_path / "sample.md"
-    path.write_text("# Title\n\nParagraph.\n\n- one\n- two\n\n```python\nprint('x')\n```\n", encoding="utf-8")
+    path.write_text(
+        "# Title\n\nParagraph.\n\n- one\n- two\n\n```python\nprint('x')\n```\n", encoding="utf-8"
+    )
     source = _source(path, "MARKDOWN")
     result = DocumentParserService(default_registry()).parse(source, _ctx(source))
     kinds = [e.type for e in result.elements]

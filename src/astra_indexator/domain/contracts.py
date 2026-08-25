@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
-import re
 from uuid import UUID
-
 
 _ACCESS_ZONE_RE = re.compile(r"^[0-9]{4}$")
 
@@ -50,6 +49,46 @@ class AccessZoneCode:
 
     def __str__(self) -> str:
         return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class AccessZoneIntent:
+    """Normalized producer-owned AccessZone selector.
+
+    AstraIndexator preserves the selector but does not resolve a code to a UUID.
+    When both forms are supplied they are correlation assertions; AstraVector is
+    the authority that proves they denote the same effective zone.
+    """
+
+    access_zone_id: UUID | None = None
+    access_zone_code: AccessZoneCode | None = None
+
+    def __post_init__(self) -> None:
+        if self.access_zone_id is None and self.access_zone_code is None:
+            raise ValueError("exactly one effective AccessZone must be selectable")
+
+
+@dataclass(frozen=True, slots=True)
+class TtlIntent:
+    """Producer TTL intent for the AstraVector session-ingestion path."""
+
+    ttl_days: int = 0
+
+    def __post_init__(self) -> None:
+        if self.ttl_days < 0:
+            raise ValueError("ttlDays must be non-negative")
+
+    @property
+    def inherits_zone_policy(self) -> bool:
+        return self.ttl_days == 0
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryIntent:
+    """Security/lifecycle context that must survive M1→M8 and M7 replay."""
+
+    access_zone: AccessZoneIntent
+    ttl: TtlIntent
 
 
 @dataclass(frozen=True, slots=True)

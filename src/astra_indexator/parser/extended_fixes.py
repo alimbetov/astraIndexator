@@ -50,19 +50,38 @@ class PptxDocumentHandlerV1:
                     page_height=float(presentation.slide_height),
                     coordinate_space="emu-top-left",
                 )
-                source_locator = {"slideNumber": slide_number, "shapeId": shape_id, "shapeIndex": shape_index}
+                source_locator = {
+                    "slideNumber": slide_number,
+                    "shapeId": shape_id,
+                    "shapeIndex": shape_index,
+                }
                 if getattr(shape, "has_table", False):
                     rows = [[cell.text for cell in row.cells] for row in shape.table.rows]
                     _append(
-                        elements, source, context, ElementType.TABLE, locator,
+                        elements,
+                        source,
+                        context,
+                        ElementType.TABLE,
+                        locator,
                         text="\n".join(" | ".join(row) for row in rows),
-                        geometry=geometry, source_locator=source_locator,
-                        metadata={"rows": rows, "rowCount": len(rows), "columnCount": len(rows[0]) if rows else 0},
+                        geometry=geometry,
+                        source_locator=source_locator,
+                        metadata={
+                            "rows": rows,
+                            "rowCount": len(rows),
+                            "columnCount": len(rows[0]) if rows else 0,
+                        },
                     )
                 elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                     element = _append(
-                        elements, source, context, ElementType.IMAGE, locator,
-                        geometry=geometry, source_locator=source_locator, role="SLIDE_IMAGE",
+                        elements,
+                        source,
+                        context,
+                        ElementType.IMAGE,
+                        locator,
+                        geometry=geometry,
+                        source_locator=source_locator,
+                        role="SLIDE_IMAGE",
                     )
                     candidates.append(
                         OcrCandidate(
@@ -79,10 +98,16 @@ class PptxDocumentHandlerV1:
                     text = shape.text.strip()
                     if not text:
                         continue
-                    placeholder_type = str(shape.placeholder_format.type) if getattr(shape, "is_placeholder", False) else None
+                    placeholder_type = (
+                        str(shape.placeholder_format.type)
+                        if getattr(shape, "is_placeholder", False)
+                        else None
+                    )
                     is_title = shape_id == title_shape_id
                     _append(
-                        elements, source, context,
+                        elements,
+                        source,
+                        context,
                         ElementType.HEADING if is_title else ElementType.PARAGRAPH,
                         locator,
                         text=text,
@@ -92,13 +117,21 @@ class PptxDocumentHandlerV1:
                         metadata={"placeholderType": placeholder_type},
                     )
             notes_slide = slide.notes_slide if slide.has_notes_slide else None
-            notes_frame = getattr(notes_slide, "notes_text_frame", None) if notes_slide is not None else None
+            notes_frame = (
+                getattr(notes_slide, "notes_text_frame", None) if notes_slide is not None else None
+            )
             if notes_frame is not None:
-                notes_text = "\n".join(p.text.strip() for p in notes_frame.paragraphs if p.text.strip())
+                notes_text = "\n".join(
+                    p.text.strip() for p in notes_frame.paragraphs if p.text.strip()
+                )
                 if notes_text:
                     _append(
-                        elements, source, context, ElementType.PARAGRAPH,
-                        f"slide:{slide_number}:notes", text=notes_text,
+                        elements,
+                        source,
+                        context,
+                        ElementType.PARAGRAPH,
+                        f"slide:{slide_number}:notes",
+                        text=notes_text,
                         role="SPEAKER_NOTES",
                         source_locator={"slideNumber": slide_number, "notesScope": True},
                     )
@@ -126,14 +159,25 @@ class EpubDocumentHandlerV1:
             for tag in soup(["script", "style", "noscript", "template"]):
                 tag.decompose()
             for local_index, tag in enumerate(
-                soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table", "pre", "img"])
+                soup.find_all(
+                    ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table", "pre", "img"]
+                )
             ):
                 locator = f"spine:{spine_index}:node:{local_index}"
-                source_locator = {"spineIndex": spine_index, "href": href, "domPath": _dom_path(tag)}
+                source_locator = {
+                    "spineIndex": spine_index,
+                    "href": href,
+                    "domPath": _dom_path(tag),
+                }
                 if tag.name == "img":
                     _append(
-                        elements, source, context, ElementType.IMAGE, locator,
-                        role="EPUB_IMAGE_REFERENCE", source_locator=source_locator,
+                        elements,
+                        source,
+                        context,
+                        ElementType.IMAGE,
+                        locator,
+                        role="EPUB_IMAGE_REFERENCE",
+                        source_locator=source_locator,
                         metadata={"src": tag.get("src"), "alt": tag.get("alt")},
                     )
                     continue
@@ -155,5 +199,14 @@ class EpubDocumentHandlerV1:
                 else:
                     kind = ElementType.PARAGRAPH
                     level = None
-                _append(elements, source, context, kind, locator, text=text, level=level, source_locator=source_locator)
+                _append(
+                    elements,
+                    source,
+                    context,
+                    kind,
+                    locator,
+                    text=text,
+                    level=level,
+                    source_locator=source_locator,
+                )
         return _doc(source, context, "ebooklib-html-structured", elements, [], [])

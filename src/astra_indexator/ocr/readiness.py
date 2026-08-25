@@ -21,7 +21,9 @@ def check_ocr_readiness(settings: OcrSettings, *, require_runtime: bool = True) 
         bundle = verify_local_bundle(settings.model_bundle_root)
     except Exception as exc:
         return OcrReadiness(False, str(exc))
-    configured_languages = {value.strip() for value in settings.languages.split(",") if value.strip()}
+    configured_languages = {
+        value.strip() for value in settings.languages.split(",") if value.strip()
+    }
     if not configured_languages.issubset(set(bundle.identity.languages)):
         return OcrReadiness(False, "OCR_LANGUAGE_UNSUPPORTED", bundle)
     if not require_runtime:

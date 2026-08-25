@@ -45,6 +45,7 @@ class DefaultOcrInputResolver:
         Path(name).unlink(missing_ok=True)
         try:
             import os
+
             os.close(fd)
         except OSError:
             pass
@@ -67,7 +68,12 @@ class DefaultOcrInputResolver:
             sy = image.height / float(g.page_height)
             box = (int(g.x0 * sx), int(g.y0 * sy), int(g.x1 * sx), int(g.y1 * sy))
         elif g.coordinate_space == "normalized-0-1":
-            box = (int(g.x0 * image.width), int(g.y0 * image.height), int(g.x1 * image.width), int(g.y1 * image.height))
+            box = (
+                int(g.x0 * image.width),
+                int(g.y0 * image.height),
+                int(g.x1 * image.width),
+                int(g.y1 * image.height),
+            )
         else:
             return image
         left, top, right, bottom = box
@@ -96,7 +102,9 @@ class DefaultOcrInputResolver:
                 try:
                     import pypdfium2 as pdfium
                 except ImportError as exc:  # pragma: no cover
-                    raise RuntimeError("pypdfium2 is required for PDF OCR; install astra-indexator[ocr]") from exc
+                    raise RuntimeError(
+                        "pypdfium2 is required for PDF OCR; install astra-indexator[ocr]"
+                    ) from exc
                 page_number = candidate.page_number or 1
                 pdf = pdfium.PdfDocument(str(source.local_path))
                 try:
@@ -123,7 +131,9 @@ class DefaultOcrInputResolver:
                 blips = drawings[drawing_index].xpath(".//a:blip")
                 if not blips:
                     raise RuntimeError("OCR_DOCX_IMAGE_RELATION_NOT_FOUND")
-                relation_id = blips[0].get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
+                relation_id = blips[0].get(
+                    "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+                )
                 if not relation_id or relation_id not in doc.part.related_parts:
                     raise RuntimeError("OCR_DOCX_IMAGE_RELATION_NOT_FOUND")
                 part = doc.part.related_parts[relation_id]
@@ -135,7 +145,14 @@ class DefaultOcrInputResolver:
                 shape_id = int(candidate.metadata["shapeId"])
                 if slide_number < 1 or slide_number > len(presentation.slides):
                     raise RuntimeError("OCR_PPTX_SLIDE_NOT_FOUND")
-                shape = next((s for s in presentation.slides[slide_number - 1].shapes if int(s.shape_id) == shape_id), None)
+                shape = next(
+                    (
+                        s
+                        for s in presentation.slides[slide_number - 1].shapes
+                        if int(s.shape_id) == shape_id
+                    ),
+                    None,
+                )
                 if shape is None or not hasattr(shape, "image"):
                     raise RuntimeError("OCR_PPTX_IMAGE_NOT_FOUND")
                 with Image.open(__import__("io").BytesIO(shape.image.blob)) as image:

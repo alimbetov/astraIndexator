@@ -42,7 +42,10 @@ class OrderedDocxDocumentHandler:
             drawings = child.xpath(".//w:drawing")
             for drawing_index, _ in enumerate(drawings):
                 if image_index >= len(inline_shapes):
-                    raise ParserError("PARSER_DOCX_IMAGE_MAPPING", "DOCX drawing/inline-shape mapping is inconsistent")
+                    raise ParserError(
+                        "PARSER_DOCX_IMAGE_MAPPING",
+                        "DOCX drawing/inline-shape mapping is inconsistent",
+                    )
                 shape = inline_shapes[image_index]
                 locator = f"paragraph:{owning_paragraph_index}:inline-shape:{drawing_index}"
                 element_id = _eid(source, context, locator, ElementType.IMAGE)
@@ -99,13 +102,18 @@ class OrderedDocxDocumentHandler:
                         level = None
                     elements.append(
                         DocumentElement(
-                            element_id=_eid(source, context, f"paragraph:{current_paragraph_index}", kind),
+                            element_id=_eid(
+                                source, context, f"paragraph:{current_paragraph_index}", kind
+                            ),
                             type=kind,
                             order_index=len(elements),
                             text=text,
                             level=level,
                             section_path=tuple(section_path),
-                            source_locator={"paragraphIndex": current_paragraph_index, "style": style},
+                            source_locator={
+                                "paragraphIndex": current_paragraph_index,
+                                "style": style,
+                            },
                         )
                     )
                 emit_inline_images(child, current_paragraph_index)
@@ -132,5 +140,7 @@ class OrderedDocxDocumentHandler:
                 table_index += 1
 
         if image_index != len(inline_shapes):
-            raise ParserError("PARSER_DOCX_IMAGE_MAPPING", "not all DOCX inline shapes were mapped to body order")
+            raise ParserError(
+                "PARSER_DOCX_IMAGE_MAPPING", "not all DOCX inline shapes were mapped to body order"
+            )
         return _doc(source, context, "docx-native-ordered", elements, candidates, [])

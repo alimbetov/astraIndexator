@@ -16,7 +16,6 @@ from astra_indexator.ocr import (
     OcrModelIdentity,
     OcrObservation,
     OcrPipelineService,
-    OcrProfile,
     ResolvedOcrInput,
     check_ocr_readiness,
 )
@@ -37,8 +36,20 @@ def _source(tmp_path: Path) -> AcquiredSource:
     path = tmp_path / "image.png"
     Image.new("RGB", (120, 80), "white").save(path)
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
-    return AcquiredSource(StorageRef.parse("seaweed://docs/image.png"), path, "image.png", "PNG", "image/png",
-                          path.stat().st_size, sha, None, None, "default-v1", (), datetime.now(timezone.utc))
+    return AcquiredSource(
+        StorageRef.parse("seaweed://docs/image.png"),
+        path,
+        "image.png",
+        "PNG",
+        "image/png",
+        path.stat().st_size,
+        sha,
+        None,
+        None,
+        "default-v1",
+        (),
+        datetime.now(timezone.utc),
+    )
 
 
 def _bundle(root: Path) -> Path:
@@ -70,35 +81,74 @@ class Resolver:
         self.path = path
 
     def resolve(self, *, source, document, candidate, profile):
-        return ResolvedOcrInput(candidate.candidate_id, self.path, 120, 80, candidate.page_number,
-                                candidate.element_id, candidate.geometry, False)
+        return ResolvedOcrInput(
+            candidate.candidate_id,
+            self.path,
+            120,
+            80,
+            candidate.page_number,
+            candidate.element_id,
+            candidate.geometry,
+            False,
+        )
 
 
 class Engine:
     def __init__(self, revision="r1", checksum="sha1"):
         self.calls = 0
-        self.model_identity = OcrModelIdentity("ocr", "paddleocr", "3.x", revision, checksum, ("ru", "kk", "en"))
+        self.model_identity = OcrModelIdentity(
+            "ocr", "paddleocr", "3.x", revision, checksum, ("ru", "kk", "en")
+        )
 
     def recognize(self, request):
         self.calls += 1
-        return (OcrObservation("Құжат", 0.95, 0, request.candidate_id, request.source_element_id,
-                               request.page_number, SourceGeometry(page_number=request.page_number),
-                               self.model_identity),)
+        return (
+            OcrObservation(
+                "Құжат",
+                0.95,
+                0,
+                request.candidate_id,
+                request.source_element_id,
+                request.page_number,
+                SourceGeometry(page_number=request.page_number),
+                self.model_identity,
+            ),
+        )
 
 
 def _document(src: AcquiredSource, *, two_images=False, good_native=False) -> ParsedDocument:
     elements = []
     if good_native:
         elements.append(DocumentElement("p", ElementType.PARAGRAPH, 0, text="native text"))
-    elements.append(DocumentElement("img1", ElementType.IMAGE, len(elements), role="EMBEDDED_IMAGE"))
+    elements.append(
+        DocumentElement("img1", ElementType.IMAGE, len(elements), role="EMBEDDED_IMAGE")
+    )
     candidates = [OcrCandidate("ocr:img1", "EMBEDDED_IMAGE", None, "docx_embedded_image", "img1")]
     if two_images:
-        elements.append(DocumentElement("img2", ElementType.IMAGE, len(elements), role="EMBEDDED_IMAGE"))
-        candidates.append(OcrCandidate("ocr:img2", "EMBEDDED_IMAGE", None, "docx_embedded_image", "img2"))
-    quality = ParseQuality(QualityStatus.GOOD if good_native else QualityStatus.OCR_REQUIRED,
-                           len("native text") if good_native else 0, len(candidates), (), ())
-    return ParsedDocument("astra-indexator-document-v1", uuid4(), 1, src.sha256, "PNG",
-                          ParserIdentity("fixture", "v1", "default"), tuple(elements), tuple(candidates), quality)
+        elements.append(
+            DocumentElement("img2", ElementType.IMAGE, len(elements), role="EMBEDDED_IMAGE")
+        )
+        candidates.append(
+            OcrCandidate("ocr:img2", "EMBEDDED_IMAGE", None, "docx_embedded_image", "img2")
+        )
+    quality = ParseQuality(
+        QualityStatus.GOOD if good_native else QualityStatus.OCR_REQUIRED,
+        len("native text") if good_native else 0,
+        len(candidates),
+        (),
+        (),
+    )
+    return ParsedDocument(
+        "astra-indexator-document-v1",
+        uuid4(),
+        1,
+        src.sha256,
+        "PNG",
+        ParserIdentity("fixture", "v1", "default"),
+        tuple(elements),
+        tuple(candidates),
+        quality,
+    )
 
 
 def test_disabled_optional_embedded_image_does_not_downgrade_good_native_document(tmp_path):
@@ -117,18 +167,27 @@ def test_repeated_identical_image_is_recognized_once_but_projected_per_occurrenc
     src = _source(tmp_path)
     doc = _document(src, two_images=True)
     engine = Engine()
-    result = OcrPipelineService(engine=engine, resolver=Resolver(src.local_path)).process(source=src, document=doc)
+    result = OcrPipelineService(engine=engine, resolver=Resolver(src.local_path)).process(
+        source=src, document=doc
+    )
     assert engine.calls == 1
     assert len(result.accepted_ocr_elements) == 2
-    assert {element.parent_element_id for element in result.accepted_ocr_elements} == {"img1", "img2"}
+    assert {element.parent_element_id for element in result.accepted_ocr_elements} == {
+        "img1",
+        "img2",
+    }
     assert "OCR_RESULT_REUSED_BY_IMAGE_HASH" in result.candidate_results[1].reason_codes
 
 
 def test_model_revision_changes_processing_fingerprint(tmp_path):
     src = _source(tmp_path)
     doc = _document(src)
-    first = OcrPipelineService(engine=Engine("r1", "sha1"), resolver=Resolver(src.local_path)).process(source=src, document=doc)
-    second = OcrPipelineService(engine=Engine("r2", "sha2"), resolver=Resolver(src.local_path)).process(source=src, document=doc)
+    first = OcrPipelineService(
+        engine=Engine("r1", "sha1"), resolver=Resolver(src.local_path)
+    ).process(source=src, document=doc)
+    second = OcrPipelineService(
+        engine=Engine("r2", "sha2"), resolver=Resolver(src.local_path)
+    ).process(source=src, document=doc)
     assert first.processing_fingerprint != second.processing_fingerprint
 
 

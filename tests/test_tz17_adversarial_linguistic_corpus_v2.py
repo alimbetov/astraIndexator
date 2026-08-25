@@ -3,8 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
-from astra_indexator.verification.linguistic import BoundaryMetrics, evaluate_corpus, load_corpus, verify_corpus_gates
-
+from astra_indexator.verification.linguistic import (
+    BoundaryMetrics,
+    evaluate_corpus,
+    load_corpus,
+    verify_corpus_gates,
+)
 
 CORPUS = Path(__file__).parent / "fixtures" / "linguistic" / "corpus-v2-adversarial.json"
 
@@ -27,9 +31,17 @@ def test_v2_has_adversarial_depth_and_twenty_languages():
     assert len(corpus["cases"]) >= int(corpus["gates"]["minimumCases"])
     categories = {case.get("category") for case in corpus["cases"]}
     assert {
-        "abbreviation-title", "abbreviation-terminal", "initials", "technical-token",
-        "decimal", "question", "quotes", "multi-punctuation", "paragraph-boundary",
-        "mixed-technical", "legal-numbering",
+        "abbreviation-title",
+        "abbreviation-terminal",
+        "initials",
+        "technical-token",
+        "decimal",
+        "question",
+        "quotes",
+        "multi-punctuation",
+        "paragraph-boundary",
+        "mixed-technical",
+        "legal-numbering",
     }.issubset(categories)
 
 

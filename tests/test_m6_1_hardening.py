@@ -77,8 +77,12 @@ def test_upstream_ocr_processing_fingerprint_changes_normalization_identity():
 
 def test_normalization_semantic_profile_config_changes_processing_identity_without_version_change():
     source = _doc([_element("p", "same text")])
-    first = TextNormalizationService(NormalizationProfile(furniture_min_fraction=0.60)).normalize(source)
-    second = TextNormalizationService(NormalizationProfile(furniture_min_fraction=0.75)).normalize(source)
+    first = TextNormalizationService(NormalizationProfile(furniture_min_fraction=0.60)).normalize(
+        source
+    )
+    second = TextNormalizationService(NormalizationProfile(furniture_min_fraction=0.75)).normalize(
+        source
+    )
     assert first.normalizer_version == second.normalizer_version
     assert first.normalizer_profile == second.normalizer_profile
     assert first.processing_fingerprint != second.processing_fingerprint
@@ -92,7 +96,9 @@ def test_ocr_multiline_text_is_not_joined_without_line_wrap_evidence():
 
 
 def test_line_join_occurs_when_upstream_supplies_explicit_wrap_evidence():
-    source = _doc([_element("p", "первая строка\nпродолжение", metadata={"lineWrapEvidence": True})])
+    source = _doc(
+        [_element("p", "первая строка\nпродолжение", metadata={"lineWrapEvidence": True})]
+    )
     normalized = TextNormalizationService().normalize(source)
     assert normalized.elements[0].normalized_text == "первая строка продолжение"
     assert normalized.stats.line_wrap_joins == 1
@@ -101,16 +107,18 @@ def test_line_join_occurs_when_upstream_supplies_explicit_wrap_evidence():
 def test_hard_word_limit_is_a_real_postcondition():
     text = " ".join(f"word{i}" for i in range(23))
     normalized = TextNormalizationService().normalize(_doc([_element("p", text)]))
-    fragments = LogicalSplitter(_profile(
-        target_chars=1000,
-        soft_max_chars=2000,
-        hard_max_chars=5000,
-        target_words=3,
-        soft_max_words=4,
-        hard_max_words=5,
-        target_sentences=4,
-        hard_max_sentences=10,
-    )).split(normalized)
+    fragments = LogicalSplitter(
+        _profile(
+            target_chars=1000,
+            soft_max_chars=2000,
+            hard_max_chars=5000,
+            target_words=3,
+            soft_max_words=4,
+            hard_max_words=5,
+            target_sentences=4,
+            hard_max_sentences=10,
+        )
+    ).split(normalized)
     assert len(fragments) >= 5
     assert all(fragment.statistics.word_count <= 5 for fragment in fragments)
 
@@ -118,16 +126,18 @@ def test_hard_word_limit_is_a_real_postcondition():
 def test_hard_sentence_limit_is_a_real_postcondition():
     text = "One done. Two done. Three done. Four done. Five done."
     normalized = TextNormalizationService().normalize(_doc([_element("p", text)]))
-    fragments = LogicalSplitter(_profile(
-        target_chars=1000,
-        soft_max_chars=2000,
-        hard_max_chars=5000,
-        target_words=100,
-        soft_max_words=200,
-        hard_max_words=300,
-        target_sentences=1,
-        hard_max_sentences=2,
-    )).split(normalized)
+    fragments = LogicalSplitter(
+        _profile(
+            target_chars=1000,
+            soft_max_chars=2000,
+            hard_max_chars=5000,
+            target_words=100,
+            soft_max_words=200,
+            hard_max_words=300,
+            target_sentences=1,
+            hard_max_sentences=2,
+        )
+    ).split(normalized)
     assert len(fragments) >= 3
     assert all(fragment.statistics.sentence_count <= 2 for fragment in fragments)
 
@@ -136,14 +146,16 @@ def test_single_oversized_table_row_is_forced_but_never_breaks_hard_char_guard()
     long_cell = " ".join(["value"] * 30)
     table = DocumentElement("t", ElementType.TABLE, 0, metadata={"rows": [["Header"], [long_cell]]})
     normalized = TextNormalizationService().normalize(_doc([table]))
-    fragments = LogicalSplitter(_profile(
-        target_chars=20,
-        soft_max_chars=30,
-        hard_max_chars=40,
-        target_words=20,
-        soft_max_words=30,
-        hard_max_words=40,
-    )).split(normalized)
+    fragments = LogicalSplitter(
+        _profile(
+            target_chars=20,
+            soft_max_chars=30,
+            hard_max_chars=40,
+            target_words=20,
+            soft_max_words=30,
+            hard_max_words=40,
+        )
+    ).split(normalized)
     assert len(fragments) > 1
     assert all(fragment.statistics.char_count <= 40 for fragment in fragments)
     body = [fragment for fragment in fragments if fragment.source.table_row_from == 1]
@@ -153,48 +165,60 @@ def test_single_oversized_table_row_is_forced_but_never_breaks_hard_char_guard()
 
 
 def test_min_chars_consolidates_compatible_tiny_sections():
-    source = _doc([
-        _element("h1", "A", kind=ElementType.HEADING, order=0, level=1),
-        _element("p1", "short one.", order=1),
-        _element("h2", "B", kind=ElementType.HEADING, order=2, level=1),
-        _element("p2", "short two.", order=3),
-    ])
+    source = _doc(
+        [
+            _element("h1", "A", kind=ElementType.HEADING, order=0, level=1),
+            _element("p1", "short one.", order=1),
+            _element("h2", "B", kind=ElementType.HEADING, order=2, level=1),
+            _element("p2", "short two.", order=3),
+        ]
+    )
     normalized = TextNormalizationService().normalize(source)
-    fragments = LogicalSplitter(_profile(min_chars=40, target_chars=60, soft_max_chars=100, hard_max_chars=160)).split(normalized)
+    fragments = LogicalSplitter(
+        _profile(min_chars=40, target_chars=60, soft_max_chars=100, hard_max_chars=160)
+    ).split(normalized)
     assert len(fragments) == 1
     assert "A" in fragments[0].normalized_text and "B" in fragments[0].normalized_text
 
 
 def test_small_warning_is_allowed_to_remain_independent():
-    source = _doc([
-        _element("w", "Critical warning.", role="WARNING", order=0),
-        _element("h", "Next section", kind=ElementType.HEADING, order=1, level=1),
-        _element("p", "Body text follows.", order=2),
-    ])
+    source = _doc(
+        [
+            _element("w", "Critical warning.", role="WARNING", order=0),
+            _element("h", "Next section", kind=ElementType.HEADING, order=1, level=1),
+            _element("p", "Body text follows.", order=2),
+        ]
+    )
     normalized = TextNormalizationService().normalize(source)
-    fragments = LogicalSplitter(_profile(min_chars=40, target_chars=60, soft_max_chars=100, hard_max_chars=160)).split(normalized)
+    fragments = LogicalSplitter(
+        _profile(min_chars=40, target_chars=60, soft_max_chars=100, hard_max_chars=160)
+    ).split(normalized)
     assert len(fragments) >= 2
     assert fragments[0].normalized_text == "Critical warning."
     assert "WARNING" in fragments[0].metadata["roles"]
 
 
 def test_context_profile_flags_are_honored():
-    source = _doc([
-        _element("h", "Parent", kind=ElementType.HEADING, order=0, level=1),
-        _element("intro", "Участник обязан:", order=1),
-        _element("l1", "первое действие;", kind=ElementType.LIST_ITEM, order=2),
-        _element("l2", "второе действие;", kind=ElementType.LIST_ITEM, order=3),
-        _element("l3", "третье действие.", kind=ElementType.LIST_ITEM, order=4),
-    ])
+    source = _doc(
+        [
+            _element("h", "Parent", kind=ElementType.HEADING, order=0, level=1),
+            _element("intro", "Участник обязан:", order=1),
+            _element("l1", "первое действие;", kind=ElementType.LIST_ITEM, order=2),
+            _element("l2", "второе действие;", kind=ElementType.LIST_ITEM, order=3),
+            _element("l3", "третье действие.", kind=ElementType.LIST_ITEM, order=4),
+        ]
+    )
     normalized = TextNormalizationService().normalize(source)
-    splitter = LogicalSplitter(_profile(
-        target_chars=20,
-        soft_max_chars=28,
-        hard_max_chars=48,
-        repeat_heading_context=False,
-        repeat_parent_headings=False,
-        repeat_list_intro=False,
-    ))
+    splitter = LogicalSplitter(
+        _profile(
+            target_chars=20,
+            soft_max_chars=28,
+            hard_max_chars=48,
+            repeat_heading_context=False,
+            repeat_parent_headings=False,
+            repeat_list_intro=False,
+        )
+    )
     fragments = splitter.split(normalized)
     assert all("Parent" not in fragment.context_prefix for fragment in fragments)
     assert all("Участник обязан:" not in fragment.context_prefix for fragment in fragments)
@@ -207,7 +231,10 @@ def test_splitter_semantic_config_changes_fragment_identity_even_when_version_is
     second = LogicalSplitter(_profile(target_chars=55)).split(normalized)
     assert first[0].split.splitter_version == second[0].split.splitter_version
     assert first[0].fragment_id != second[0].fragment_id
-    assert first[0].metadata["splitterProfileConfigHash"] != second[0].metadata["splitterProfileConfigHash"]
+    assert (
+        first[0].metadata["splitterProfileConfigHash"]
+        != second[0].metadata["splitterProfileConfigHash"]
+    )
 
 
 def test_terminal_capable_abbreviation_can_end_sentence_with_uppercase_lookahead():

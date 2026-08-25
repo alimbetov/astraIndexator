@@ -57,7 +57,9 @@ class PaddleOcrEngine:
         try:
             from paddleocr import PaddleOCR
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("PaddleOCR runtime is not installed; install an AstraIndexator OCR extra") from exc
+            raise RuntimeError(
+                "PaddleOCR runtime is not installed; install an AstraIndexator OCR extra"
+            ) from exc
         self._identity = bundle.identity
         kwargs = {
             "text_detection_model_dir": str(bundle.text_detection_model_dir),
@@ -102,7 +104,9 @@ class PaddleOcrEngine:
             nested = payload.get("res", {}) if isinstance(payload.get("res"), dict) else {}
             texts = payload.get("rec_texts") or nested.get("rec_texts") or []
             scores = payload.get("rec_scores") or nested.get("rec_scores") or []
-            polys = payload.get("rec_polys") or payload.get("dt_polys") or nested.get("rec_polys") or []
+            polys = (
+                payload.get("rec_polys") or payload.get("dt_polys") or nested.get("rec_polys") or []
+            )
             for index, text in enumerate(texts):
                 text = str(text).strip()
                 if not text:
@@ -110,7 +114,9 @@ class PaddleOcrEngine:
                 confidence = float(scores[index]) if index < len(scores) else 0.0
                 geometry = None
                 metadata = {
-                    "inferenceEngine": bundle_engine if (bundle_engine := getattr(self._ocr, "engine", None)) else None
+                    "inferenceEngine": bundle_engine
+                    if (bundle_engine := getattr(self._ocr, "engine", None))
+                    else None
                 }
                 if index < len(polys) and polys[index]:
                     points = polys[index]
@@ -126,22 +132,26 @@ class PaddleOcrEngine:
                         page_height=1.0,
                         coordinate_space="normalized-top-left",
                     )
-                    metadata.update({
-                        "rawPolygon": [[float(p[0]), float(p[1])] for p in points],
-                        "rawCoordinateSpace": "ocr-image-pixels",
-                    })
+                    metadata.update(
+                        {
+                            "rawPolygon": [[float(p[0]), float(p[1])] for p in points],
+                            "rawCoordinateSpace": "ocr-image-pixels",
+                        }
+                    )
                 metadata = {key: value for key, value in metadata.items() if value is not None}
-                observations.append(OcrObservation(
-                    text,
-                    confidence,
-                    block_order,
-                    request.candidate_id,
-                    request.source_element_id,
-                    request.page_number,
-                    geometry,
-                    self._identity,
-                    metadata,
-                ))
+                observations.append(
+                    OcrObservation(
+                        text,
+                        confidence,
+                        block_order,
+                        request.candidate_id,
+                        request.source_element_id,
+                        request.page_number,
+                        geometry,
+                        self._identity,
+                        metadata,
+                    )
+                )
                 block_order += 1
         return tuple(observations)
 
@@ -155,7 +165,9 @@ class PaddleOnnxOcrEngine(PaddleOcrEngine):
         super().__init__(bundle, device=device)
 
 
-def _isolated_worker(bundle_root: str, device: str, requests: mp.Queue, responses: mp.Queue) -> None:  # pragma: no cover
+def _isolated_worker(
+    bundle_root: str, device: str, requests: mp.Queue, responses: mp.Queue
+) -> None:  # pragma: no cover
     try:
         engine = PaddleOcrEngine(verify_local_bundle(Path(bundle_root)), device=device)
         responses.put(("READY", None))
@@ -174,7 +186,13 @@ def _isolated_worker(bundle_root: str, device: str, requests: mp.Queue, response
 class IsolatedPaddleOcrEngine:
     """Production CPU/GPU wrapper with killable OCR worker process."""
 
-    def __init__(self, bundle: VerifiedOcrModelBundle, *, device: str = "cpu", startup_timeout_seconds: float = 120.0):
+    def __init__(
+        self,
+        bundle: VerifiedOcrModelBundle,
+        *,
+        device: str = "cpu",
+        startup_timeout_seconds: float = 120.0,
+    ):
         self.bundle = bundle
         self.device = device
         self.startup_timeout_seconds = startup_timeout_seconds
@@ -221,7 +239,9 @@ class IsolatedPaddleOcrEngine:
         self._ensure_started()
         self._requests.put(request)
         try:
-            status, payload = self._responses.get(timeout=request.profile.timeout_per_candidate_seconds)
+            status, payload = self._responses.get(
+                timeout=request.profile.timeout_per_candidate_seconds
+            )
         except queue.Empty as exc:
             self._stop()
             raise TimeoutError("OCR_TIMEOUT") from exc

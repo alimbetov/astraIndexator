@@ -39,7 +39,9 @@ class JobCoordinator:
     is fenced by `(job_id, worker_id, lease_generation, non-expired lease)`.
     """
 
-    def claim_next(self, session: Session, *, worker_id: str, lease_seconds: int) -> ClaimedJob | None:
+    def claim_next(
+        self, session: Session, *, worker_id: str, lease_seconds: int
+    ) -> ClaimedJob | None:
         if not worker_id.strip():
             raise ValueError("worker_id must not be blank")
         if lease_seconds <= 0:
@@ -231,7 +233,9 @@ class JobCoordinator:
             )
         )
         self._require_one(session, stmt)
-        self._finish_attempt(session, token, result="RETRY_WAIT", error_code=error_code, error_message=error_message)
+        self._finish_attempt(
+            session, token, result="RETRY_WAIT", error_code=error_code, error_message=error_message
+        )
         session.add(
             JobEvent(
                 job_id=token.job_id,
@@ -258,7 +262,9 @@ class JobCoordinator:
     def _require_one(session: Session, stmt) -> None:
         result = session.execute(stmt)
         if result.rowcount != 1:
-            raise LeaseLostError("lease token is stale, expired, or job is no longer owned by this worker")
+            raise LeaseLostError(
+                "lease token is stale, expired, or job is no longer owned by this worker"
+            )
 
     @staticmethod
     def _finish_attempt(
