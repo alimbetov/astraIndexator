@@ -78,7 +78,8 @@ class AstraVectorGrpcAdapter:
                 metadata=self._metadata(),
             )
         except grpc.RpcError as exc:
-            code = exc.code().name if exc.code() is not None else "UNKNOWN"
+            status_code = exc.code()
+            code = status_code.name if status_code is not None else "UNKNOWN"
             details = exc.details() or str(exc)
             raise AstraVectorGrpcError(code=code, message=details) from exc
 
