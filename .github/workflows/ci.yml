@@ -39,6 +39,7 @@ jobs:
             src/astra_indexator/persistence/models.py \
             src/astra_indexator/persistence/prepared_artifacts.py \
             src/astra_indexator/persistence/repository.py \
+            src/astra_indexator/application/coordinator.py \
             src/astra_indexator/application/prepared_artifact_checkpoint.py
 
       - name: Baseline mypy debt report
