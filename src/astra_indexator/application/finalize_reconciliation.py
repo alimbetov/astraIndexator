@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from astra_indexator.astravector.contracts import (
     AstraVectorIngestionPort,
+    AstraVectorTransportError,
     DocumentVectorStatus,
     FinalizeIngestionCommand,
     FinalizeIngestionResult,
@@ -121,9 +122,8 @@ class FinalizeReconciliationRunner:
                 finalize_attempts += 1
                 try:
                     result = self._port.finalize(command)
-                except RuntimeError as exc:
-                    code = getattr(exc, "code", None)
-                    if not isinstance(code, str) or code not in _AMBIGUOUS_FINALIZE_CODES:
+                except AstraVectorTransportError as exc:
+                    if exc.code not in _AMBIGUOUS_FINALIZE_CODES:
                         raise
                     last_status = self._observe_status(job_id, ingestion_session_id)
                     status_polls += 1
