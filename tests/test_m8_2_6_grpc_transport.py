@@ -72,13 +72,18 @@ class _Stub:
     def GetDocumentVectorStatus(self, request: object, **kwargs: object) -> object:
         self.vector_calls.append(request)
         return SimpleNamespace(
+            document=SimpleNamespace(
+                access_zone_id=str(ZONE_ID),
+                document_id=str(DOCUMENT_ID),
+                document_version=7,
+            ),
             status=SimpleNamespace(
                 state=7,
                 progress_percent=100.0,
                 searchable=True,
                 ready_to_activate=True,
                 message="ready",
-            )
+            ),
         )
 
 
