@@ -17,7 +17,10 @@ from astra_indexator.astravector.contracts import (
     IngestionStatus,
 )
 from astra_indexator.astravector.grpc_adapter import AstraVectorGrpcError
-from astra_indexator.persistence.delivery import DeliveryBatchRepository, DeliveryIntegrityError
+from astra_indexator.persistence.delivery import (
+    DeliveryBatchRepository,
+    DeliveryIntegrityError,
+)
 
 
 _AMBIGUOUS_FINALIZE_CODES = frozenset(
