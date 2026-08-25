@@ -7,10 +7,10 @@ import pytest
 
 from astra_indexator.astravector import (
     CURRENT_WIRE_CONTRACT,
+    UINT32_MAX,
     HashLogicalBlock,
     HashSourceLink,
     HashSourceLocation,
-    UINT32_MAX,
     WireRangeError,
     canonical_batch_bytes,
     compute_batch_content_hash,
