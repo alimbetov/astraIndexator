@@ -195,6 +195,28 @@ class DeliveryBatchRepository:
         session.flush()
         return checkpoint
 
+    def record_session_status(
+        self,
+        session: Session,
+        *,
+        job_id: UUID,
+        ingestion_session_id: UUID,
+        session_status_raw: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> DeliveryCheckpoint:
+        checkpoint = self._checkpoint_for_update(session, job_id)
+        if checkpoint.ingestion_session_id != ingestion_session_id:
+            raise DeliveryIntegrityError(
+                "reconciliation status belongs to a different AstraVector ingestion session"
+            )
+        checkpoint.session_status_raw = session_status_raw
+        checkpoint.last_error_code = error_code or None
+        checkpoint.last_error_message = error_message or None
+        checkpoint.updated_at = datetime.now(timezone.utc)
+        session.flush()
+        return checkpoint
+
     def checkpoint(self, session: Session, job_id: UUID) -> DeliveryCheckpoint | None:
         return session.get(DeliveryCheckpoint, job_id)
 
