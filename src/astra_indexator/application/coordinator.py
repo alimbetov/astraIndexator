@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from astra_indexator.persistence.models import IndexationJob, JobEvent, ProcessingAttempt
@@ -27,7 +29,7 @@ class ClaimedJob:
     token: LeaseToken
     document_id: UUID
     document_version: int
-    access_zone_code: str
+    access_zone_code: str | None
     source_uri: str
     processing_stage: str | None
 
@@ -260,7 +262,7 @@ class JobCoordinator:
 
     @staticmethod
     def _require_one(session: Session, stmt) -> None:
-        result = session.execute(stmt)
+        result = cast(CursorResult[Any], session.execute(stmt))
         if result.rowcount != 1:
             raise LeaseLostError(
                 "lease token is stale, expired, or job is no longer owned by this worker"
@@ -290,6 +292,6 @@ class JobCoordinator:
                 error_message=error_message,
             )
         )
-        update_result = session.execute(stmt)
+        update_result = cast(CursorResult[Any], session.execute(stmt))
         if update_result.rowcount != 1:
             raise LeaseLostError("processing attempt is stale or already finished")
