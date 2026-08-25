@@ -158,6 +158,18 @@ class DocumentVectorStatus:
     searchable: bool
     ready_to_activate: bool
     message: str = ""
+    expected_bindings: int = 0
+    synced_bindings: int = 0
+    pending_bindings: int = 0
+    failed_bindings: int = 0
+    outbox_pending: int = 0
+    outbox_retry_pending: int = 0
+    outbox_failed: int = 0
+    qdrant_collection_exists: bool = False
+    qdrant_points_expected: int = 0
+    qdrant_points_found: int = 0
+    qdrant_points_missing: int = 0
+    qdrant_points_extra: int = 0
 
 
 def map_session_state(raw_status: str) -> IngestionSessionState:
