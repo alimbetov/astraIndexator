@@ -25,6 +25,17 @@ from .contracts import (
     StartIngestionResult,
     map_session_state,
 )
+from .generated_loader import (
+    GeneratedAstraVectorClient,
+    GeneratedClientUnavailable,
+    load_generated_client,
+)
+from .grpc_adapter import (
+    AstraVectorGrpcAdapter,
+    AstraVectorGrpcConfig,
+    AstraVectorGrpcError,
+    create_grpc_channel,
+)
 from .policy import (
     GrpcFailure,
     RetryDecision,
@@ -51,6 +62,9 @@ __all__ = [
     "AbortIngestionCommand",
     "AppendBlocksCommand",
     "AppendBlocksResult",
+    "AstraVectorGrpcAdapter",
+    "AstraVectorGrpcConfig",
+    "AstraVectorGrpcError",
     "AstraVectorIngestionPort",
     "AstraVectorProtoMapper",
     "CANONICAL_HASH_CONTRACT_VERSION",
@@ -58,6 +72,8 @@ __all__ = [
     "DeliveryCompletionLevel",
     "DocumentVectorStatus",
     "FinalizeIngestionCommand",
+    "GeneratedAstraVectorClient",
+    "GeneratedClientUnavailable",
     "GrpcFailure",
     "HashLogicalBlock",
     "HashSourceLink",
@@ -79,6 +95,8 @@ __all__ = [
     "classify_grpc_failure",
     "compute_batch_content_hash",
     "compute_final_content_hash",
+    "create_grpc_channel",
+    "load_generated_client",
     "map_session_state",
     "normalize_sha256_hex",
     "render_final_content_text",
