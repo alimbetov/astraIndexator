@@ -206,7 +206,18 @@ def test_transitional_state_remains_pending() -> None:
 
 def test_failed_vector_state_is_terminal_error() -> None:
     repository = _Repository()
-    port = _Port([_status("FAILED", expected=0, pending=0, qdrant_expected=0, qdrant_missing=0, message="embedding failed")])
+    port = _Port(
+        [
+            _status(
+                "FAILED",
+                expected=0,
+                pending=0,
+                qdrant_expected=0,
+                qdrant_missing=0,
+                message="embedding failed",
+            )
+        ]
+    )
 
     with pytest.raises(VectorReadinessTerminalError, match="embedding failed"):
         _run(_runner(port, repository))
@@ -222,7 +233,9 @@ def test_ready_to_activate_rejects_incomplete_sync_evidence() -> None:
         qdrant_missing=1,
     )
 
-    with pytest.raises(VectorReadinessIntegrityError, match="failed bindings|synced_bindings|pending"):
+    with pytest.raises(
+        VectorReadinessIntegrityError, match="failed bindings|synced_bindings|pending"
+    ):
         evaluate_vector_readiness(
             inconsistent,
             policy=ActivationReadinessPolicy.ALLOW_READY_TO_ACTIVATE,
@@ -234,8 +247,31 @@ def test_active_without_searchable_is_integrity_error() -> None:
         evaluate_vector_readiness(_ready("ACTIVE", searchable=False))
 
 
+def test_active_does_not_require_ready_to_activate_flag_after_activation() -> None:
+    active = _status(
+        "ACTIVE",
+        searchable=True,
+        ready=False,
+        synced=10,
+        pending=0,
+        qdrant_found=10,
+        qdrant_missing=0,
+    )
+
+    decision = evaluate_vector_readiness(active)
+
+    assert decision.disposition is VectorReadinessDisposition.SEARCHABLE
+
+
 def test_transitional_searchable_is_integrity_error() -> None:
     with pytest.raises(VectorReadinessIntegrityError, match="transitional"):
         evaluate_vector_readiness(
-            _status("SYNCING", searchable=True, expected=0, pending=0, qdrant_expected=0, qdrant_missing=0)
+            _status(
+                "SYNCING",
+                searchable=True,
+                expected=0,
+                pending=0,
+                qdrant_expected=0,
+                qdrant_missing=0,
+            )
         )
