@@ -18,7 +18,9 @@ class GeneratedAstraVectorClient:
 def load_generated_client() -> GeneratedAstraVectorClient:
     try:
         pb = import_module("astra_indexator.astravector.generated.astravector_embedding_pb2")
-        pb_grpc = import_module("astra_indexator.astravector.generated.astravector_embedding_pb2_grpc")
+        pb_grpc = import_module(
+            "astra_indexator.astravector.generated.astravector_embedding_pb2_grpc"
+        )
     except ModuleNotFoundError as exc:
         raise GeneratedClientUnavailable(
             "AstraVector generated client is missing. Run "
