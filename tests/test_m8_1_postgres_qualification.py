@@ -34,17 +34,15 @@ def database_url() -> str:
         url = _psycopg_url(postgres.get_connection_url())
         command.upgrade(_config(url), "head")
         yield url
-        command.downgrade(_config(url), "base")
 
 
 def test_repository_persists_code_and_ttl_as_requested_intent(database_url: str) -> None:
     engine = create_engine(database_url)
-    request_id = uuid4()
     with Session(engine) as session:
         job = IndexationJobRepository().create_or_get(
             session,
             NewIndexationJob(
-                producer_request_id=request_id,
+                producer_request_id=uuid4(),
                 document_id=uuid4(),
                 document_version=1,
                 source_uri="seaweed://m8/code.pdf",
