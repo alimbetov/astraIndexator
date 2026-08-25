@@ -6,7 +6,13 @@ from uuid import UUID
 
 import grpc
 
-from .contracts import StartIngestionCommand, StartIngestionResult, map_session_state
+from .contracts import (
+    AppendBlocksCommand,
+    AppendBlocksResult,
+    StartIngestionCommand,
+    StartIngestionResult,
+    map_session_state,
+)
 from .generated_loader import GeneratedAstraVectorClient, load_generated_client
 from .proto_mapper import AstraVectorProtoMapper
 
@@ -49,11 +55,7 @@ def create_grpc_channel(config: AstraVectorGrpcConfig) -> grpc.Channel:
 
 
 class AstraVectorGrpcAdapter:
-    """Transport adapter for AstraVectorIngestionFacade.
-
-    M8.2.4 intentionally wires Start first. Append/Finalize/Abort/status calls are added
-    in the following slices while reusing the same channel, generated stub and mapper.
-    """
+    """Transport adapter for the pinned AstraVectorIngestionFacade generated client."""
 
     def __init__(
         self,
@@ -69,6 +71,10 @@ class AstraVectorGrpcAdapter:
         self._stub = stub or self._generated.pb_grpc.AstraVectorIngestionFacadeStub(self._channel)
         self._mapper = AstraVectorProtoMapper(self._generated.pb)
 
+    @property
+    def mapper(self) -> AstraVectorProtoMapper:
+        return self._mapper
+
     def start(self, command: StartIngestionCommand) -> StartIngestionResult:
         request = self._mapper.start_request(command)
         try:
@@ -78,10 +84,7 @@ class AstraVectorGrpcAdapter:
                 metadata=self._metadata(),
             )
         except grpc.RpcError as exc:
-            status_code = exc.code()
-            code = status_code.name if status_code is not None else "UNKNOWN"
-            details = exc.details() or str(exc)
-            raise AstraVectorGrpcError(code=code, message=details) from exc
+            raise self._transport_error(exc) from exc
 
         try:
             session_id = UUID(response.ingestion_session_id)
@@ -101,11 +104,72 @@ class AstraVectorGrpcAdapter:
             warnings=warnings,
         )
 
+    def append(self, command: AppendBlocksCommand) -> AppendBlocksResult:
+        request = self._mapper.append_request(command)
+        try:
+            response = self._stub.AppendLogicalDocumentBlocks(
+                request,
+                timeout=self._config.deadline_seconds,
+                metadata=self._metadata(),
+            )
+        except grpc.RpcError as exc:
+            raise self._transport_error(exc) from exc
+
+        try:
+            session_id = UUID(response.ingestion_session_id)
+            accepted_blocks = int(response.accepted_blocks)
+            accepted_batch_index = int(response.accepted_batch_index)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="AppendLogicalDocumentBlocks returned malformed acknowledgement",
+            ) from exc
+
+        if session_id != command.ingestion_session_id:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="AppendLogicalDocumentBlocks returned a different ingestion_session_id",
+            )
+        if accepted_batch_index != command.batch_index:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message=(
+                    "AppendLogicalDocumentBlocks acknowledged unexpected batch index "
+                    f"{accepted_batch_index}; expected {command.batch_index}"
+                ),
+            )
+        if accepted_blocks != len(command.blocks):
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message=(
+                    "AppendLogicalDocumentBlocks acknowledged unexpected block count "
+                    f"{accepted_blocks}; expected {len(command.blocks)}"
+                ),
+            )
+
+        raw_status = str(getattr(response, "status", ""))
+        warnings = tuple(self._warning_text(item) for item in getattr(response, "warnings", ()))
+        return AppendBlocksResult(
+            ingestion_session_id=session_id,
+            raw_status=raw_status,
+            state=map_session_state(raw_status),
+            accepted_blocks=accepted_blocks,
+            accepted_batch_index=accepted_batch_index,
+            warnings=warnings,
+        )
+
     def close(self) -> None:
         self._channel.close()
 
     def _metadata(self) -> tuple[tuple[str, str], ...]:
         return tuple((key, value) for key, value in self._config.metadata.items())
+
+    @staticmethod
+    def _transport_error(exc: grpc.RpcError) -> AstraVectorGrpcError:
+        status_code = exc.code()
+        code = status_code.name if status_code is not None else "UNKNOWN"
+        details = exc.details() or str(exc)
+        return AstraVectorGrpcError(code=code, message=details)
 
     @staticmethod
     def _warning_text(warning: Any) -> str:
