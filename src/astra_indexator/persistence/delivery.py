@@ -111,7 +111,9 @@ class DeliveryBatchRepository:
                     batch_content_hash=expected_hash,
                 )
             if existing.status != "PREPARED":
-                raise DeliveryIntegrityError(f"unsupported persisted batch status {existing.status!r}")
+                raise DeliveryIntegrityError(
+                    f"unsupported persisted batch status {existing.status!r}"
+                )
             if checkpoint.next_batch_index != batch.batch_index:
                 raise DeliveryIntegrityError(
                     "PREPARED batch index does not equal DeliveryCheckpoint.next_batch_index"
@@ -174,7 +176,9 @@ class DeliveryBatchRepository:
                 )
             return checkpoint
         if persisted.status != "PREPARED":
-            raise DeliveryIntegrityError(f"unsupported persisted batch status {persisted.status!r}")
+            raise DeliveryIntegrityError(
+                f"unsupported persisted batch status {persisted.status!r}"
+            )
         if checkpoint.next_batch_index != batch.batch_index:
             raise DeliverySequenceError(
                 f"cannot acknowledge batch {batch.batch_index}; durable next batch is "
@@ -222,9 +226,7 @@ class DeliveryBatchRepository:
     @staticmethod
     def _checkpoint_for_update(session: Session, job_id: UUID) -> DeliveryCheckpoint:
         checkpoint = session.execute(
-            select(DeliveryCheckpoint)
-            .where(DeliveryCheckpoint.job_id == job_id)
-            .with_for_update()
+            select(DeliveryCheckpoint).where(DeliveryCheckpoint.job_id == job_id).with_for_update()
         ).scalar_one_or_none()
         if checkpoint is None:
             raise DeliverySequenceError(f"delivery checkpoint does not exist for job {job_id}")
