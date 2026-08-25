@@ -310,23 +310,73 @@ class AstraVectorGrpcAdapter:
         except grpc.RpcError as exc:
             raise self._transport_error(exc) from exc
 
+        document = getattr(response, "document", None)
         status = getattr(response, "status", None)
-        if status is None:
+        if document is None or status is None:
             raise AstraVectorGrpcError(
                 code="INVALID_RESPONSE",
-                message="GetDocumentVectorStatus returned no status",
+                message="GetDocumentVectorStatus returned no document/status",
             )
         try:
+            response_access_zone_id = UUID(str(document.access_zone_id))
+            response_document_id = UUID(str(document.document_id))
+            response_document_version = int(document.document_version)
             progress = float(status.progress_percent)
         except (AttributeError, TypeError, ValueError) as exc:
             raise AstraVectorGrpcError(
                 code="INVALID_RESPONSE",
-                message="GetDocumentVectorStatus returned malformed status",
+                message="GetDocumentVectorStatus returned malformed document/status",
             ) from exc
+        if (
+            response_access_zone_id != access_zone_id
+            or response_document_id != document_id
+            or response_document_version != document_version
+        ):
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="GetDocumentVectorStatus returned a different document identity",
+            )
         if progress < 0.0 or progress > 100.0:
             raise AstraVectorGrpcError(
                 code="INVALID_RESPONSE",
                 message="GetDocumentVectorStatus returned progress outside 0..100",
+            )
+
+        sync = getattr(status, "sync", None)
+        try:
+            expected_bindings = int(getattr(sync, "expected_bindings", 0))
+            synced_bindings = int(getattr(sync, "synced_bindings", 0))
+            pending_bindings = int(getattr(sync, "pending_bindings", 0))
+            failed_bindings = int(getattr(sync, "failed_bindings", 0))
+            outbox_pending = int(getattr(sync, "outbox_pending", 0))
+            outbox_retry_pending = int(getattr(sync, "outbox_retry_pending", 0))
+            outbox_failed = int(getattr(sync, "outbox_failed", 0))
+            qdrant_points_expected = int(getattr(sync, "qdrant_points_expected", 0))
+            qdrant_points_found = int(getattr(sync, "qdrant_points_found", 0))
+            qdrant_points_missing = int(getattr(sync, "qdrant_points_missing", 0))
+            qdrant_points_extra = int(getattr(sync, "qdrant_points_extra", 0))
+        except (TypeError, ValueError) as exc:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="GetDocumentVectorStatus returned malformed sync counters",
+            ) from exc
+        counters = (
+            expected_bindings,
+            synced_bindings,
+            pending_bindings,
+            failed_bindings,
+            outbox_pending,
+            outbox_retry_pending,
+            outbox_failed,
+            qdrant_points_expected,
+            qdrant_points_found,
+            qdrant_points_missing,
+            qdrant_points_extra,
+        )
+        if min(counters) < 0:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="GetDocumentVectorStatus returned negative sync counters",
             )
 
         return DocumentVectorStatus(
@@ -335,6 +385,18 @@ class AstraVectorGrpcAdapter:
             searchable=bool(getattr(status, "searchable", False)),
             ready_to_activate=bool(getattr(status, "ready_to_activate", False)),
             message=str(getattr(status, "message", "")),
+            expected_bindings=expected_bindings,
+            synced_bindings=synced_bindings,
+            pending_bindings=pending_bindings,
+            failed_bindings=failed_bindings,
+            outbox_pending=outbox_pending,
+            outbox_retry_pending=outbox_retry_pending,
+            outbox_failed=outbox_failed,
+            qdrant_collection_exists=bool(getattr(sync, "qdrant_collection_exists", False)),
+            qdrant_points_expected=qdrant_points_expected,
+            qdrant_points_found=qdrant_points_found,
+            qdrant_points_missing=qdrant_points_missing,
+            qdrant_points_extra=qdrant_points_extra,
         )
 
     def close(self) -> None:
