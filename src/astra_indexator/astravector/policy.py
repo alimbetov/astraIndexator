@@ -132,10 +132,6 @@ def evaluate_vector_readiness(
     if state == "ACTIVE":
         if not status.searchable:
             raise VectorReadinessIntegrityError("ACTIVE vector state must be searchable")
-        if not status.ready_to_activate:
-            raise VectorReadinessIntegrityError(
-                "ACTIVE vector state must retain ready_to_activate=true readiness evidence"
-            )
         _assert_ready_sync_consistency(status)
         return VectorReadinessDecision(
             disposition=VectorReadinessDisposition.SEARCHABLE,
@@ -154,7 +150,9 @@ def evaluate_vector_readiness(
             reason=status.message or f"AstraVector vector state is {state}",
         )
 
-    raise VectorReadinessIntegrityError(f"unsupported AstraVector operation state {status.raw_state!r}")
+    raise VectorReadinessIntegrityError(
+        f"unsupported AstraVector operation state {status.raw_state!r}"
+    )
 
 
 def _normalize_operation_state(raw_state: str) -> str:
@@ -186,17 +184,17 @@ def _assert_non_negative_sync_counters(status: DocumentVectorStatus) -> None:
 def _assert_ready_sync_consistency(status: DocumentVectorStatus) -> None:
     if status.failed_bindings or status.outbox_failed or status.qdrant_points_missing:
         raise VectorReadinessIntegrityError(
-            "ready_to_activate conflicts with failed bindings/outbox or missing Qdrant points"
+            "ready/searchable state conflicts with failed bindings/outbox or missing Qdrant points"
         )
     if status.expected_bindings and status.synced_bindings != status.expected_bindings:
         raise VectorReadinessIntegrityError(
-            "ready_to_activate requires synced_bindings == expected_bindings"
+            "ready/searchable state requires synced_bindings == expected_bindings"
         )
     if status.pending_bindings or status.outbox_pending or status.outbox_retry_pending:
         raise VectorReadinessIntegrityError(
-            "ready_to_activate conflicts with pending bindings/outbox work"
+            "ready/searchable state conflicts with pending bindings/outbox work"
         )
     if status.qdrant_points_expected and status.qdrant_points_found < status.qdrant_points_expected:
         raise VectorReadinessIntegrityError(
-            "ready_to_activate requires all expected Qdrant points to be present"
+            "ready/searchable state requires all expected Qdrant points to be present"
         )
