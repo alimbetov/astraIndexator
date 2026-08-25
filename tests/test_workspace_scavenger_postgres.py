@@ -38,7 +38,7 @@ def database_url() -> str:
 
 def _claim(engine):
     with Session(engine) as session:
-        job = IndexationJobRepository().create_or_get(
+        IndexationJobRepository().create_or_get(
             session,
             NewIndexationJob(
                 producer_request_id=uuid4(),
