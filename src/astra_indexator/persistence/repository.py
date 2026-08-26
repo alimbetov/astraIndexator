@@ -26,6 +26,8 @@ class NewIndexationJob:
     external_revision: str | None = None
     requested_ttl_days: int | None = None
     source_file_name: str | None = None
+    storage_object_id: UUID | None = None
+    storage_object_name: str | None = None
     source_content_hash: str | None = None
     source_size_bytes: int | None = None
     priority: int = 0
@@ -61,6 +63,17 @@ class NewIndexationJob:
         if self.requested_ttl_days is not None and self.requested_ttl_days < 0:
             raise ValueError("requested_ttl_days must be non-negative")
 
+        if bool(self.storage_object_id) != bool(self.storage_object_name):
+            raise ValueError(
+                "storage_object_id and storage_object_name must either both be set or both be unset"
+            )
+        if self.storage_object_name is not None and not self.storage_object_name.strip():
+            raise ValueError("storage_object_name must not be blank")
+        if self.source_file_name is not None and not self.source_file_name.strip():
+            raise ValueError("source_file_name must not be blank")
+        if not self.source_uri.strip():
+            raise ValueError("source_uri must not be blank")
+
     @staticmethod
     def _validate_code(value: str | None, *, field: str) -> None:
         if value is None:
@@ -79,6 +92,10 @@ class IndexationJobRepository:
     columns are written only for backward compatibility. AccessZoneCode is always
     preserved byte-for-byte as a four-character string; it is never converted to
     an integer and never replaced by an AstraVector-resolved UUID.
+
+    Source provenance follows the M9 freeze: ``source_file_name`` is the original
+    user-visible name, while ``storage_object_id`` / ``storage_object_name`` are
+    internal storage identity. Neither may overwrite the other.
     """
 
     def create_or_get(self, session: Session, command: NewIndexationJob) -> IndexationJob:
@@ -101,6 +118,8 @@ class IndexationJobRepository:
                 requested_ttl_days=command.requested_ttl_days,
                 source_uri=command.source_uri,
                 source_file_name=command.source_file_name,
+                storage_object_id=command.storage_object_id,
+                storage_object_name=command.storage_object_name,
                 source_content_hash=command.source_content_hash,
                 source_size_bytes=command.source_size_bytes,
                 status="PENDING",
