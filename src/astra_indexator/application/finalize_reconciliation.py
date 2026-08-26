@@ -50,8 +50,15 @@ class FinalizeTerminalError(RuntimeError):
         self.status = status
 
 
-class FinalizeIdentityResolutionRequired(RuntimeError):
-    """Resolved access-zone UUID is unavailable after an ambiguous completed Finalize."""
+class FinalizeReadinessIdentityUnavailable(RuntimeError):
+    """Current wire status cannot reconstruct DocumentRef for readiness inspection.
+
+    This is NOT an AccessZoneCode resolution requirement. Code-based ingestion remains
+    valid and the original accessZoneCode remains the producer-owned selector. The gap
+    exists only after an ambiguous Finalize that later reports COMPLETED: the current
+    GetLogicalDocumentIngestionStatus response has no DocumentRef, while
+    GetDocumentVectorStatus currently requires AstraVector's internal access_zone_id.
+    """
 
 
 class FinalizeReconciliationPending(RuntimeError):
@@ -69,6 +76,11 @@ class FinalizeReconciliationRunner:
     A timeout-like Finalize failure is never blindly replayed. The existing ingestion session is
     queried first. ACTIVE permits retrying the exact same Finalize command; FINALIZING only polls;
     COMPLETED transitions to vector-status inspection; terminal states fail explicitly.
+
+    ``access_zone_id`` below is optional downstream DocumentRef evidence used only when an
+    ambiguous COMPLETED state must be followed by GetDocumentVectorStatus. It is not the
+    producer AccessZone selector and it never replaces or resolves accessZoneCode in
+    AstraIndexator business logic.
     """
 
     def __init__(
@@ -170,9 +182,10 @@ class FinalizeReconciliationRunner:
 
             if last_status.state is IngestionSessionState.COMPLETED:
                 if access_zone_id is None:
-                    raise FinalizeIdentityResolutionRequired(
-                        "Finalize completed after an ambiguous transport result, but the public "
-                        "ingestion-status response does not expose resolved accessZoneId"
+                    raise FinalizeReadinessIdentityUnavailable(
+                        "Finalize is COMPLETED after an ambiguous transport result, but the current "
+                        "public ingestion-status response does not expose DocumentRef required by "
+                        "GetDocumentVectorStatus; original accessZoneCode remains valid and durable"
                     )
                 vector_status = self._port.get_document_vector_status(
                     access_zone_id=access_zone_id,
