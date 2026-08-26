@@ -9,6 +9,7 @@ from .canonical_hash import (
     HashSourceLocation,
     canonical_batch_bytes,
     compute_batch_content_hash,
+    compute_final_content_hash,
 )
 from .contracts import AppendBlocksCommand, LogicalBlock
 from .proto_mapper import AstraVectorProtoMapper
@@ -37,11 +38,12 @@ class PlannedDeliveryBatch:
 
 
 class DeterministicBatchPlanner:
-    """Stable block-count batching using the pinned protobuf enum values for hashing.
+    """Stable batching plus canonical AstraVector final-content hashing.
 
     Input order is not trusted. Blocks are canonicalized by ``(order_index, block_id)`` so a
-    restarted worker reconstructs identical batch boundaries from the same logical document.
-    Duplicate block IDs or order indices are rejected because they make replay ordering ambiguous.
+    restarted worker reconstructs identical batch boundaries and final hash from the same logical
+    document. Duplicate block IDs or order indices are rejected because replay ordering would be
+    ambiguous.
     """
 
     def __init__(self, mapper: AstraVectorProtoMapper, *, max_blocks_per_batch: int = 128) -> None:
@@ -51,17 +53,7 @@ class DeterministicBatchPlanner:
         self._max_blocks = max_blocks_per_batch
 
     def plan(self, blocks: Sequence[LogicalBlock]) -> tuple[PlannedDeliveryBatch, ...]:
-        if not blocks:
-            raise DeliveryBatchPlanningError("logical document must contain at least one block")
-
-        ordered = tuple(sorted(blocks, key=lambda block: (block.order_index, block.block_id)))
-        block_ids = [block.block_id for block in ordered]
-        if len(block_ids) != len(set(block_ids)):
-            raise DeliveryBatchPlanningError("logical block_id values must be unique")
-        order_indices = [block.order_index for block in ordered]
-        if len(order_indices) != len(set(order_indices)):
-            raise DeliveryBatchPlanningError("logical block order_index values must be unique")
-
+        ordered = self._ordered(blocks)
         chunks = [
             ordered[offset : offset + self._max_blocks]
             for offset in range(0, len(ordered), self._max_blocks)
@@ -80,6 +72,23 @@ class DeterministicBatchPlanner:
                 )
             )
         return tuple(planned)
+
+    def final_content_hash(self, blocks: Sequence[LogicalBlock]) -> str:
+        ordered = self._ordered(blocks)
+        return compute_final_content_hash(tuple(self._hash_block(block) for block in ordered))
+
+    @staticmethod
+    def _ordered(blocks: Sequence[LogicalBlock]) -> tuple[LogicalBlock, ...]:
+        if not blocks:
+            raise DeliveryBatchPlanningError("logical document must contain at least one block")
+        ordered = tuple(sorted(blocks, key=lambda block: (block.order_index, block.block_id)))
+        block_ids = [block.block_id for block in ordered]
+        if len(block_ids) != len(set(block_ids)):
+            raise DeliveryBatchPlanningError("logical block_id values must be unique")
+        order_indices = [block.order_index for block in ordered]
+        if len(order_indices) != len(set(order_indices)):
+            raise DeliveryBatchPlanningError("logical block order_index values must be unique")
+        return ordered
 
     def _hash_block(self, block: LogicalBlock) -> HashLogicalBlock:
         wire = self._mapper.logical_block(block)
