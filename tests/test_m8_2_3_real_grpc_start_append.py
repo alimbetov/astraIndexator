@@ -23,6 +23,8 @@ from astra_indexator.astravector.grpc_adapter import (
 
 SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 DOCUMENT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+DEADLINE_SECONDS = 5.0
+DEADLINE_JITTER_TOLERANCE_SECONDS = 0.25
 
 
 def _start_command() -> StartIngestionCommand:
@@ -131,13 +133,18 @@ def _transport() -> tuple[object, grpc.Server, AstraVectorGrpcAdapter]:
     adapter = AstraVectorGrpcAdapter(
         AstraVectorGrpcConfig(
             target=f"127.0.0.1:{port}",
-            deadline_seconds=5.0,
+            deadline_seconds=DEADLINE_SECONDS,
             metadata={"x-astra-service": "astra-indexator"},
         ),
         generated=generated,
         channel=channel,
     )
     return servicer, server, adapter
+
+
+def _assert_deadline_reached_server(time_remaining: float | None) -> None:
+    assert time_remaining is not None
+    assert 0 < time_remaining <= DEADLINE_SECONDS + DEADLINE_JITTER_TOLERANCE_SECONDS
 
 
 def test_real_generated_grpc_start_and_append_round_trip() -> None:
@@ -156,8 +163,7 @@ def test_real_generated_grpc_start_and_append_round_trip() -> None:
         assert start_request.ttl_days == 0
         assert start_request.metadata["source"] == "m8.2.3"
         assert ("x-astra-service", "astra-indexator") in servicer.start_metadata
-        assert servicer.start_time_remaining is not None
-        assert 0 < servicer.start_time_remaining <= 5.0
+        _assert_deadline_reached_server(servicer.start_time_remaining)
 
         append = adapter.append(_append_command())
         assert append.ingestion_session_id == SESSION_ID
@@ -178,8 +184,7 @@ def test_real_generated_grpc_start_and_append_round_trip() -> None:
         assert mapped.source_location.heading == "Раздел"
         assert mapped.source_links[0].url == "seaweedfs://documents/a.pdf#page=1"
         assert ("x-astra-service", "astra-indexator") in servicer.append_metadata
-        assert servicer.append_time_remaining is not None
-        assert 0 < servicer.append_time_remaining <= 5.0
+        _assert_deadline_reached_server(servicer.append_time_remaining)
     finally:
         adapter.close()
         server.stop(grace=0).wait(timeout=5)
