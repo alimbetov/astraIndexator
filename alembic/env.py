@@ -6,8 +6,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from astra_indexator.persistence import lifecycle_models, models  # noqa: F401
 from astra_indexator.persistence.base import Base
-from astra_indexator.persistence import models  # noqa: F401
 
 config = context.config
 
