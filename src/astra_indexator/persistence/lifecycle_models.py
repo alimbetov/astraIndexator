@@ -3,7 +3,19 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,6 +39,15 @@ class DocumentVersionLifecycle(Base):
         CheckConstraint(
             "requested_access_zone_id IS NOT NULL OR requested_access_zone_code IS NOT NULL",
             name="requested_access_zone_selector_present",
+        ),
+        CheckConstraint(
+            "requested_ttl_days IS NULL OR requested_ttl_days >= 0",
+            name="requested_ttl_days_non_negative",
+        ),
+        CheckConstraint(
+            "(state = 'ACTIVE' AND is_current = true) OR "
+            "(state <> 'ACTIVE' AND is_current = false)",
+            name="active_matches_current",
         ),
         UniqueConstraint("job_id", name="uq_document_version_lifecycle_job"),
         Index("ix_document_version_lifecycle_document", "document_id", "document_version"),
@@ -52,8 +73,12 @@ class DocumentVersionLifecycle(Base):
     requested_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     resolved_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     requested_ttl_days: Mapped[int | None] = mapped_column(Integer)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -66,6 +91,10 @@ class LifecycleOperation(Base):
     __tablename__ = "lifecycle_operation"
     __table_args__ = (
         CheckConstraint("attempt_count >= 0", name="attempt_count_non_negative"),
+        CheckConstraint(
+            "document_version IS NULL OR document_version > 0",
+            name="document_version_positive",
+        ),
         CheckConstraint(
             "operation_type IN ('REINDEX','CANCEL','DELETE','RECONCILE')",
             name="operation_type_allowed",
@@ -98,6 +127,10 @@ class LifecycleOperation(Base):
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(String(128))
     last_error_message: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
