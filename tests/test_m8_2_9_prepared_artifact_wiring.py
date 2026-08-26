@@ -30,6 +30,7 @@ from astra_indexator.splitter.model import (
 
 DOCUMENT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 DOCUMENT_VERSION = 3
+SOURCE_SHA256 = "a" * 64
 
 
 def _fragment(
@@ -74,7 +75,7 @@ def _fragment(
 
 
 def _artifact(*records: dict[str, object]) -> PreparedArtifact:
-    identity = ArtifactIdentity(DOCUMENT_ID, DOCUMENT_VERSION, "a" * 64)
+    identity = ArtifactIdentity(DOCUMENT_ID, DOCUMENT_VERSION, SOURCE_SHA256)
     compatibility = ArtifactCompatibility(
         schema_version="prepared-v1",
         parser_name="canonical",
@@ -155,6 +156,7 @@ def test_factory_asserts_manifest_identity_before_coordinator_input() -> None:
         metadata={"preparedArtifactId": artifact.manifest.artifact_id},
     )
     assert payload.source_file_name == "document.pdf"
+    assert payload.source_content_hash == SOURCE_SHA256
     assert payload.metadata == {"preparedArtifactId": artifact.manifest.artifact_id}
     assert payload.logical_blocks[0].block_type == "DOCUMENT"
 
