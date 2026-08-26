@@ -36,15 +36,26 @@ class PreparedArtifactDeliveryMapper:
                 "prepared artifact contains no logical fragments for AstraVector delivery"
             )
 
-        records = tuple(self._validated_fragment(record, identity.document_id, identity.document_version) for record in artifact.fragments)
+        records = tuple(
+            self._validated_fragment(record, identity.document_id, identity.document_version)
+            for record in artifact.fragments
+        )
         fragment_ids = [str(record["fragment_id"]) for record in records]
         sequences = [int(record["sequence"]) for record in records]
         if len(fragment_ids) != len(set(fragment_ids)):
-            raise PreparedArtifactDeliveryMappingError("prepared artifact fragment_id values must be unique")
+            raise PreparedArtifactDeliveryMappingError(
+                "prepared artifact fragment_id values must be unique"
+            )
         if len(sequences) != len(set(sequences)):
-            raise PreparedArtifactDeliveryMappingError("prepared artifact fragment sequence values must be unique")
+            raise PreparedArtifactDeliveryMappingError(
+                "prepared artifact fragment sequence values must be unique"
+            )
 
-        ordered = tuple(sorted(records, key=lambda record: (int(record["sequence"]), str(record["fragment_id"]))))
+        ordered = tuple(
+            sorted(
+                records, key=lambda record: (int(record["sequence"]), str(record["fragment_id"]))
+            )
+        )
         root_id = f"document:{identity.document_id}:v{identity.document_version}"
         root = LogicalBlock(
             block_id=root_id,
@@ -61,7 +72,9 @@ class PreparedArtifactDeliveryMapper:
 
         blocks = [root]
         for order_index, record in enumerate(ordered, start=1):
-            blocks.append(self._logical_block(record, parent_block_id=root_id, order_index=order_index))
+            blocks.append(
+                self._logical_block(record, parent_block_id=root_id, order_index=order_index)
+            )
         return tuple(blocks)
 
     @staticmethod
@@ -103,7 +116,9 @@ class PreparedArtifactDeliveryMapper:
                 "prepared fragment identity does not match prepared artifact manifest"
             )
         if sequence < 0:
-            raise PreparedArtifactDeliveryMappingError("prepared fragment sequence must be non-negative")
+            raise PreparedArtifactDeliveryMappingError(
+                "prepared fragment sequence must be non-negative"
+            )
         if not str(record["fragment_id"]).strip():
             raise PreparedArtifactDeliveryMappingError("prepared fragment_id must not be blank")
         if not str(record["normalized_text"]).strip():
@@ -116,9 +131,13 @@ class PreparedArtifactDeliveryMapper:
         if not isinstance(record["source"], Mapping):
             raise PreparedArtifactDeliveryMappingError("prepared fragment source must be an object")
         if not isinstance(record["metadata"], Mapping):
-            raise PreparedArtifactDeliveryMappingError("prepared fragment metadata must be an object")
+            raise PreparedArtifactDeliveryMappingError(
+                "prepared fragment metadata must be an object"
+            )
         if not isinstance(record["hierarchy"], Sequence) or isinstance(record["hierarchy"], str):
-            raise PreparedArtifactDeliveryMappingError("prepared fragment hierarchy must be a sequence")
+            raise PreparedArtifactDeliveryMappingError(
+                "prepared fragment hierarchy must be a sequence"
+            )
         return record
 
     def _logical_block(
