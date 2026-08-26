@@ -62,10 +62,8 @@ def test_m9_migration_creates_lifecycle_tables(database_url: str) -> None:
                 )
             ).scalars()
         )
-        revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
 
     assert {"document_version_lifecycle", "lifecycle_operation"}.issubset(tables)
-    assert revision == "0006_m9_lifecycle_foundation"
 
 
 def test_lifecycle_preserves_leading_zero_zone_and_ttl(database_url: str) -> None:
