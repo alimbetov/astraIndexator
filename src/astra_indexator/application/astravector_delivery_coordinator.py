@@ -11,14 +11,13 @@ from astra_indexator.application.coordinator import ClaimedJob, JobCoordinator
 from astra_indexator.application.finalize_reconciliation import FinalizeReconciliationRunner
 from astra_indexator.application.vector_readiness import VectorReadinessOutcome, VectorReadinessRunner
 from astra_indexator.astravector.batching import DeterministicBatchPlanner
-from astra_indexator.astravector.canonical_hash import compute_final_content_hash
 from astra_indexator.astravector.contracts import (
     AstraVectorIngestionPort,
     LogicalBlock,
     StartIngestionCommand,
 )
 from astra_indexator.persistence.delivery import DeliveryBatchRepository, DeliveryIntegrityError
-from astra_indexator.persistence.models import DeliveryCheckpoint, IndexationJob
+from astra_indexator.persistence.models import IndexationJob
 
 
 class DeliveryCoordinatorError(RuntimeError):
@@ -44,11 +43,12 @@ class AstraVectorDeliveryOutcome:
 
 
 class AstraVectorDeliveryCoordinator:
-    """Lease-fenced production orchestration for Start -> Append -> Finalize -> readiness.
+    """Lease-fenced Start -> Append -> Finalize -> readiness orchestration.
 
-    PostgreSQL is the durable recovery boundary. A previously bound ingestion session is always
-    reused. A missing binding causes the exact same idempotent Start command to be replayed after a
-    crash. Append and Finalize delegate to their dedicated replay/reconciliation runners.
+    PostgreSQL is the durable recovery boundary. A previously bound ingestion session is reused.
+    If Start succeeded remotely but the worker died before binding the session, the next worker
+    replays the same idempotent Start command. Append/finalize/readiness delegate to the durable
+    replay and reconciliation runners implemented in M8.2.5-M8.2.8.
     """
 
     def __init__(
@@ -91,26 +91,21 @@ class AstraVectorDeliveryCoordinator:
 
         self._advance_stage(claimed, "ASTRAVECTOR_APPEND")
         batches = self._planner.plan(payload.logical_blocks)
-        batch_outcomes = tuple(
-            self._append_runner.deliver_batch(
-                job_id=job.id,
-                ingestion_session_id=session_id,
-                batch=batch,
-            )
-            for batch in batches
+        batch_outcomes = self._append_runner.deliver(
+            job_id=job.id,
+            ingestion_session_id=session_id,
+            batches=batches,
         )
 
-        final_hash = compute_final_content_hash(tuple(payload.logical_blocks))
+        final_hash = self._planner.final_content_hash(payload.logical_blocks)
         self._persist_final_hash(job.id, session_id, final_hash)
         self._advance_stage(claimed, "ASTRAVECTOR_FINALIZE")
 
         expected_zone_id = job.requested_access_zone_id or job.access_zone_id
         if expected_zone_id is None:
-            # Direct Finalize can return the resolved UUID, but the current reconciliation runner
-            # needs a UUID to query vector status if Finalize itself becomes ambiguous. Keep this
-            # boundary explicit rather than reading AstraVector-owned registry tables directly.
             raise AccessZoneResolutionRequired(
-                "code-only delivery needs resolved accessZoneId before ambiguous Finalize recovery"
+                "code-only delivery needs resolved accessZoneId for finalize ambiguity/readiness; "
+                "do not read AstraVector-owned registry tables directly"
             )
 
         finalize = self._finalize_runner.finalize(
@@ -148,6 +143,7 @@ class AstraVectorDeliveryCoordinator:
                 raise DeliveryCoordinatorError("claimed job is no longer owned by this worker")
             if job.lease_generation != claimed.token.lease_generation:
                 raise DeliveryCoordinatorError("claimed job lease generation changed")
+            session.expunge(job)
             return job
 
     def _ensure_session(
