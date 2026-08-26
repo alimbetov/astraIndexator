@@ -24,7 +24,10 @@ SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 @pytest.mark.parametrize(
     ("failure", "expected"),
     [
-        (GrpcFailure("UNAVAILABLE", "postgres ingestion append lookup"), RetryDecision.BACKOFF_AND_RETRY),
+        (
+            GrpcFailure("UNAVAILABLE", "postgres ingestion append lookup"),
+            RetryDecision.BACKOFF_AND_RETRY,
+        ),
         (GrpcFailure("DEADLINE_EXCEEDED", "deadline"), RetryDecision.RECONCILE_STATUS),
         (GrpcFailure("ABORTED", "INGESTION_SESSION_FINALIZING"), RetryDecision.RECONCILE_STATUS),
         (
@@ -90,7 +93,10 @@ SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
             RetryDecision.PERMANENT_FAILURE,
         ),
         (GrpcFailure("NOT_FOUND", "INGESTION_SESSION_NOT_FOUND"), RetryDecision.PERMANENT_FAILURE),
-        (GrpcFailure("DATA_LOSS", "INGESTION_COMPLETED_RESULT_MISSING"), RetryDecision.PERMANENT_FAILURE),
+        (
+            GrpcFailure("DATA_LOSS", "INGESTION_COMPLETED_RESULT_MISSING"),
+            RetryDecision.PERMANENT_FAILURE,
+        ),
         (GrpcFailure("INVALID_ARGUMENT", "bad request"), RetryDecision.PERMANENT_FAILURE),
         (GrpcFailure("OUT_OF_RANGE", "bad range"), RetryDecision.PERMANENT_FAILURE),
         (GrpcFailure("PERMISSION_DENIED", "denied"), RetryDecision.PERMANENT_FAILURE),
@@ -113,9 +119,7 @@ def test_failure_policy_normalizes_code_and_marker_case() -> None:
         is RetryDecision.BACKOFF_AND_RETRY
     )
     assert (
-        classify_grpc_failure(
-            GrpcFailure(" failed_precondition ", " ingestion_session_completed ")
-        )
+        classify_grpc_failure(GrpcFailure(" failed_precondition ", " ingestion_session_completed "))
         is RetryDecision.RECONCILE_STATUS
     )
 
