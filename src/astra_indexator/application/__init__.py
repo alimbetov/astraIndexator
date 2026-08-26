@@ -15,6 +15,24 @@ from .astravector_delivery_coordinator import (
     DeliveryRecoveryContractGap,
 )
 from .coordinator import ClaimedJob, JobCoordinator, LeaseLostError, LeaseToken
+from .delete_reconciliation import (
+    DeleteReconciliationFailed,
+    DeleteReconciliationOutcome,
+    DeleteReconciliationPending,
+    DeleteReconciliationRunner,
+    ReconciliationClassification,
+)
+from .document_lifecycle import (
+    DocumentLifecycleService,
+    LifecycleRecoveryPending,
+    LifecycleRequestOutcome,
+    LifecycleSemanticConflict,
+    ReindexRequest,
+)
+from .lifecycle_reconciliation import (
+    ClaimedLifecycleOperation,
+    LifecycleReconciliationRunner,
+)
 from .prepared_artifact_checkpoint import (
     InstalledArtifactCheckpoint,
     PreparedArtifactCheckpointService,
@@ -41,15 +59,27 @@ __all__ = [
     "AstraVectorDeliveryOutcome",
     "BatchDeliveryOutcome",
     "ClaimedJob",
+    "ClaimedLifecycleOperation",
+    "DeleteReconciliationFailed",
+    "DeleteReconciliationOutcome",
+    "DeleteReconciliationPending",
+    "DeleteReconciliationRunner",
     "DeliveryCoordinatorError",
     "DeliveryRecoveryContractGap",
+    "DocumentLifecycleService",
     "InstalledArtifactCheckpoint",
     "JobCoordinator",
     "LeaseLostError",
     "LeaseToken",
+    "LifecycleReconciliationRunner",
+    "LifecycleRecoveryPending",
+    "LifecycleRequestOutcome",
+    "LifecycleSemanticConflict",
     "PreparedArtifactCheckpointService",
     "PreparedArtifactIdentityMismatch",
     "PreparedArtifactReplayService",
+    "ReconciliationClassification",
+    "ReindexRequest",
     "VectorReadinessOutcome",
     "VectorReadinessPending",
     "VectorReadinessRunner",
