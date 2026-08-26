@@ -139,6 +139,36 @@ class AbortIngestionCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class DeleteDocumentCommand:
+    access_zone_id: UUID
+    document_id: UUID
+    document_version: int
+    reason: str
+    idempotency_key: str
+    correlation_id: str = ""
+
+    def __post_init__(self) -> None:
+        if self.document_version <= 0:
+            raise ValueError("document_version must be positive")
+        if not self.reason.strip():
+            raise ValueError("delete reason must not be blank")
+        if not self.idempotency_key.strip():
+            raise ValueError("delete idempotency_key must not be blank")
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteDocumentResult:
+    access_zone_id: UUID
+    document_id: UUID
+    document_version: int
+    raw_operation_state: str
+    operation_id: str = ""
+    message: str = ""
+    warnings: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class IngestionStatus:
     ingestion_session_id: UUID
     raw_status: str
@@ -188,6 +218,8 @@ class AstraVectorIngestionPort(Protocol):
     def finalize(self, command: FinalizeIngestionCommand) -> FinalizeIngestionResult: ...
 
     def abort(self, command: AbortIngestionCommand) -> IngestionStatus: ...
+
+    def delete_document(self, command: DeleteDocumentCommand) -> DeleteDocumentResult: ...
 
     def get_ingestion_status(self, ingestion_session_id: UUID) -> IngestionStatus: ...
 
