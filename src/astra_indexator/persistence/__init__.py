@@ -7,6 +7,15 @@ from .delivery import (
     DeliverySequenceError,
     PreparedBatchState,
 )
+from .lifecycle import (
+    DocumentLifecycleRepository,
+    LifecycleIntegrityError,
+    LifecycleNotFoundError,
+    LifecycleOperationRepository,
+    LifecycleReadinessError,
+    NewLifecycleOperation,
+)
+from .lifecycle_models import DocumentVersionLifecycle, LifecycleOperation
 from .models import (
     DeliveryBatch,
     DeliveryCheckpoint,
@@ -25,9 +34,17 @@ __all__ = [
     "DeliveryCheckpoint",
     "DeliveryIntegrityError",
     "DeliverySequenceError",
+    "DocumentLifecycleRepository",
+    "DocumentVersionLifecycle",
     "IndexationJob",
     "JobEvent",
     "KnowledgeInventory",
+    "LifecycleIntegrityError",
+    "LifecycleNotFoundError",
+    "LifecycleOperation",
+    "LifecycleOperationRepository",
+    "LifecycleReadinessError",
+    "NewLifecycleOperation",
     "PreparedArtifactCheckpoint",
     "PreparedBatchState",
     "ProcessingAttempt",
