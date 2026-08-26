@@ -30,7 +30,10 @@ class IndexationJob(Base):
     __tablename__ = "indexation_job"
     __table_args__ = (
         CheckConstraint("document_version > 0", name="document_version_positive"),
-        CheckConstraint("access_zone_code ~ '^[0-9]{4}$'", name="access_zone_code_format"),
+        CheckConstraint(
+            "access_zone_code IS NULL OR access_zone_code ~ '^[0-9]{4}$'",
+            name="access_zone_code_format",
+        ),
         CheckConstraint(
             "requested_access_zone_code IS NULL OR requested_access_zone_code ~ '^[0-9]{4}$'",
             name="requested_access_zone_code_format",
@@ -46,6 +49,10 @@ class IndexationJob(Base):
         CheckConstraint(
             "source_size_bytes IS NULL OR source_size_bytes >= 0",
             name="source_size_bytes_non_negative",
+        ),
+        CheckConstraint(
+            "storage_object_name IS NULL OR length(trim(storage_object_name)) > 0",
+            name="storage_object_name_non_blank",
         ),
         CheckConstraint("lease_generation >= 0", name="lease_generation_non_negative"),
         CheckConstraint("attempt_count >= 0", name="attempt_count_non_negative"),
@@ -98,7 +105,11 @@ class IndexationJob(Base):
     requested_ttl_days: Mapped[int | None] = mapped_column(Integer)
 
     source_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    # Public/user-visible original filename. Never replace with internal storage UUID name.
     source_file_name: Mapped[str | None] = mapped_column(Text)
+    # Internal storage identity. Optional for legacy rows but immutable once supplied.
+    storage_object_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    storage_object_name: Mapped[str | None] = mapped_column(Text)
     source_content_hash: Mapped[str | None] = mapped_column(String(128))
     source_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
 
@@ -277,7 +288,29 @@ class KnowledgeInventory(Base):
     __table_args__ = (
         CheckConstraint("document_version > 0", name="inventory_document_version_positive"),
         CheckConstraint(
-            "access_zone_code ~ '^[0-9]{4}$'", name="inventory_access_zone_code_format"
+            "access_zone_code IS NULL OR access_zone_code ~ '^[0-9]{4}$'",
+            name="inventory_access_zone_code_format",
+        ),
+        CheckConstraint(
+            "requested_access_zone_code IS NULL OR requested_access_zone_code ~ '^[0-9]{4}$'",
+            name="inventory_requested_access_zone_code_format",
+        ),
+        CheckConstraint(
+            "requested_access_zone_id IS NOT NULL OR requested_access_zone_code IS NOT NULL",
+            name="inventory_requested_access_zone_selector_present",
+        ),
+        CheckConstraint(
+            "requested_ttl_days IS NULL OR requested_ttl_days >= 0",
+            name="inventory_requested_ttl_days_non_negative",
+        ),
+        CheckConstraint(
+            "lifecycle_state IN ('BUILDING','READY','ACTIVE','SUPERSEDED','CANCEL_PENDING','CANCELLED','DELETE_PENDING','DELETED','FAILED')",
+            name="inventory_lifecycle_state_allowed",
+        ),
+        CheckConstraint(
+            "(lifecycle_state = 'ACTIVE' AND is_current = true) OR "
+            "(lifecycle_state <> 'ACTIVE' AND is_current = false)",
+            name="inventory_current_matches_active",
         ),
         CheckConstraint(
             "logical_fragment_count IS NULL OR logical_fragment_count >= 0",
@@ -287,8 +320,26 @@ class KnowledgeInventory(Base):
             "logical_block_count IS NULL OR logical_block_count >= 0",
             name="logical_block_count_non_negative",
         ),
+        CheckConstraint(
+            "expected_bindings IS NULL OR expected_bindings >= 0",
+            name="inventory_expected_bindings_non_negative",
+        ),
+        CheckConstraint(
+            "synced_bindings IS NULL OR synced_bindings >= 0",
+            name="inventory_synced_bindings_non_negative",
+        ),
+        CheckConstraint(
+            "storage_object_name IS NULL OR length(trim(storage_object_name)) > 0",
+            name="inventory_storage_object_name_non_blank",
+        ),
         Index("ix_knowledge_inventory_zone_searchable", "access_zone_code", "searchable"),
         Index("ix_knowledge_inventory_expiry", "effective_expires_at"),
+        Index(
+            "uq_knowledge_inventory_current_active",
+            "document_id",
+            unique=True,
+            postgresql_where=text("lifecycle_state = 'ACTIVE' AND is_current = true"),
+        ),
         {"schema": SCHEMA},
     )
 
@@ -300,17 +351,43 @@ class KnowledgeInventory(Base):
         nullable=False,
     )
     knowledge_type: Mapped[str | None] = mapped_column(String(32))
-    access_zone_code: Mapped[str] = mapped_column(String(4), nullable=False)
+
+    # Compatibility aliases; requested_* fields are the producer authority.
+    access_zone_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
     access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    requested_access_zone_code: Mapped[str | None] = mapped_column(String(4))
+    requested_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    resolved_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    requested_ttl_days: Mapped[int | None] = mapped_column(Integer)
+
     source_file_name: Mapped[str | None] = mapped_column(Text)
+    storage_object_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    storage_object_name: Mapped[str | None] = mapped_column(Text)
+    source_uri: Mapped[str | None] = mapped_column(Text)
     source_content_hash: Mapped[str | None] = mapped_column(String(128))
     processing_fingerprint: Mapped[str | None] = mapped_column(String(128))
+
     logical_fragment_count: Mapped[int | None] = mapped_column(BigInteger)
     logical_block_count: Mapped[int | None] = mapped_column(BigInteger)
+
+    lifecycle_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    ingestion_session_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
     vector_state: Mapped[str | None] = mapped_column(String(64))
     searchable: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    ready_to_activate: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     expected_bindings: Mapped[int | None] = mapped_column(BigInteger)
     synced_bindings: Mapped[int | None] = mapped_column(BigInteger)
+
     ttl_state: Mapped[str | None] = mapped_column(String(32))
     effective_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
