@@ -47,6 +47,7 @@ jobs:
             src/astra_indexator/domain/lifecycle.py \
             src/astra_indexator/persistence/models.py \
             src/astra_indexator/persistence/lifecycle_models.py \
+            src/astra_indexator/persistence/lifecycle.py \
             src/astra_indexator/persistence/knowledge_inventory.py \
             src/astra_indexator/persistence/prepared_artifacts.py \
             src/astra_indexator/persistence/repository.py \
@@ -57,6 +58,9 @@ jobs:
             src/astra_indexator/application/finalize_reconciliation.py \
             src/astra_indexator/application/abort_reconciliation.py \
             src/astra_indexator/application/vector_readiness.py \
+            src/astra_indexator/application/delete_reconciliation.py \
+            src/astra_indexator/application/document_lifecycle.py \
+            src/astra_indexator/application/lifecycle_reconciliation.py \
             src/astra_indexator/application/astravector_delivery_coordinator.py \
             src/astra_indexator/astravector/wire_contract.py \
             src/astra_indexator/astravector/canonical_hash.py \
@@ -65,7 +69,8 @@ jobs:
             src/astra_indexator/astravector/proto_mapper.py \
             src/astra_indexator/astravector/generated_loader.py \
             src/astra_indexator/astravector/batching.py \
-            src/astra_indexator/astravector/grpc_adapter.py
+            src/astra_indexator/astravector/grpc_adapter.py \
+            src/astra_indexator/astravector/lifecycle_grpc_adapter.py
 
       - name: Baseline mypy debt report
         continue-on-error: true
