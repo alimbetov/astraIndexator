@@ -214,10 +214,16 @@ class DeliveryBatch(Base):
     __tablename__ = "delivery_batch"
     __table_args__ = (
         CheckConstraint("batch_index >= 0", name="batch_index_non_negative"),
-        CheckConstraint("block_count >= 0", name="block_count_non_negative"),
+        CheckConstraint("block_count > 0", name="block_count_positive"),
         CheckConstraint(
             "serialized_bytes IS NULL OR serialized_bytes >= 0",
             name="serialized_bytes_non_negative",
+        ),
+        CheckConstraint("status IN ('PREPARED','ACCEPTED')", name="status_allowed"),
+        CheckConstraint(
+            "(status = 'PREPARED' AND accepted_at IS NULL) OR "
+            "(status = 'ACCEPTED' AND accepted_at IS NOT NULL)",
+            name="accepted_at_matches_status",
         ),
         {"schema": SCHEMA},
     )

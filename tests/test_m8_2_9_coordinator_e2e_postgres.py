@@ -1,0 +1,286 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import UUID, uuid4
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session
+from testcontainers.postgres import PostgresContainer
+
+from astra_indexator.application.astravector_delivery_coordinator import (
+    AstraVectorDeliveryCoordinator,
+    AstraVectorDeliveryInput,
+)
+from astra_indexator.application.coordinator import JobCoordinator
+from astra_indexator.astravector.batching import DeterministicBatchPlanner
+from astra_indexator.astravector.contracts import (
+    AppendBlocksResult,
+    DocumentVectorStatus,
+    FinalizeIngestionResult,
+    IngestionSessionState,
+    IngestionStatus,
+    LogicalBlock,
+    StartIngestionCommand,
+    StartIngestionResult,
+)
+from astra_indexator.persistence.delivery import DeliveryBatchRepository
+from astra_indexator.persistence.models import DeliveryBatch, DeliveryCheckpoint, IndexationJob
+from astra_indexator.persistence.repository import IndexationJobRepository, NewIndexationJob
+
+ROOT = Path(__file__).resolve().parents[1]
+ZONE_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+CODE_ONLY_ZONE = "0001"
+
+
+def _psycopg_url(url: str) -> str:
+    return url.replace("postgresql+psycopg2://", "postgresql+psycopg://").replace(
+        "postgresql://", "postgresql+psycopg://"
+    )
+
+
+@pytest.fixture(scope="module")
+def database_url() -> str:
+    with PostgresContainer("postgres:16") as postgres:
+        url = _psycopg_url(postgres.get_connection_url())
+        cfg = Config(str(ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(ROOT / "alembic"))
+        cfg.set_main_option("sqlalchemy.url", url)
+        command.upgrade(cfg, "head")
+        yield url
+        command.downgrade(cfg, "base")
+
+
+@pytest.fixture(autouse=True)
+def clean_database(database_url: str):
+    engine = create_engine(database_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "TRUNCATE TABLE "
+                "astra_indexator.knowledge_inventory, "
+                "astra_indexator.job_event, "
+                "astra_indexator.delivery_batch, "
+                "astra_indexator.delivery_checkpoint, "
+                "astra_indexator.processing_attempt, "
+                "astra_indexator.indexation_job CASCADE"
+            )
+        )
+    yield
+    engine.dispose()
+
+
+class _HashMapper:
+    def logical_block(self, block: LogicalBlock):
+        return SimpleNamespace(
+            block_id=block.block_id,
+            parent_block_id=block.parent_block_id,
+            block_type=4,
+            text=block.text,
+            order_index=block.order_index,
+            metadata=block.metadata,
+            source_links=(),
+            HasField=lambda name: False,
+        )
+
+
+class _Port:
+    def __init__(self, document_id: UUID) -> None:
+        self.document_id = document_id
+        self.start_calls = 0
+        self.start_commands: list[StartIngestionCommand] = []
+        self.append_calls: list[int] = []
+        self.finalize_calls = 0
+        self.vector_calls = 0
+
+    def start(self, command: StartIngestionCommand):
+        self.start_calls += 1
+        self.start_commands.append(command)
+        return StartIngestionResult(
+            ingestion_session_id=SESSION_ID,
+            raw_status="ACTIVE",
+            state=IngestionSessionState.ACTIVE,
+            expires_at="",
+        )
+
+    def append(self, command):
+        self.append_calls.append(command.batch_index)
+        return AppendBlocksResult(
+            ingestion_session_id=SESSION_ID,
+            raw_status="ACTIVE",
+            state=IngestionSessionState.ACTIVE,
+            accepted_blocks=len(command.blocks),
+            accepted_batch_index=command.batch_index,
+        )
+
+    def finalize(self, command):
+        self.finalize_calls += 1
+        return FinalizeIngestionResult(
+            access_zone_id=ZONE_ID,
+            document_id=self.document_id,
+            document_version=1,
+            raw_operation_state="OPERATION_STATE_SYNCING",
+        )
+
+    def abort(self, command):
+        raise AssertionError("abort must not be used in successful delivery")
+
+    def get_ingestion_status(self, ingestion_session_id):
+        return IngestionStatus(
+            ingestion_session_id=ingestion_session_id,
+            raw_status="COMPLETED",
+            state=IngestionSessionState.COMPLETED,
+            received_batches=2,
+            received_blocks=3,
+            received_bytes=100,
+            expires_at="",
+        )
+
+    def get_document_vector_status(self, *, access_zone_id, document_id, document_version):
+        self.vector_calls += 1
+        assert access_zone_id == ZONE_ID
+        assert document_id == self.document_id
+        assert document_version == 1
+        return DocumentVectorStatus(
+            raw_state="OPERATION_STATE_ACTIVE",
+            progress_percent=100.0,
+            searchable=True,
+            ready_to_activate=False,
+            qdrant_collection_exists=True,
+        )
+
+
+def _blocks() -> tuple[LogicalBlock, ...]:
+    return (
+        LogicalBlock("b-0", "", "PARAGRAPH", "first", 0),
+        LogicalBlock("b-1", "", "PARAGRAPH", "second", 1),
+        LogicalBlock("b-2", "", "PARAGRAPH", "third", 2),
+    )
+
+
+def _enqueue_and_claim(engine, *, worker_id: str = "worker-a", code_only: bool = False):
+    document_id = uuid4()
+    with Session(engine) as session:
+        job = IndexationJobRepository().create_or_get(
+            session,
+            NewIndexationJob(
+                producer_request_id=uuid4(),
+                document_id=document_id,
+                document_version=1,
+                source_uri="seaweed://documents/m8-2-9.txt",
+                access_zone_id=None if code_only else ZONE_ID,
+                access_zone_code=CODE_ONLY_ZONE if code_only else None,
+                requested_ttl_days=0,
+                source_file_name="m8-2-9.txt",
+                source_size_bytes=123,
+            ),
+        )
+        session.commit()
+        job_id = job.id
+    with Session(engine) as session:
+        claimed = JobCoordinator().claim_next(session, worker_id=worker_id, lease_seconds=120)
+        assert claimed is not None
+        assert claimed.token.job_id == job_id
+        session.commit()
+    return document_id, claimed
+
+
+def _coordinator(engine, port: _Port) -> AstraVectorDeliveryCoordinator:
+    planner = DeterministicBatchPlanner(_HashMapper(), max_blocks_per_batch=2)  # type: ignore[arg-type]
+    return AstraVectorDeliveryCoordinator(lambda: Session(engine), port, planner)  # type: ignore[arg-type]
+
+
+def test_full_coordinator_delivery_completes_only_after_searchable(database_url: str) -> None:
+    engine = create_engine(database_url)
+    document_id, claimed = _enqueue_and_claim(engine)
+    port = _Port(document_id)
+
+    outcome = _coordinator(engine, port).deliver(
+        claimed, AstraVectorDeliveryInput(logical_blocks=_blocks())
+    )
+
+    assert outcome.ingestion_session_id == SESSION_ID
+    assert outcome.access_zone_code is None
+    assert outcome.resolved_access_zone_id == ZONE_ID
+    assert port.start_calls == 1
+    assert port.append_calls == [0, 1]
+    assert port.finalize_calls == 1
+    assert outcome.readiness.status.searchable is True
+
+    with Session(engine) as session:
+        job = session.get(IndexationJob, claimed.token.job_id)
+        checkpoint = session.get(DeliveryCheckpoint, claimed.token.job_id)
+        batches = (
+            session.query(DeliveryBatch)
+            .filter(DeliveryBatch.job_id == claimed.token.job_id)
+            .order_by(DeliveryBatch.batch_index)
+            .all()
+        )
+        assert job is not None and job.status == "COMPLETED"
+        assert job.processing_stage == "ASTRAVECTOR_READINESS"
+        assert checkpoint is not None
+        assert checkpoint.ingestion_session_id == SESSION_ID
+        assert checkpoint.resolved_access_zone_id == ZONE_ID
+        assert checkpoint.next_batch_index == 2
+        assert checkpoint.final_content_hash is not None
+        assert checkpoint.searchable is True
+        assert [batch.status for batch in batches] == ["ACCEPTED", "ACCEPTED"]
+    engine.dispose()
+
+
+def test_restart_reuses_bound_session_and_does_not_start_again(database_url: str) -> None:
+    engine = create_engine(database_url)
+    document_id, claimed = _enqueue_and_claim(engine, worker_id="worker-restart")
+    with Session(engine) as session:
+        with session.begin():
+            DeliveryBatchRepository().bind_session(
+                session,
+                job_id=claimed.token.job_id,
+                ingestion_session_id=SESSION_ID,
+                session_status_raw="ACTIVE",
+            )
+
+    port = _Port(document_id)
+    _coordinator(engine, port).deliver(claimed, AstraVectorDeliveryInput(logical_blocks=_blocks()))
+
+    assert port.start_calls == 0
+    assert port.append_calls == [0, 1]
+    assert port.finalize_calls == 1
+    engine.dispose()
+
+
+def test_code_only_delivery_preserves_access_zone_code_end_to_end(database_url: str) -> None:
+    engine = create_engine(database_url)
+    document_id, claimed = _enqueue_and_claim(engine, worker_id="worker-code", code_only=True)
+    port = _Port(document_id)
+
+    with Session(engine) as session:
+        before = session.get(IndexationJob, claimed.token.job_id)
+        assert before is not None
+        assert before.requested_access_zone_code == CODE_ONLY_ZONE
+        assert before.requested_access_zone_id is None
+
+    outcome = _coordinator(engine, port).deliver(
+        claimed, AstraVectorDeliveryInput(logical_blocks=_blocks())
+    )
+
+    assert outcome.access_zone_code == CODE_ONLY_ZONE
+    assert outcome.resolved_access_zone_id == ZONE_ID
+    assert len(port.start_commands) == 1
+    start = port.start_commands[0]
+    assert start.access_zone_code == CODE_ONLY_ZONE
+    assert start.access_zone_id is None
+
+    with Session(engine) as session:
+        job = session.get(IndexationJob, claimed.token.job_id)
+        checkpoint = session.get(DeliveryCheckpoint, claimed.token.job_id)
+        assert job is not None
+        assert job.requested_access_zone_code == CODE_ONLY_ZONE
+        assert job.requested_access_zone_id is None
+        assert checkpoint is not None
+        assert checkpoint.resolved_access_zone_id == ZONE_ID
+    engine.dispose()

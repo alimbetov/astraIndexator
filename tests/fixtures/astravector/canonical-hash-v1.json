@@ -1,0 +1,61 @@
+{
+  "contractVersion": "astravector-v007-fix4.5.2",
+  "upstream": {
+    "protoBlobSha": "ed1eab5f56dfb73cc48927ad2effb759a2c4e01e",
+    "grpcImplBlobSha": "07afff94c4f3825ec953df55cd407ed7c653151a",
+    "cargoBlobSha": "c93a6e7e4f20995297e62f8be45503b107e55fa5"
+  },
+  "blocks": [
+    {
+      "block_id": "doc-1",
+      "parent_block_id": "",
+      "block_type": 1,
+      "text": "  Документ ҚАЗАҚ  ",
+      "order_index": 0,
+      "metadata": {
+        "z": "последний",
+        "a": "first"
+      },
+      "source_location": {
+        "page_start": 1,
+        "page_end": 1,
+        "char_start": 0,
+        "char_end": 15,
+        "section_path": "§1",
+        "heading": "  Заголовок  ",
+        "table_id": "",
+        "row_index": 0,
+        "column_index": 0
+      },
+      "source_links": [
+        {
+          "type": 1,
+          "url": "https://example.test/doc",
+          "label": "Оригинал",
+          "mime_type": "text/plain",
+          "requires_auth": true,
+          "expires_at": "",
+          "attributes": {
+            "z": "2",
+            "a": "1"
+          }
+        }
+      ]
+    },
+    {
+      "block_id": "p-1",
+      "parent_block_id": "doc-1",
+      "block_type": 4,
+      "text": "  Вторая строка\nс переносом  ",
+      "order_index": 1,
+      "metadata": {},
+      "source_location": {},
+      "source_links": []
+    }
+  ],
+  "expected": {
+    "batchContentHash": "ef37abcec55a701bdeb497347b336c484d715f2f099eb6213e3ca67a135b97d2",
+    "finalRenderedText": "Заголовок\nДокумент ҚАЗАҚ\n\nВторая строка\nс переносом\n\n",
+    "finalContentHash": "33908c7ca960bc9c98ce3e1fd97b5e12fde3a9185b21ece53b1026a92fd43f52"
+  }
+}

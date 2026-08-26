@@ -26,21 +26,43 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Generate pinned AstraVector gRPC client
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python tools/generate_astravector_proto.py
+          test -f src/astra_indexator/astravector/generated/astravector_embedding_pb2.py
+          test -f src/astra_indexator/astravector/generated/astravector_embedding_pb2_grpc.py
+
       - name: Ruff lint
-        run: ruff check src tests
+        run: ruff check src tests tools
 
       - name: Ruff format check
-        run: ruff format --check src tests
+        run: ruff format --check src tests tools
 
-      - name: M8.1 scoped mypy
+      - name: M8 scoped mypy
         run: |
           mypy --follow-imports=silent \
             src/astra_indexator/domain/delivery_intent.py \
             src/astra_indexator/persistence/models.py \
             src/astra_indexator/persistence/prepared_artifacts.py \
             src/astra_indexator/persistence/repository.py \
+            src/astra_indexator/persistence/delivery.py \
             src/astra_indexator/application/coordinator.py \
-            src/astra_indexator/application/prepared_artifact_checkpoint.py
+            src/astra_indexator/application/prepared_artifact_checkpoint.py \
+            src/astra_indexator/application/append_delivery.py \
+            src/astra_indexator/application/finalize_reconciliation.py \
+            src/astra_indexator/application/abort_reconciliation.py \
+            src/astra_indexator/application/vector_readiness.py \
+            src/astra_indexator/application/astravector_delivery_coordinator.py \
+            src/astra_indexator/astravector/wire_contract.py \
+            src/astra_indexator/astravector/canonical_hash.py \
+            src/astra_indexator/astravector/contracts.py \
+            src/astra_indexator/astravector/policy.py \
+            src/astra_indexator/astravector/proto_mapper.py \
+            src/astra_indexator/astravector/generated_loader.py \
+            src/astra_indexator/astravector/batching.py \
+            src/astra_indexator/astravector/grpc_adapter.py
 
       - name: Baseline mypy debt report
         continue-on-error: true
@@ -65,6 +87,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
+
+      - name: Generate pinned AstraVector gRPC client
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python tools/generate_astravector_proto.py
+          test -f src/astra_indexator/astravector/generated/astravector_embedding_pb2.py
+          test -f src/astra_indexator/astravector/generated/astravector_embedding_pb2_grpc.py
 
       - name: Run tests
         run: pytest
