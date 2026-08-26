@@ -40,5 +40,6 @@ class PreparedArtifactDeliveryInputFactory:
         return AstraVectorDeliveryInput(
             logical_blocks=self.mapper.logical_blocks(artifact),
             source_file_name=source_file_name,
+            source_content_hash=identity.source_sha256,
             metadata=dict(metadata or {}),
         )
