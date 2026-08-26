@@ -12,7 +12,10 @@ from astra_indexator.application.finalize_reconciliation import (
     FinalizeReadinessIdentityUnavailable,
     FinalizeReconciliationRunner,
 )
-from astra_indexator.application.vector_readiness import VectorReadinessOutcome, VectorReadinessRunner
+from astra_indexator.application.vector_readiness import (
+    VectorReadinessOutcome,
+    VectorReadinessRunner,
+)
 from astra_indexator.astravector.batching import DeterministicBatchPlanner
 from astra_indexator.astravector.contracts import (
     AstraVectorIngestionPort,
