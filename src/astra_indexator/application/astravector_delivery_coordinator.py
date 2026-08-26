@@ -43,6 +43,7 @@ class DeliveryRecoveryContractGap(DeliveryCoordinatorError):
 class AstraVectorDeliveryInput:
     logical_blocks: Sequence[LogicalBlock]
     source_file_name: str = ""
+    source_content_hash: str = ""
     metadata: dict[str, str] | None = None
 
 
@@ -196,7 +197,7 @@ class AstraVectorDeliveryCoordinator:
             document_version=job.document_version,
             source_uri=job.source_uri,
             file_name=payload.source_file_name or job.source_file_name or "document",
-            content_hash=job.source_content_hash or "",
+            content_hash=payload.source_content_hash or job.source_content_hash or "",
             idempotency_key=f"astra-indexator:{job.id}:{job.document_version}",
             total_bytes_estimate=job.source_size_bytes or 0,
             total_blocks_estimate=len(payload.logical_blocks),
