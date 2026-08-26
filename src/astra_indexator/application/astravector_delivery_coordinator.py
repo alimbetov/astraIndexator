@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from astra_indexator.application.append_delivery import AppendDeliveryRunner, BatchDeliveryOutcome
 from astra_indexator.application.coordinator import ClaimedJob, JobCoordinator
 from astra_indexator.application.finalize_reconciliation import (
-    FinalizeIdentityResolutionRequired,
+    FinalizeReadinessIdentityUnavailable,
     FinalizeReconciliationRunner,
 )
 from astra_indexator.application.vector_readiness import VectorReadinessOutcome, VectorReadinessRunner
@@ -27,8 +27,13 @@ class DeliveryCoordinatorError(RuntimeError):
     pass
 
 
-class AccessZoneResolutionRequired(DeliveryCoordinatorError):
-    """The public facade cannot recover resolved zone identity from this ambiguous state."""
+class DeliveryRecoveryContractGap(DeliveryCoordinatorError):
+    """Current AstraVector wire cannot reconstruct readiness identity after ambiguity.
+
+    This does not mean accessZoneCode requires resolution to UUID. The original code remains
+    the immutable producer selector. This error is limited to a wire-recovery case where
+    GetLogicalDocumentIngestionStatus lacks the DocumentRef required by vector-status lookup.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +46,7 @@ class AstraVectorDeliveryInput:
 @dataclass(frozen=True, slots=True)
 class AstraVectorDeliveryOutcome:
     ingestion_session_id: UUID
+    access_zone_code: str | None
     resolved_access_zone_id: UUID
     batches: tuple[BatchDeliveryOutcome, ...]
     readiness: VectorReadinessOutcome
@@ -49,10 +55,15 @@ class AstraVectorDeliveryOutcome:
 class AstraVectorDeliveryCoordinator:
     """Lease-fenced Start -> Append -> Finalize -> readiness orchestration.
 
-    PostgreSQL is the durable recovery boundary. A previously bound ingestion session is reused.
-    If Start succeeded remotely but the worker died before binding the session, the next worker
-    replays the same idempotent Start command. Append/finalize/readiness delegate to the durable
-    replay and reconciliation runners implemented in M8.2.5-M8.2.8.
+    PostgreSQL is the durable recovery boundary. ``requested_access_zone_code`` is producer-owned
+    delivery intent and is preserved unchanged from job creation through Start. AstraIndexator
+    never converts it to an integer, never derives a UUID from it, and never replaces it with a
+    downstream UUID. ``resolved_access_zone_id`` is separate AstraVector response evidence used
+    where the current vector-status wire requires DocumentRef identity.
+
+    A previously bound ingestion session is reused. If Start succeeded remotely but the worker
+    died before binding the session, the next worker replays the same idempotent Start command.
+    Append/finalize/readiness delegate to the durable replay and reconciliation runners.
     """
 
     def __init__(
@@ -105,27 +116,28 @@ class AstraVectorDeliveryCoordinator:
         self._persist_final_hash(job.id, session_id, final_hash)
         self._advance_stage(claimed, "ASTRAVECTOR_FINALIZE")
 
-        expected_zone_id = job.requested_access_zone_id or job.access_zone_id
+        downstream_zone_id = job.requested_access_zone_id or job.access_zone_id
         try:
             finalize = self._finalize_runner.finalize(
                 job_id=job.id,
                 ingestion_session_id=session_id,
                 final_content_hash=final_hash,
-                access_zone_id=expected_zone_id,
+                access_zone_id=downstream_zone_id,
                 document_id=job.document_id,
                 document_version=job.document_version,
             )
-        except FinalizeIdentityResolutionRequired as exc:
-            raise AccessZoneResolutionRequired(str(exc)) from exc
+        except FinalizeReadinessIdentityUnavailable as exc:
+            raise DeliveryRecoveryContractGap(str(exc)) from exc
 
         resolved_zone_id = (
             finalize.finalize_result.access_zone_id
             if finalize.finalize_result is not None
-            else expected_zone_id
+            else downstream_zone_id
         )
         if resolved_zone_id is None:
-            raise AccessZoneResolutionRequired(
-                "AstraVector completed delivery without recoverable resolved accessZoneId"
+            raise DeliveryRecoveryContractGap(
+                "AstraVector delivery completed without DocumentRef identity required by the "
+                "current vector-status wire; producer accessZoneCode remains unchanged"
             )
         self._persist_resolved_zone(job.id, session_id, resolved_zone_id)
 
@@ -142,6 +154,7 @@ class AstraVectorDeliveryCoordinator:
         self._complete(claimed)
         return AstraVectorDeliveryOutcome(
             ingestion_session_id=session_id,
+            access_zone_code=job.requested_access_zone_code,
             resolved_access_zone_id=resolved_zone_id,
             batches=batch_outcomes,
             readiness=readiness,
@@ -216,13 +229,13 @@ class AstraVectorDeliveryCoordinator:
             with session.begin():
                 checkpoint = self._repository.checkpoint(session, job_id)
                 if checkpoint is None or checkpoint.ingestion_session_id != session_id:
-                    raise DeliveryIntegrityError("resolved zone checkpoint belongs to another session")
+                    raise DeliveryIntegrityError("downstream zone checkpoint belongs to another session")
                 if (
                     checkpoint.resolved_access_zone_id is not None
                     and checkpoint.resolved_access_zone_id != zone_id
                 ):
                     raise DeliveryIntegrityError(
-                        "AstraVector resolved the job to a different accessZoneId than persisted"
+                        "AstraVector returned a different internal accessZoneId than persisted"
                     )
                 checkpoint.resolved_access_zone_id = zone_id
                 session.flush()
