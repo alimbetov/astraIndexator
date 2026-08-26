@@ -38,26 +38,33 @@ class PlannedDeliveryBatch:
 
 
 class DeterministicBatchPlanner:
-    """Stable batching plus canonical AstraVector final-content hashing.
+    """Stable batching constrained by AstraVector's public Append limits.
 
-    Input order is not trusted. Blocks are canonicalized by ``(order_index, block_id)`` so a
-    restarted worker reconstructs identical batch boundaries and final hash from the same logical
-    document. Duplicate block IDs or order indices are rejected because replay ordering would be
-    ambiguous.
+    Input order is not trusted. Blocks are canonicalized by ``(order_index, block_id)`` so the
+    same logical document produces the same batch boundaries, indexes and hashes. The planner
+    applies both qualified AstraVector Append limits: maximum blocks per batch and the server's
+    logical-block byte accounting. It does not persist or replay delivery state; those are durable
+    delivery concerns outside this pure planning boundary.
     """
 
-    def __init__(self, mapper: AstraVectorProtoMapper, *, max_blocks_per_batch: int = 128) -> None:
+    def __init__(
+        self,
+        mapper: AstraVectorProtoMapper,
+        *,
+        max_blocks_per_batch: int = 128,
+        max_batch_bytes: int | None = None,
+    ) -> None:
         if max_blocks_per_batch <= 0:
             raise ValueError("max_blocks_per_batch must be positive")
+        if max_batch_bytes is not None and max_batch_bytes <= 0:
+            raise ValueError("max_batch_bytes must be positive when configured")
         self._mapper = mapper
         self._max_blocks = max_blocks_per_batch
+        self._max_batch_bytes = max_batch_bytes
 
     def plan(self, blocks: Sequence[LogicalBlock]) -> tuple[PlannedDeliveryBatch, ...]:
         ordered = self._ordered(blocks)
-        chunks = [
-            ordered[offset : offset + self._max_blocks]
-            for offset in range(0, len(ordered), self._max_blocks)
-        ]
+        chunks = self._partition(ordered)
         planned: list[PlannedDeliveryBatch] = []
         for batch_index, chunk in enumerate(chunks):
             hash_blocks = tuple(self._hash_block(block) for block in chunk)
@@ -65,7 +72,7 @@ class DeterministicBatchPlanner:
             planned.append(
                 PlannedDeliveryBatch(
                     batch_index=batch_index,
-                    blocks=tuple(chunk),
+                    blocks=chunk,
                     is_last_batch=batch_index == len(chunks) - 1,
                     batch_content_hash=compute_batch_content_hash(hash_blocks),
                     serialized_bytes=len(canonical),
@@ -76,6 +83,36 @@ class DeterministicBatchPlanner:
     def final_content_hash(self, blocks: Sequence[LogicalBlock]) -> str:
         ordered = self._ordered(blocks)
         return compute_final_content_hash(tuple(self._hash_block(block) for block in ordered))
+
+    def _partition(self, ordered: tuple[LogicalBlock, ...]) -> tuple[tuple[LogicalBlock, ...], ...]:
+        chunks: list[tuple[LogicalBlock, ...]] = []
+        current: list[LogicalBlock] = []
+        current_wire_bytes = 0
+
+        for block in ordered:
+            block_wire_bytes = self._wire_block_size_bytes(block)
+            if self._max_batch_bytes is not None and block_wire_bytes > self._max_batch_bytes:
+                raise DeliveryBatchPlanningError(
+                    f"logical block {block.block_id!r} exceeds max_batch_bytes and cannot be batched"
+                )
+
+            exceeds_count = len(current) >= self._max_blocks
+            exceeds_bytes = (
+                self._max_batch_bytes is not None
+                and current
+                and current_wire_bytes + block_wire_bytes > self._max_batch_bytes
+            )
+            if exceeds_count or exceeds_bytes:
+                chunks.append(tuple(current))
+                current = []
+                current_wire_bytes = 0
+
+            current.append(block)
+            current_wire_bytes += block_wire_bytes
+
+        if current:
+            chunks.append(tuple(current))
+        return tuple(chunks)
 
     @staticmethod
     def _ordered(blocks: Sequence[LogicalBlock]) -> tuple[LogicalBlock, ...]:
@@ -89,6 +126,25 @@ class DeterministicBatchPlanner:
         if len(order_indices) != len(set(order_indices)):
             raise DeliveryBatchPlanningError("logical block order_index values must be unique")
         return ordered
+
+    def _wire_block_size_bytes(self, block: LogicalBlock) -> int:
+        """Mirror pinned AstraVector ``logical_block_size_bytes`` exactly.
+
+        The server currently counts UTF-8 bytes for block_id, parent_block_id, text and every
+        metadata key/value. Source location, links and protobuf framing are intentionally not part
+        of that upstream admission calculation.
+        """
+
+        wire = self._mapper.logical_block(block)
+        return (
+            len(str(wire.block_id).encode("utf-8"))
+            + len(str(wire.parent_block_id).encode("utf-8"))
+            + len(str(wire.text).encode("utf-8"))
+            + sum(
+                len(str(key).encode("utf-8")) + len(str(value).encode("utf-8"))
+                for key, value in wire.metadata.items()
+            )
+        )
 
     def _hash_block(self, block: LogicalBlock) -> HashLogicalBlock:
         wire = self._mapper.logical_block(block)
