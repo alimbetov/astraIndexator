@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from astra_indexator.application.abort_reconciliation import (
@@ -22,17 +23,13 @@ from astra_indexator.astravector.contracts import (
 )
 from astra_indexator.domain.lifecycle import (
     DocumentLifecycleState,
-    LifecycleOperationStatus,
     LifecycleOperationType,
 )
-from astra_indexator.persistence.knowledge_inventory import (
-    KnowledgeInventoryRepository,
-)
+from astra_indexator.persistence.knowledge_inventory import KnowledgeInventoryRepository
 from astra_indexator.persistence.lifecycle import (
     DocumentLifecycleRepository,
     LifecycleIntegrityError,
     LifecycleOperationRepository,
-    LifecycleReadinessError,
     NewLifecycleOperation,
 )
 from astra_indexator.persistence.lifecycle_models import LifecycleOperation
@@ -85,12 +82,30 @@ class LifecycleRequestOutcome:
     job_id: UUID | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _OperationSnapshot:
+    operation_id: UUID
+    producer_request_id: UUID
+    document_id: UUID
+    document_version: int
+    job_id: UUID
+    reason: str
+    state: DocumentLifecycleState
+    ingestion_session_id: UUID | None
+    resolved_access_zone_id: UUID | None
+
+
 class DocumentLifecycleService:
-    """M9 application service for version/reindex/cancel/delete semantics."""
+    """M9 application service for version/reindex/cancel/delete semantics.
+
+    Database phases are intentionally short. Mutating AstraVector RPCs are always
+    executed outside PostgreSQL transactions; their result is persisted in a new
+    transaction. This keeps crash windows explicit and reconcilable.
+    """
 
     def __init__(
         self,
-        session_factory,  # type: ignore[no-untyped-def]
+        session_factory: Callable[[], Session],
         port: AstraVectorIngestionPort,
         *,
         lifecycle_repository: DocumentLifecycleRepository | None = None,
@@ -153,13 +168,7 @@ class DocumentLifecycleService:
                         reason="reindex document version",
                     ),
                 )
-                return LifecycleRequestOutcome(
-                    operation_id=operation.id,
-                    document_id=lifecycle.document_id,
-                    document_version=lifecycle.document_version,
-                    lifecycle_state=DocumentLifecycleState(lifecycle.state),
-                    job_id=job.id,
-                )
+                return self._outcome(operation, lifecycle)
 
     def activate_ready_job(self, job_id: UUID) -> LifecycleRequestOutcome:
         with self._session_factory() as session:
@@ -175,32 +184,30 @@ class DocumentLifecycleService:
                     lifecycle = self._lifecycle.ensure_building_for_job(session, job)
 
                 state = DocumentLifecycleState(lifecycle.state)
-                if state is not DocumentLifecycleState.ACTIVE:
-                    if state is DocumentLifecycleState.BUILDING:
-                        self._lifecycle.mark_ready(
-                            session,
-                            document_id=job.document_id,
-                            document_version=job.document_version,
-                        )
-                    elif state is not DocumentLifecycleState.READY:
-                        raise LifecycleSemanticConflict(
-                            f"cannot activate lifecycle state {state.value}"
-                        )
+                if state is DocumentLifecycleState.BUILDING:
+                    lifecycle = self._lifecycle.mark_ready(
+                        session,
+                        document_id=job.document_id,
+                        document_version=job.document_version,
+                    )
+                    state = DocumentLifecycleState(lifecycle.state)
+                if state is DocumentLifecycleState.READY:
                     lifecycle = self._lifecycle.activate_version(
                         session,
                         document_id=job.document_id,
                         document_version=job.document_version,
                     )
+                elif state is not DocumentLifecycleState.ACTIVE:
+                    raise LifecycleSemanticConflict(
+                        f"cannot activate lifecycle state {state.value}"
+                    )
 
                 operation = self._find_reindex_operation(session, job.id)
                 if operation is not None:
                     self._operations.complete(session, operation)
+                    return self._outcome(operation, lifecycle)
                 return LifecycleRequestOutcome(
-                    operation_id=(
-                        operation.id
-                        if operation is not None
-                        else uuid5(NAMESPACE_URL, f"m9:activation:{job.id}")
-                    ),
+                    operation_id=uuid5(NAMESPACE_URL, f"m9:activation:{job.id}"),
                     document_id=job.document_id,
                     document_version=job.document_version,
                     lifecycle_state=DocumentLifecycleState(lifecycle.state),
@@ -215,9 +222,10 @@ class DocumentLifecycleService:
         document_version: int,
         reason: str,
     ) -> LifecycleRequestOutcome:
-        reason = reason.strip()
-        if not reason:
+        normalized_reason = reason.strip()
+        if not normalized_reason:
             raise ValueError("cancel reason must not be blank")
+
         with self._session_factory() as session:
             with session.begin():
                 lifecycle = self._require_lifecycle(
@@ -241,16 +249,18 @@ class DocumentLifecycleService:
                         job_id=lifecycle.job_id,
                         requested_access_zone_code=lifecycle.requested_access_zone_code,
                         requested_access_zone_id=lifecycle.requested_access_zone_id,
-                        reason=reason,
+                        reason=normalized_reason,
                     ),
                 )
-                if state is DocumentLifecycleState.CANCELLED:
+                if state in {
+                    DocumentLifecycleState.CANCELLED,
+                    DocumentLifecycleState.DELETED,
+                }:
                     self._operations.complete(session, operation)
                     return self._outcome(operation, lifecycle)
                 if state not in {
                     DocumentLifecycleState.CANCEL_PENDING,
                     DocumentLifecycleState.DELETE_PENDING,
-                    DocumentLifecycleState.DELETED,
                 }:
                     lifecycle = self._lifecycle.transition(
                         session,
@@ -261,35 +271,14 @@ class DocumentLifecycleService:
                 job = self._require_job(session, lifecycle.job_id)
                 job.cancel_requested = True
                 checkpoint = session.get(DeliveryCheckpoint, job.id)
-                session.flush()
-                session_id = (
-                    checkpoint.ingestion_session_id
-                    if checkpoint is not None
-                    else None
+                snapshot = self._snapshot(
+                    operation,
+                    lifecycle,
+                    checkpoint,
+                    normalized_reason,
                 )
 
-        if state in {DocumentLifecycleState.DELETE_PENDING, DocumentLifecycleState.DELETED}:
-            return self.reconcile_cancel_operation(operation.id)
-        if session_id is None:
-            return self._finish_local_cancel(operation.id)
-
-        try:
-            self._abort.abort(
-                job_id=lifecycle.job_id,
-                ingestion_session_id=session_id,
-                reason=reason,
-            )
-        except AbortConflictError:
-            return self._cancel_finalize_won(operation.id)
-        except AbortReconciliationPending as exc:
-            self._schedule_operation_retry(
-                operation.id,
-                error_code="ABORT_RECONCILIATION_PENDING",
-                error_message=str(exc),
-            )
-            raise LifecycleRecoveryPending(str(exc)) from exc
-
-        return self._finish_local_cancel(operation.id)
+        return self._continue_cancel(snapshot)
 
     def request_delete(
         self,
@@ -299,9 +288,10 @@ class DocumentLifecycleService:
         document_version: int,
         reason: str,
     ) -> LifecycleRequestOutcome:
-        reason = reason.strip()
-        if not reason:
+        normalized_reason = reason.strip()
+        if not normalized_reason:
             raise ValueError("delete reason must not be blank")
+
         with self._session_factory() as session:
             with session.begin():
                 lifecycle = self._require_lifecycle(
@@ -320,27 +310,44 @@ class DocumentLifecycleService:
                         job_id=lifecycle.job_id,
                         requested_access_zone_code=lifecycle.requested_access_zone_code,
                         requested_access_zone_id=lifecycle.requested_access_zone_id,
-                        reason=reason,
+                        reason=normalized_reason,
                     ),
                 )
-                if DocumentLifecycleState(lifecycle.state) is DocumentLifecycleState.DELETED:
+                state = DocumentLifecycleState(lifecycle.state)
+                if state is DocumentLifecycleState.DELETED:
                     self._operations.complete(session, operation)
                     return self._outcome(operation, lifecycle)
-                if DocumentLifecycleState(lifecycle.state) is not DocumentLifecycleState.DELETE_PENDING:
+                if state is DocumentLifecycleState.BUILDING:
+                    raise LifecycleSemanticConflict(
+                        "delete of BUILDING version must use cancel semantics first"
+                    )
+                if state is DocumentLifecycleState.CANCELLED:
+                    raise LifecycleSemanticConflict(
+                        "cancelled version has no approved delete transition"
+                    )
+                if state is not DocumentLifecycleState.DELETE_PENDING:
                     lifecycle = self._lifecycle.transition(
                         session,
                         document_id=document_id,
                         document_version=document_version,
                         target=DocumentLifecycleState.DELETE_PENDING,
                     )
-        return self.reconcile_delete_operation(operation.id)
+                checkpoint = session.get(DeliveryCheckpoint, lifecycle.job_id)
+                snapshot = self._snapshot(
+                    operation,
+                    lifecycle,
+                    checkpoint,
+                    normalized_reason,
+                )
+
+        return self._continue_delete(snapshot)
 
     def reconcile_reindex_operation(self, operation_id: UUID) -> LifecycleRequestOutcome:
+        activate_job_id: UUID | None = None
         with self._session_factory() as session:
             with session.begin():
                 operation = self._require_operation(session, operation_id)
-                if operation.operation_type != LifecycleOperationType.REINDEX.value:
-                    raise LifecycleIntegrityError("operation is not REINDEX")
+                self._require_operation_type(operation, LifecycleOperationType.REINDEX)
                 if operation.job_id is None or operation.document_version is None:
                     raise LifecycleIntegrityError("REINDEX operation is missing job/version")
                 lifecycle = self._require_lifecycle(
@@ -354,7 +361,17 @@ class DocumentLifecycleService:
                     self._operations.complete(session, operation)
                     return self._outcome(operation, lifecycle)
                 job = self._require_job(session, operation.job_id)
-                checkpoint = session.get(DeliveryCheckpoint, job.id)
+                if state in {
+                    DocumentLifecycleState.CANCELLED,
+                    DocumentLifecycleState.DELETED,
+                }:
+                    self._operations.fail(
+                        session,
+                        operation,
+                        error_code="REINDEX_TERMINATED",
+                        error_message=f"candidate lifecycle ended as {state.value}",
+                    )
+                    return self._outcome(operation, lifecycle)
                 if state is DocumentLifecycleState.FAILED:
                     self._operations.fail(
                         session,
@@ -377,6 +394,7 @@ class DocumentLifecycleService:
                         error_message=job.last_error_message or "indexation job failed",
                     )
                     return self._outcome(operation, lifecycle)
+                checkpoint = session.get(DeliveryCheckpoint, job.id)
                 if checkpoint is None or checkpoint.searchable is not True:
                     self._operations.schedule_retry(
                         session,
@@ -386,157 +404,107 @@ class DocumentLifecycleService:
                         error_message="candidate version is not searchable yet",
                     )
                     return self._outcome(operation, lifecycle)
+                activate_job_id = job.id
 
-        return self.activate_ready_job(operation.job_id)
+        if activate_job_id is None:
+            raise LifecycleIntegrityError("reindex activation target was not resolved")
+        return self.activate_ready_job(activate_job_id)
 
     def reconcile_cancel_operation(self, operation_id: UUID) -> LifecycleRequestOutcome:
         with self._session_factory() as session:
-            operation = self._require_operation(session, operation_id)
-            if operation.operation_type != LifecycleOperationType.CANCEL.value:
-                raise LifecycleIntegrityError("operation is not CANCEL")
-            if operation.document_version is None or operation.job_id is None:
-                raise LifecycleIntegrityError("CANCEL operation is missing job/version")
-            lifecycle = self._require_lifecycle(
-                session,
-                document_id=operation.document_id,
-                document_version=operation.document_version,
-                for_update=False,
-            )
-            state = DocumentLifecycleState(lifecycle.state)
-            if state is DocumentLifecycleState.CANCELLED:
-                with session.begin():
-                    operation = self._require_operation(session, operation_id)
-                    self._operations.complete(session, operation)
-                return self._outcome(operation, lifecycle)
-            if state is DocumentLifecycleState.DELETED:
-                with session.begin():
-                    operation = self._require_operation(session, operation_id)
-                    self._operations.complete(session, operation)
-                return self._outcome(operation, lifecycle)
-            checkpoint = session.get(DeliveryCheckpoint, operation.job_id)
-            session_id = (
-                checkpoint.ingestion_session_id
-                if checkpoint is not None
-                else None
-            )
-            reason = operation.reason or "cancel document indexing"
-
-        if state is DocumentLifecycleState.DELETE_PENDING:
-            delete_request_id = self._cancel_delete_request_id(operation.producer_request_id)
-            return self.request_delete(
-                producer_request_id=delete_request_id,
-                document_id=operation.document_id,
-                document_version=operation.document_version,
-                reason="cancel reconciliation: finalize won",
-            )
-        if session_id is None:
-            return self._finish_local_cancel(operation_id)
-        try:
-            self._abort.abort(
-                job_id=operation.job_id,
-                ingestion_session_id=session_id,
-                reason=reason,
-            )
-        except AbortConflictError:
-            return self._cancel_finalize_won(operation_id)
-        except AbortReconciliationPending as exc:
-            self._schedule_operation_retry(
-                operation_id,
-                error_code="ABORT_RECONCILIATION_PENDING",
-                error_message=str(exc),
-            )
-            raise LifecycleRecoveryPending(str(exc)) from exc
-        return self._finish_local_cancel(operation_id)
-
-    def reconcile_delete_operation(self, operation_id: UUID) -> LifecycleRequestOutcome:
-        with self._session_factory() as session:
-            operation = self._require_operation(session, operation_id)
-            if operation.operation_type != LifecycleOperationType.DELETE.value:
-                raise LifecycleIntegrityError("operation is not DELETE")
-            if operation.document_version is None:
-                raise LifecycleIntegrityError("DELETE operation is missing document_version")
-            lifecycle = self._require_lifecycle(
-                session,
-                document_id=operation.document_id,
-                document_version=operation.document_version,
-                for_update=False,
-            )
-            if DocumentLifecycleState(lifecycle.state) is DocumentLifecycleState.DELETED:
-                with session.begin():
-                    operation = self._require_operation(session, operation_id)
-                    self._operations.complete(session, operation)
-                return self._outcome(operation, lifecycle)
-            checkpoint = session.get(DeliveryCheckpoint, lifecycle.job_id)
-            resolved_zone_id = (
-                lifecycle.resolved_access_zone_id
-                or (
-                    checkpoint.resolved_access_zone_id
-                    if checkpoint is not None
-                    else None
+            with session.begin():
+                operation = self._require_operation(session, operation_id)
+                self._require_operation_type(operation, LifecycleOperationType.CANCEL)
+                if operation.job_id is None or operation.document_version is None:
+                    raise LifecycleIntegrityError("CANCEL operation is missing job/version")
+                lifecycle = self._require_lifecycle(
+                    session,
+                    document_id=operation.document_id,
+                    document_version=operation.document_version,
+                    for_update=True,
                 )
-            )
-            has_downstream_session = (
-                checkpoint is not None
-                and checkpoint.ingestion_session_id is not None
-            )
-            reason = operation.reason or "delete document version"
-
-        if resolved_zone_id is None:
-            if not has_downstream_session:
-                return self._finish_delete_without_downstream(operation_id)
-            self._schedule_operation_retry(
-                operation_id,
-                error_code="DELETE_IDENTITY_UNAVAILABLE",
-                error_message=(
-                    "downstream session exists but resolved accessZoneId is unavailable"
-                ),
-            )
-            raise LifecycleRecoveryPending(
-                "delete requires downstream DocumentRef identity that is not yet available"
-            )
-
-        command = DeleteDocumentCommand(
-            access_zone_id=resolved_zone_id,
-            document_id=operation.document_id,
-            document_version=operation.document_version,
-            reason=reason,
-            idempotency_key=f"astra-indexator:delete:{operation.id}",
-            correlation_id=str(operation.id),
-        )
-        try:
-            self._delete.delete(command)
-        except DeleteReconciliationPending as exc:
-            self._schedule_operation_retry(
-                operation_id,
-                error_code=exc.classification.value,
-                error_message=str(exc),
-            )
-            raise LifecycleRecoveryPending(str(exc)) from exc
-        except DeleteReconciliationFailed as exc:
-            with self._session_factory() as session:
-                with session.begin():
-                    operation = self._require_operation(session, operation_id)
-                    lifecycle = self._require_lifecycle(
-                        session,
-                        document_id=operation.document_id,
-                        document_version=operation.document_version,
-                        for_update=True,
-                    )
-                    lifecycle = self._lifecycle.transition(
-                        session,
-                        document_id=lifecycle.document_id,
-                        document_version=lifecycle.document_version,
-                        target=DocumentLifecycleState.FAILED,
-                    )
+                state = DocumentLifecycleState(lifecycle.state)
+                if state in {
+                    DocumentLifecycleState.CANCELLED,
+                    DocumentLifecycleState.DELETED,
+                }:
+                    self._operations.complete(session, operation)
+                    return self._outcome(operation, lifecycle)
+                if state is DocumentLifecycleState.ACTIVE:
                     self._operations.fail(
                         session,
                         operation,
-                        error_code="DELETE_FAILED",
-                        error_message=str(exc),
+                        error_code="CANCEL_ACTIVE_CONFLICT",
+                        error_message="cancel cannot remove ACTIVE document version",
                     )
-                    return self._outcome(operation, lifecycle)
+                    conflict = True
+                else:
+                    conflict = False
+                checkpoint = session.get(DeliveryCheckpoint, operation.job_id)
+                snapshot = self._snapshot(
+                    operation,
+                    lifecycle,
+                    checkpoint,
+                    operation.reason or "cancel document indexing",
+                )
 
-        return self._finish_confirmed_delete(operation_id)
+        if conflict:
+            raise LifecycleSemanticConflict(
+                "cancel cannot remove an ACTIVE document version"
+            )
+        return self._continue_cancel(snapshot)
+
+    def reconcile_delete_operation(self, operation_id: UUID) -> LifecycleRequestOutcome:
+        with self._session_factory() as session:
+            with session.begin():
+                operation = self._require_operation(session, operation_id)
+                self._require_operation_type(operation, LifecycleOperationType.DELETE)
+                if operation.document_version is None:
+                    raise LifecycleIntegrityError("DELETE operation is missing document_version")
+                lifecycle = self._require_lifecycle(
+                    session,
+                    document_id=operation.document_id,
+                    document_version=operation.document_version,
+                    for_update=True,
+                )
+                if DocumentLifecycleState(lifecycle.state) is DocumentLifecycleState.DELETED:
+                    self._operations.complete(session, operation)
+                    return self._outcome(operation, lifecycle)
+                if DocumentLifecycleState(lifecycle.state) is not DocumentLifecycleState.DELETE_PENDING:
+                    raise LifecycleIntegrityError(
+                        "DELETE operation requires DELETE_PENDING lifecycle state"
+                    )
+                checkpoint = session.get(DeliveryCheckpoint, lifecycle.job_id)
+                snapshot = self._snapshot(
+                    operation,
+                    lifecycle,
+                    checkpoint,
+                    operation.reason or "delete document version",
+                )
+        return self._continue_delete(snapshot)
+
+    def reconcile_projection_operation(self, operation_id: UUID) -> LifecycleRequestOutcome:
+        with self._session_factory() as session:
+            with session.begin():
+                operation = self._require_operation(session, operation_id)
+                self._require_operation_type(operation, LifecycleOperationType.RECONCILE)
+                if operation.document_version is None:
+                    raise LifecycleIntegrityError(
+                        "RECONCILE operation is missing document_version"
+                    )
+                projection = self._inventory.rebuild(
+                    session,
+                    document_id=operation.document_id,
+                    document_version=operation.document_version,
+                )
+                self._operations.complete(session, operation)
+                return LifecycleRequestOutcome(
+                    operation_id=operation.id,
+                    document_id=projection.document_id,
+                    document_version=projection.document_version,
+                    lifecycle_state=projection.lifecycle_state,
+                    job_id=projection.job_id,
+                )
 
     def rebuild_inventory(
         self,
@@ -552,11 +520,69 @@ class DocumentLifecycleService:
                     document_version=document_version,
                 )
 
+    def _continue_cancel(self, snapshot: _OperationSnapshot) -> LifecycleRequestOutcome:
+        if snapshot.state is DocumentLifecycleState.DELETE_PENDING:
+            return self._cancel_finalize_won(snapshot)
+        if snapshot.ingestion_session_id is None:
+            return self._finish_local_cancel(snapshot.operation_id)
+        try:
+            self._abort.abort(
+                job_id=snapshot.job_id,
+                ingestion_session_id=snapshot.ingestion_session_id,
+                reason=snapshot.reason,
+            )
+        except AbortConflictError:
+            return self._cancel_finalize_won(snapshot)
+        except AbortReconciliationPending as exc:
+            self._schedule_operation_retry(
+                snapshot.operation_id,
+                error_code="ABORT_RECONCILIATION_PENDING",
+                error_message=str(exc),
+            )
+            raise LifecycleRecoveryPending(str(exc)) from exc
+        return self._finish_local_cancel(snapshot.operation_id)
+
+    def _continue_delete(self, snapshot: _OperationSnapshot) -> LifecycleRequestOutcome:
+        if snapshot.resolved_access_zone_id is None:
+            if snapshot.ingestion_session_id is None:
+                return self._finish_confirmed_delete(snapshot.operation_id)
+            self._schedule_operation_retry(
+                snapshot.operation_id,
+                error_code="DELETE_IDENTITY_UNAVAILABLE",
+                error_message=(
+                    "downstream session exists but resolved accessZoneId is unavailable"
+                ),
+            )
+            raise LifecycleRecoveryPending(
+                "delete requires downstream DocumentRef identity that is not yet available"
+            )
+
+        command = DeleteDocumentCommand(
+            access_zone_id=snapshot.resolved_access_zone_id,
+            document_id=snapshot.document_id,
+            document_version=snapshot.document_version,
+            reason=snapshot.reason,
+            idempotency_key=f"astra-indexator:delete:{snapshot.operation_id}",
+            correlation_id=str(snapshot.operation_id),
+        )
+        try:
+            self._delete.delete(command)
+        except DeleteReconciliationPending as exc:
+            self._schedule_operation_retry(
+                snapshot.operation_id,
+                error_code=exc.classification.value,
+                error_message=str(exc),
+            )
+            raise LifecycleRecoveryPending(str(exc)) from exc
+        except DeleteReconciliationFailed as exc:
+            return self._finish_failed_delete(snapshot.operation_id, exc)
+        return self._finish_confirmed_delete(snapshot.operation_id)
+
     def _finish_local_cancel(self, operation_id: UUID) -> LifecycleRequestOutcome:
         with self._session_factory() as session:
             with session.begin():
                 operation = self._require_operation(session, operation_id)
-                if operation.document_version is None or operation.job_id is None:
+                if operation.job_id is None or operation.document_version is None:
                     raise LifecycleIntegrityError("CANCEL operation is missing job/version")
                 lifecycle = self._require_lifecycle(
                     session,
@@ -564,61 +590,86 @@ class DocumentLifecycleService:
                     document_version=operation.document_version,
                     for_update=True,
                 )
-                if DocumentLifecycleState(lifecycle.state) is not DocumentLifecycleState.CANCELLED:
-                    lifecycle = self._lifecycle.transition(
-                        session,
-                        document_id=lifecycle.document_id,
-                        document_version=lifecycle.document_version,
-                        target=DocumentLifecycleState.CANCELLED,
+                state = DocumentLifecycleState(lifecycle.state)
+                if state is DocumentLifecycleState.CANCELLED:
+                    self._operations.complete(session, operation)
+                    return self._outcome(operation, lifecycle)
+                if state is not DocumentLifecycleState.CANCEL_PENDING:
+                    raise LifecycleSemanticConflict(
+                        f"cannot finish cancel from lifecycle state {state.value}"
                     )
                 job = self._require_job(session, operation.job_id)
+                if job.status == "COMPLETED":
+                    raise LifecycleSemanticConflict(
+                        "job completed before local cancellation could commit"
+                    )
+                lifecycle = self._lifecycle.transition(
+                    session,
+                    document_id=lifecycle.document_id,
+                    document_version=lifecycle.document_version,
+                    target=DocumentLifecycleState.CANCELLED,
+                )
                 self._cancel_job(session, job)
                 self._operations.complete(session, operation)
                 return self._outcome(operation, lifecycle)
 
-    def _cancel_finalize_won(self, operation_id: UUID) -> LifecycleRequestOutcome:
+    def _cancel_finalize_won(
+        self,
+        snapshot: _OperationSnapshot,
+    ) -> LifecycleRequestOutcome:
         with self._session_factory() as session:
             with session.begin():
-                operation = self._require_operation(session, operation_id)
-                if operation.document_version is None:
-                    raise LifecycleIntegrityError("CANCEL operation is missing version")
+                operation = self._require_operation(session, snapshot.operation_id)
                 lifecycle = self._require_lifecycle(
                     session,
-                    document_id=operation.document_id,
-                    document_version=operation.document_version,
+                    document_id=snapshot.document_id,
+                    document_version=snapshot.document_version,
                     for_update=True,
                 )
-                if DocumentLifecycleState(lifecycle.state) is DocumentLifecycleState.CANCEL_PENDING:
+                state = DocumentLifecycleState(lifecycle.state)
+                if state is DocumentLifecycleState.CANCEL_PENDING:
                     lifecycle = self._lifecycle.transition(
                         session,
                         document_id=lifecycle.document_id,
                         document_version=lifecycle.document_version,
                         target=DocumentLifecycleState.DELETE_PENDING,
                     )
-        delete_request_id = self._cancel_delete_request_id(operation.producer_request_id)
-        delete_outcome = self.request_delete(
-            producer_request_id=delete_request_id,
-            document_id=operation.document_id,
-            document_version=operation.document_version,
-            reason="cancel reconciliation: finalize completed before abort",
-        )
+                elif state not in {
+                    DocumentLifecycleState.DELETE_PENDING,
+                    DocumentLifecycleState.DELETED,
+                }:
+                    raise LifecycleSemanticConflict(
+                        f"finalize-wins cancel cannot continue from {state.value}"
+                    )
+                cancel_request_id = operation.producer_request_id
+
+        delete_request_id = self._cancel_delete_request_id(cancel_request_id)
+        try:
+            delete_outcome = self.request_delete(
+                producer_request_id=delete_request_id,
+                document_id=snapshot.document_id,
+                document_version=snapshot.document_version,
+                reason="cancel reconciliation: finalize completed before abort",
+            )
+        except LifecycleRecoveryPending:
+            self._schedule_operation_retry(
+                snapshot.operation_id,
+                error_code="CANCEL_DELETE_PENDING",
+                error_message="finalize won; derived delete still reconciling",
+            )
+            raise
+
         with self._session_factory() as session:
             with session.begin():
-                cancel_operation = self._require_operation(session, operation_id)
-                self._operations.complete(session, cancel_operation)
+                operation = self._require_operation(session, snapshot.operation_id)
+                self._operations.complete(session, operation)
         return LifecycleRequestOutcome(
-            operation_id=operation_id,
+            operation_id=snapshot.operation_id,
             document_id=delete_outcome.document_id,
             document_version=delete_outcome.document_version,
             lifecycle_state=delete_outcome.lifecycle_state,
             job_id=delete_outcome.job_id,
         )
-
-    def _finish_delete_without_downstream(
-        self,
-        operation_id: UUID,
-    ) -> LifecycleRequestOutcome:
-        return self._finish_confirmed_delete(operation_id)
 
     def _finish_confirmed_delete(self, operation_id: UUID) -> LifecycleRequestOutcome:
         with self._session_factory() as session:
@@ -640,6 +691,36 @@ class DocumentLifecycleService:
                         target=DocumentLifecycleState.DELETED,
                     )
                 self._operations.complete(session, operation)
+                return self._outcome(operation, lifecycle)
+
+    def _finish_failed_delete(
+        self,
+        operation_id: UUID,
+        exc: DeleteReconciliationFailed,
+    ) -> LifecycleRequestOutcome:
+        with self._session_factory() as session:
+            with session.begin():
+                operation = self._require_operation(session, operation_id)
+                if operation.document_version is None:
+                    raise LifecycleIntegrityError("DELETE operation is missing version")
+                lifecycle = self._require_lifecycle(
+                    session,
+                    document_id=operation.document_id,
+                    document_version=operation.document_version,
+                    for_update=True,
+                )
+                lifecycle = self._lifecycle.transition(
+                    session,
+                    document_id=lifecycle.document_id,
+                    document_version=lifecycle.document_version,
+                    target=DocumentLifecycleState.FAILED,
+                )
+                self._operations.fail(
+                    session,
+                    operation,
+                    error_code="DELETE_FAILED",
+                    error_message=str(exc),
+                )
                 return self._outcome(operation, lifecycle)
 
     def _schedule_operation_retry(
@@ -672,8 +753,7 @@ class DocumentLifecycleService:
         )
         if not versions:
             return
-        same = [row for row in versions if row.document_version == request.document_version]
-        if same:
+        if any(row.document_version == request.document_version for row in versions):
             return
         max_version = max(row.document_version for row in versions)
         if request.document_version <= max_version:
@@ -693,6 +773,7 @@ class DocumentLifecycleService:
             and job.source_file_name == request.source_file_name
             and job.storage_object_id == request.storage_object_id
             and job.storage_object_name == request.storage_object_name
+            and job.source_content_hash == request.source_content_hash
         )
         if not same:
             raise LifecycleIntegrityError(
@@ -701,15 +782,15 @@ class DocumentLifecycleService:
 
     @staticmethod
     def _cancel_job(session: Session, job: IndexationJob) -> None:
-        if job.status == "COMPLETED":
-            return
         previous = job.status
+        now = session.execute(select(func.now())).scalar_one()
         job.status = "CANCELLED"
         job.cancel_requested = True
         job.worker_id = None
         job.lease_acquired_at = None
         job.lease_until = None
         job.last_heartbeat_at = None
+        job.updated_at = now
         open_attempts = session.execute(
             select(ProcessingAttempt).where(
                 ProcessingAttempt.job_id == job.id,
@@ -717,7 +798,7 @@ class DocumentLifecycleService:
             )
         ).scalars()
         for attempt in open_attempts:
-            attempt.finished_at = select_current_timestamp(session)
+            attempt.finished_at = now
             attempt.result = "CANCELLED"
         session.add(
             JobEvent(
@@ -744,6 +825,44 @@ class DocumentLifecycleService:
             .with_for_update()
             .limit(1)
         ).scalar_one_or_none()
+
+    def _snapshot(
+        self,
+        operation: LifecycleOperation,
+        lifecycle,
+        checkpoint: DeliveryCheckpoint | None,
+        reason: str,
+    ) -> _OperationSnapshot:
+        if operation.document_version is None or operation.job_id is None:
+            raise LifecycleIntegrityError("lifecycle operation is missing job/version")
+        resolved_zone_id = lifecycle.resolved_access_zone_id
+        if resolved_zone_id is None and checkpoint is not None:
+            resolved_zone_id = checkpoint.resolved_access_zone_id
+        return _OperationSnapshot(
+            operation_id=operation.id,
+            producer_request_id=operation.producer_request_id,
+            document_id=operation.document_id,
+            document_version=operation.document_version,
+            job_id=operation.job_id,
+            reason=reason,
+            state=DocumentLifecycleState(lifecycle.state),
+            ingestion_session_id=(
+                checkpoint.ingestion_session_id
+                if checkpoint is not None
+                else None
+            ),
+            resolved_access_zone_id=resolved_zone_id,
+        )
+
+    @staticmethod
+    def _require_operation_type(
+        operation: LifecycleOperation,
+        expected: LifecycleOperationType,
+    ) -> None:
+        if operation.operation_type != expected.value:
+            raise LifecycleIntegrityError(
+                f"operation is {operation.operation_type}, expected {expected.value}"
+            )
 
     @staticmethod
     def _require_job(session: Session, job_id: UUID) -> IndexationJob:
@@ -783,7 +902,7 @@ class DocumentLifecycleService:
     @staticmethod
     def _outcome(
         operation: LifecycleOperation,
-        lifecycle,  # type: ignore[no-untyped-def]
+        lifecycle,
     ) -> LifecycleRequestOutcome:
         return LifecycleRequestOutcome(
             operation_id=operation.id,
@@ -799,9 +918,3 @@ class DocumentLifecycleService:
             NAMESPACE_URL,
             f"astra-indexator:m9:cancel-delete:{cancel_request_id}",
         )
-
-
-def select_current_timestamp(session: Session):  # type: ignore[no-untyped-def]
-    from sqlalchemy import func
-
-    return session.execute(select(func.now())).scalar_one()
