@@ -17,14 +17,22 @@ from astra_indexator.astravector.contracts import (
     IngestionSessionState,
     IngestionStatus,
 )
+from astra_indexator.astravector.policy import (
+    GrpcFailure,
+    RetryDecision,
+    classify_grpc_failure,
+)
 from astra_indexator.persistence.delivery import DeliveryBatchRepository, DeliveryIntegrityError
 
-_AMBIGUOUS_FINALIZE_CODES = frozenset(
+# Finalize is a mutating operation. Loss of a response for these transport outcomes does not prove
+# that the mutation failed, so the existing session must be inspected before any replay. UNKNOWN
+# and CANCELLED are intentionally excluded: M8.2.4 qualified them fail-closed rather than assuming
+# that every opaque client-side failure implies a remotely committed mutation.
+_AMBIGUOUS_FINALIZE_TRANSPORT_CODES = frozenset(
     {
         "DEADLINE_EXCEEDED",
         "UNAVAILABLE",
-        "CANCELLED",
-        "UNKNOWN",
+        "ABORTED",
     }
 )
 
@@ -70,12 +78,29 @@ class FinalizeReconciliationPending(RuntimeError):
         self.polls = polls
 
 
+def should_reconcile_finalize_failure(error: AstraVectorTransportError) -> bool:
+    """Return whether a failed Finalize call has an ambiguous remote commit outcome.
+
+    The rule is operation-specific but constrained by the M8.2.4 fail-closed transport policy.
+    Deadline/unavailable/aborted transport failures always reconcile because Finalize is mutating.
+    Server preconditions reconcile only when the shared classifier recognizes the pinned
+    AstraVector state marker (for example FINALIZING or COMPLETED). Unknown failures remain
+    permanent and are never promoted to reconciliation implicitly.
+    """
+
+    code = error.code.strip().upper()
+    if code in _AMBIGUOUS_FINALIZE_TRANSPORT_CODES:
+        return True
+    decision = classify_grpc_failure(GrpcFailure(code=code, message=error.message))
+    return decision is RetryDecision.RECONCILE_STATUS
+
+
 class FinalizeReconciliationRunner:
     """Resolve ambiguous Finalize outcomes without creating a new document version.
 
-    A timeout-like Finalize failure is never blindly replayed. The existing ingestion session is
-    queried first. ACTIVE permits retrying the exact same Finalize command; FINALIZING only polls;
-    COMPLETED transitions to vector-status inspection; terminal states fail explicitly.
+    A potentially committed Finalize failure is never blindly replayed. The existing ingestion
+    session is queried first. ACTIVE permits retrying the exact same Finalize command; FINALIZING
+    only polls; COMPLETED transitions to vector-status inspection; terminal states fail explicitly.
 
     ``access_zone_id`` below is optional downstream DocumentRef evidence used only when an
     ambiguous COMPLETED state must be followed by GetDocumentVectorStatus. It is not the
@@ -139,7 +164,7 @@ class FinalizeReconciliationRunner:
                 try:
                     result = self._port.finalize(command)
                 except AstraVectorTransportError as exc:
-                    if exc.code not in _AMBIGUOUS_FINALIZE_CODES:
+                    if not should_reconcile_finalize_failure(exc):
                         raise
                     last_status = self._observe_status(job_id, ingestion_session_id)
                     status_polls += 1
