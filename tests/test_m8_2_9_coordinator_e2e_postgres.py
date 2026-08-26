@@ -24,6 +24,7 @@ from astra_indexator.astravector.contracts import (
     IngestionSessionState,
     IngestionStatus,
     LogicalBlock,
+    StartIngestionCommand,
     StartIngestionResult,
 )
 from astra_indexator.persistence.delivery import DeliveryBatchRepository
@@ -33,6 +34,7 @@ from astra_indexator.persistence.repository import IndexationJobRepository, NewI
 ROOT = Path(__file__).resolve().parents[1]
 ZONE_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+CODE_ONLY_ZONE = "0001"
 
 
 def _psycopg_url(url: str) -> str:
@@ -90,12 +92,14 @@ class _Port:
     def __init__(self, document_id: UUID) -> None:
         self.document_id = document_id
         self.start_calls = 0
+        self.start_commands: list[StartIngestionCommand] = []
         self.append_calls: list[int] = []
         self.finalize_calls = 0
         self.vector_calls = 0
 
-    def start(self, command):
+    def start(self, command: StartIngestionCommand):
         self.start_calls += 1
+        self.start_commands.append(command)
         return StartIngestionResult(
             ingestion_session_id=SESSION_ID,
             raw_status="ACTIVE",
@@ -169,7 +173,7 @@ def _enqueue_and_claim(engine, *, worker_id: str = "worker-a", code_only: bool =
                 document_version=1,
                 source_uri="seaweed://documents/m8-2-9.txt",
                 access_zone_id=None if code_only else ZONE_ID,
-                access_zone_code="0600" if code_only else None,
+                access_zone_code=CODE_ONLY_ZONE if code_only else None,
                 requested_ttl_days=0,
                 source_file_name="m8-2-9.txt",
                 source_size_bytes=123,
@@ -200,6 +204,7 @@ def test_full_coordinator_delivery_completes_only_after_searchable(database_url:
     )
 
     assert outcome.ingestion_session_id == SESSION_ID
+    assert outcome.access_zone_code is None
     assert outcome.resolved_access_zone_id == ZONE_ID
     assert port.start_calls == 1
     assert port.append_calls == [0, 1]
@@ -248,18 +253,34 @@ def test_restart_reuses_bound_session_and_does_not_start_again(database_url: str
     engine.dispose()
 
 
-def test_code_only_delivery_persists_resolved_zone_from_finalize(database_url: str) -> None:
+def test_code_only_delivery_preserves_access_zone_code_end_to_end(database_url: str) -> None:
     engine = create_engine(database_url)
     document_id, claimed = _enqueue_and_claim(engine, worker_id="worker-code", code_only=True)
     port = _Port(document_id)
+
+    with Session(engine) as session:
+        before = session.get(IndexationJob, claimed.token.job_id)
+        assert before is not None
+        assert before.requested_access_zone_code == CODE_ONLY_ZONE
+        assert before.requested_access_zone_id is None
 
     outcome = _coordinator(engine, port).deliver(
         claimed, AstraVectorDeliveryInput(logical_blocks=_blocks())
     )
 
+    assert outcome.access_zone_code == CODE_ONLY_ZONE
     assert outcome.resolved_access_zone_id == ZONE_ID
+    assert len(port.start_commands) == 1
+    start = port.start_commands[0]
+    assert start.access_zone_code == CODE_ONLY_ZONE
+    assert start.access_zone_id is None
+
     with Session(engine) as session:
+        job = session.get(IndexationJob, claimed.token.job_id)
         checkpoint = session.get(DeliveryCheckpoint, claimed.token.job_id)
+        assert job is not None
+        assert job.requested_access_zone_code == CODE_ONLY_ZONE
+        assert job.requested_access_zone_id is None
         assert checkpoint is not None
         assert checkpoint.resolved_access_zone_id == ZONE_ID
     engine.dispose()
