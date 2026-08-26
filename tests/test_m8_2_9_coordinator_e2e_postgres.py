@@ -158,7 +158,7 @@ def _blocks() -> tuple[LogicalBlock, ...]:
     )
 
 
-def _enqueue_and_claim(engine, *, worker_id: str = "worker-a"):
+def _enqueue_and_claim(engine, *, worker_id: str = "worker-a", code_only: bool = False):
     document_id = uuid4()
     with Session(engine) as session:
         job = IndexationJobRepository().create_or_get(
@@ -168,7 +168,8 @@ def _enqueue_and_claim(engine, *, worker_id: str = "worker-a"):
                 document_id=document_id,
                 document_version=1,
                 source_uri="seaweed://documents/m8-2-9.txt",
-                access_zone_id=ZONE_ID,
+                access_zone_id=None if code_only else ZONE_ID,
+                access_zone_code="0600" if code_only else None,
                 requested_ttl_days=0,
                 source_file_name="m8-2-9.txt",
                 source_size_bytes=123,
@@ -184,16 +185,22 @@ def _enqueue_and_claim(engine, *, worker_id: str = "worker-a"):
     return document_id, claimed
 
 
+def _coordinator(engine, port: _Port) -> AstraVectorDeliveryCoordinator:
+    planner = DeterministicBatchPlanner(_HashMapper(), max_blocks_per_batch=2)  # type: ignore[arg-type]
+    return AstraVectorDeliveryCoordinator(lambda: Session(engine), port, planner)  # type: ignore[arg-type]
+
+
 def test_full_coordinator_delivery_completes_only_after_searchable(database_url: str) -> None:
     engine = create_engine(database_url)
     document_id, claimed = _enqueue_and_claim(engine)
     port = _Port(document_id)
-    planner = DeterministicBatchPlanner(_HashMapper(), max_blocks_per_batch=2)  # type: ignore[arg-type]
-    coordinator = AstraVectorDeliveryCoordinator(lambda: Session(engine), port, planner)  # type: ignore[arg-type]
 
-    outcome = coordinator.deliver(claimed, AstraVectorDeliveryInput(logical_blocks=_blocks()))
+    outcome = _coordinator(engine, port).deliver(
+        claimed, AstraVectorDeliveryInput(logical_blocks=_blocks())
+    )
 
     assert outcome.ingestion_session_id == SESSION_ID
+    assert outcome.resolved_access_zone_id == ZONE_ID
     assert port.start_calls == 1
     assert port.append_calls == [0, 1]
     assert port.finalize_calls == 1
@@ -212,6 +219,7 @@ def test_full_coordinator_delivery_completes_only_after_searchable(database_url:
         assert job.processing_stage == "ASTRAVECTOR_READINESS"
         assert checkpoint is not None
         assert checkpoint.ingestion_session_id == SESSION_ID
+        assert checkpoint.resolved_access_zone_id == ZONE_ID
         assert checkpoint.next_batch_index == 2
         assert checkpoint.final_content_hash is not None
         assert checkpoint.searchable is True
@@ -232,12 +240,26 @@ def test_restart_reuses_bound_session_and_does_not_start_again(database_url: str
             )
 
     port = _Port(document_id)
-    planner = DeterministicBatchPlanner(_HashMapper(), max_blocks_per_batch=2)  # type: ignore[arg-type]
-    coordinator = AstraVectorDeliveryCoordinator(lambda: Session(engine), port, planner)  # type: ignore[arg-type]
-
-    coordinator.deliver(claimed, AstraVectorDeliveryInput(logical_blocks=_blocks()))
+    _coordinator(engine, port).deliver(claimed, AstraVectorDeliveryInput(logical_blocks=_blocks()))
 
     assert port.start_calls == 0
     assert port.append_calls == [0, 1]
     assert port.finalize_calls == 1
+    engine.dispose()
+
+
+def test_code_only_delivery_persists_resolved_zone_from_finalize(database_url: str) -> None:
+    engine = create_engine(database_url)
+    document_id, claimed = _enqueue_and_claim(engine, worker_id="worker-code", code_only=True)
+    port = _Port(document_id)
+
+    outcome = _coordinator(engine, port).deliver(
+        claimed, AstraVectorDeliveryInput(logical_blocks=_blocks())
+    )
+
+    assert outcome.resolved_access_zone_id == ZONE_ID
+    with Session(engine) as session:
+        checkpoint = session.get(DeliveryCheckpoint, claimed.token.job_id)
+        assert checkpoint is not None
+        assert checkpoint.resolved_access_zone_id == ZONE_ID
     engine.dispose()
