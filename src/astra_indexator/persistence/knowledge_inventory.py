@@ -32,6 +32,9 @@ class KnowledgeInventoryProjection:
     resolved_access_zone_id: UUID | None
     requested_ttl_days: int | None
     source_file_name: str | None
+    storage_object_id: UUID | None
+    storage_object_name: str | None
+    source_uri: str | None
     source_content_hash: str | None
     processing_fingerprint: str | None
     logical_fragment_count: int | None
@@ -60,6 +63,14 @@ class KnowledgeInventoryProjection:
             raise ValueError("requested AccessZone selector is required")
         if self.requested_ttl_days is not None and self.requested_ttl_days < 0:
             raise ValueError("requested_ttl_days must be non-negative")
+        if bool(self.storage_object_id) != bool(self.storage_object_name):
+            raise ValueError(
+                "storage_object_id and storage_object_name must either both be set or both be unset"
+            )
+        if self.storage_object_name is not None and not self.storage_object_name.strip():
+            raise ValueError("storage_object_name must not be blank")
+        if self.source_file_name is not None and not self.source_file_name.strip():
+            raise ValueError("source_file_name must not be blank")
         for field_name, value in (
             ("logical_fragment_count", self.logical_fragment_count),
             ("logical_block_count", self.logical_block_count),
@@ -81,7 +92,8 @@ class KnowledgeInventoryRepository:
 
     This repository never reads AstraVector-owned PostgreSQL tables. Downstream
     evidence comes only from M8-owned DeliveryCheckpoint fields populated through
-    the public AstraVector gRPC contract.
+    the public AstraVector gRPC contract. Public source provenance and internal
+    storage identity remain separate according to the M9 source-provenance freeze.
     """
 
     def rebuild(
@@ -132,6 +144,9 @@ class KnowledgeInventoryRepository:
             ),
             requested_ttl_days=lifecycle.requested_ttl_days,
             source_file_name=job.source_file_name,
+            storage_object_id=job.storage_object_id,
+            storage_object_name=job.storage_object_name,
+            source_uri=job.source_uri,
             source_content_hash=job.source_content_hash,
             processing_fingerprint=job.processing_fingerprint,
             logical_fragment_count=prepared.fragment_count if prepared is not None else None,
@@ -167,6 +182,9 @@ class KnowledgeInventoryRepository:
             "resolved_access_zone_id": projection.resolved_access_zone_id,
             "requested_ttl_days": projection.requested_ttl_days,
             "source_file_name": projection.source_file_name,
+            "storage_object_id": projection.storage_object_id,
+            "storage_object_name": projection.storage_object_name,
+            "source_uri": projection.source_uri,
             "source_content_hash": projection.source_content_hash,
             "processing_fingerprint": projection.processing_fingerprint,
             "logical_fragment_count": projection.logical_fragment_count,
@@ -196,7 +214,8 @@ class KnowledgeInventoryRepository:
                     access_zone_code, access_zone_id,
                     requested_access_zone_code, requested_access_zone_id,
                     resolved_access_zone_id, requested_ttl_days,
-                    source_file_name, source_content_hash, processing_fingerprint,
+                    source_file_name, storage_object_id, storage_object_name, source_uri,
+                    source_content_hash, processing_fingerprint,
                     logical_fragment_count, logical_block_count,
                     lifecycle_state, is_current, ingestion_session_id,
                     vector_state, searchable, ready_to_activate,
@@ -209,7 +228,8 @@ class KnowledgeInventoryRepository:
                     :access_zone_code, :access_zone_id,
                     :requested_access_zone_code, :requested_access_zone_id,
                     :resolved_access_zone_id, :requested_ttl_days,
-                    :source_file_name, :source_content_hash, :processing_fingerprint,
+                    :source_file_name, :storage_object_id, :storage_object_name, :source_uri,
+                    :source_content_hash, :processing_fingerprint,
                     :logical_fragment_count, :logical_block_count,
                     :lifecycle_state, :is_current, :ingestion_session_id,
                     :vector_state, :searchable, :ready_to_activate,
@@ -228,6 +248,9 @@ class KnowledgeInventoryRepository:
                     resolved_access_zone_id = EXCLUDED.resolved_access_zone_id,
                     requested_ttl_days = EXCLUDED.requested_ttl_days,
                     source_file_name = EXCLUDED.source_file_name,
+                    storage_object_id = EXCLUDED.storage_object_id,
+                    storage_object_name = EXCLUDED.storage_object_name,
+                    source_uri = EXCLUDED.source_uri,
                     source_content_hash = EXCLUDED.source_content_hash,
                     processing_fingerprint = EXCLUDED.processing_fingerprint,
                     logical_fragment_count = EXCLUDED.logical_fragment_count,
