@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Callable
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
@@ -17,7 +18,6 @@ from astra_indexator.domain.lifecycle import (
     LifecycleOperationType,
 )
 from astra_indexator.persistence.lifecycle import (
-    LifecycleIntegrityError,
     LifecycleOperationRepository,
 )
 from astra_indexator.persistence.lifecycle_models import LifecycleOperation
@@ -31,11 +31,11 @@ class ClaimedLifecycleOperation:
 
 
 class LifecycleReconciliationRunner:
-    """Crash-recoverable M9 operation worker using PostgreSQL time/row locking."""
+    """Crash-recoverable M9 operation worker using PostgreSQL time and row locking."""
 
     def __init__(
         self,
-        session_factory,  # type: ignore[no-untyped-def]
+        session_factory: Callable[[], Session],
         service: DocumentLifecycleService,
         *,
         operation_repository: LifecycleOperationRepository | None = None,
@@ -109,58 +109,17 @@ class LifecycleReconciliationRunner:
             if claimed.operation_type is LifecycleOperationType.DELETE:
                 return self._service.reconcile_delete_operation(claimed.operation_id)
             if claimed.operation_type is LifecycleOperationType.RECONCILE:
-                return self._reconcile_projection(claimed.operation_id)
-            raise LifecycleIntegrityError(
+                return self._service.reconcile_projection_operation(claimed.operation_id)
+            raise RuntimeError(
                 f"unsupported lifecycle operation {claimed.operation_type.value}"
             )
         except LifecycleRecoveryPending:
+            # The application service has already persisted RETRY_WAIT and the
+            # reconciliation reason. Nothing else is mutated here.
             return None
         except Exception as exc:
             self._schedule_unexpected_retry(claimed.operation_id, exc)
             raise
-
-    def _reconcile_projection(self, operation_id: UUID) -> LifecycleRequestOutcome:
-        with self._session_factory() as session:
-            with session.begin():
-                operation = self._operations.get(session, operation_id)
-                if operation is None or operation.document_version is None:
-                    raise LifecycleIntegrityError(
-                        "RECONCILE operation is missing document version"
-                    )
-                document_id = operation.document_id
-                document_version = operation.document_version
-        self._service.rebuild_inventory(
-            document_id=document_id,
-            document_version=document_version,
-        )
-        with self._session_factory() as session:
-            with session.begin():
-                operation = self._operations.get(session, operation_id)
-                if operation is None:
-                    raise LifecycleIntegrityError("lifecycle operation disappeared")
-                self._operations.complete(session, operation)
-                from astra_indexator.persistence.lifecycle_models import (
-                    DocumentVersionLifecycle,
-                )
-
-                lifecycle = session.get(
-                    DocumentVersionLifecycle,
-                    {
-                        "document_id": document_id,
-                        "document_version": document_version,
-                    },
-                )
-                if lifecycle is None:
-                    raise LifecycleIntegrityError("document lifecycle row disappeared")
-                from astra_indexator.domain.lifecycle import DocumentLifecycleState
-
-                return LifecycleRequestOutcome(
-                    operation_id=operation.id,
-                    document_id=document_id,
-                    document_version=document_version,
-                    lifecycle_state=DocumentLifecycleState(lifecycle.state),
-                    job_id=lifecycle.job_id,
-                )
 
     def _schedule_unexpected_retry(self, operation_id: UUID, exc: Exception) -> None:
         with self._session_factory() as session:
@@ -168,7 +127,11 @@ class LifecycleReconciliationRunner:
                 operation = self._operations.get(session, operation_id)
                 if operation is None:
                     return
-                if operation.status == LifecycleOperationStatus.COMPLETED.value:
+                if operation.status in {
+                    LifecycleOperationStatus.COMPLETED.value,
+                    LifecycleOperationStatus.FAILED.value,
+                    LifecycleOperationStatus.CANCELLED.value,
+                }:
                     return
                 self._operations.schedule_retry(
                     session,
