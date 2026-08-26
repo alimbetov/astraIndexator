@@ -44,7 +44,7 @@ jobs:
         run: |
           mypy --follow-imports=silent \
             src/astra_indexator/domain/delivery_intent.py \
-            src/astra_indexator/domain/document_lifecycle.py \
+            src/astra_indexator/domain/lifecycle.py \
             src/astra_indexator/persistence/models.py \
             src/astra_indexator/persistence/lifecycle_models.py \
             src/astra_indexator/persistence/knowledge_inventory.py \
