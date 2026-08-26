@@ -45,6 +45,7 @@ _ALLOWED_TRANSITIONS: dict[DocumentLifecycleState, frozenset[DocumentLifecycleSt
         {
             DocumentLifecycleState.ACTIVE,
             DocumentLifecycleState.CANCEL_PENDING,
+            DocumentLifecycleState.DELETE_PENDING,
             DocumentLifecycleState.FAILED,
         }
     ),
@@ -54,10 +55,13 @@ _ALLOWED_TRANSITIONS: dict[DocumentLifecycleState, frozenset[DocumentLifecycleSt
             DocumentLifecycleState.DELETE_PENDING,
         }
     ),
-    DocumentLifecycleState.SUPERSEDED: frozenset({DocumentLifecycleState.DELETE_PENDING}),
+    DocumentLifecycleState.SUPERSEDED: frozenset(
+        {DocumentLifecycleState.DELETE_PENDING}
+    ),
     DocumentLifecycleState.CANCEL_PENDING: frozenset(
         {
             DocumentLifecycleState.CANCELLED,
+            DocumentLifecycleState.DELETE_PENDING,
             DocumentLifecycleState.FAILED,
         }
     ),
@@ -69,7 +73,9 @@ _ALLOWED_TRANSITIONS: dict[DocumentLifecycleState, frozenset[DocumentLifecycleSt
     ),
     DocumentLifecycleState.CANCELLED: frozenset(),
     DocumentLifecycleState.DELETED: frozenset(),
-    DocumentLifecycleState.FAILED: frozenset(),
+    DocumentLifecycleState.FAILED: frozenset(
+        {DocumentLifecycleState.DELETE_PENDING}
+    ),
 }
 
 
@@ -82,7 +88,9 @@ def require_lifecycle_transition(
     target: DocumentLifecycleState,
 ) -> None:
     if target not in _ALLOWED_TRANSITIONS[current]:
-        raise InvalidLifecycleTransition(f"invalid lifecycle transition: {current.value} -> {target.value}")
+        raise InvalidLifecycleTransition(
+            f"invalid lifecycle transition: {current.value} -> {target.value}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
