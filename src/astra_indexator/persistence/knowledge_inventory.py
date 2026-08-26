@@ -8,7 +8,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from astra_indexator.domain.contracts import AccessZoneCode
-from astra_indexator.domain.document_lifecycle import DocumentLifecycleState
+from astra_indexator.domain.lifecycle import DocumentLifecycleState
 
 from .lifecycle_models import DocumentVersionLifecycle
 from .models import DeliveryBatch, DeliveryCheckpoint, IndexationJob
