@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from testcontainers.postgres import PostgresContainer
 
-from astra_indexator.domain.document_lifecycle import DocumentLifecycleState
+from astra_indexator.domain.lifecycle import DocumentLifecycleState
 from astra_indexator.persistence.knowledge_inventory import KnowledgeInventoryRepository
 from astra_indexator.persistence.lifecycle_models import DocumentVersionLifecycle
 from astra_indexator.persistence.models import DeliveryCheckpoint, IndexationJob
