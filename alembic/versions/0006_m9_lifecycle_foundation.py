@@ -38,7 +38,10 @@ def upgrade() -> None:
         sa.Column("cancelled_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("failed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.CheckConstraint("document_version > 0", name="ck_document_version_lifecycle_document_version_positive"),
+        sa.CheckConstraint(
+            "document_version > 0",
+            name="ck_document_version_lifecycle_document_version_positive",
+        ),
         sa.CheckConstraint(
             "state IN ('BUILDING','READY','ACTIVE','SUPERSEDED','CANCEL_PENDING','CANCELLED','DELETE_PENDING','DELETED','FAILED')",
             name="ck_document_version_lifecycle_state_allowed",
@@ -50,6 +53,15 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "requested_access_zone_id IS NOT NULL OR requested_access_zone_code IS NOT NULL",
             name="ck_document_version_lifecycle_requested_access_zone_selector_present",
+        ),
+        sa.CheckConstraint(
+            "requested_ttl_days IS NULL OR requested_ttl_days >= 0",
+            name="ck_document_version_lifecycle_requested_ttl_days_non_negative",
+        ),
+        sa.CheckConstraint(
+            "(state = 'ACTIVE' AND is_current = true) OR "
+            "(state <> 'ACTIVE' AND is_current = false)",
+            name="ck_document_version_lifecycle_active_matches_current",
         ),
         sa.ForeignKeyConstraint(["job_id"], [f"{SCHEMA}.indexation_job.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("document_id", "document_version", name="pk_document_version_lifecycle"),
@@ -87,7 +99,14 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.CheckConstraint("attempt_count >= 0", name="ck_lifecycle_operation_attempt_count_non_negative"),
+        sa.CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_lifecycle_operation_attempt_count_non_negative",
+        ),
+        sa.CheckConstraint(
+            "document_version IS NULL OR document_version > 0",
+            name="ck_lifecycle_operation_document_version_positive",
+        ),
         sa.CheckConstraint(
             "operation_type IN ('REINDEX','CANCEL','DELETE','RECONCILE')",
             name="ck_lifecycle_operation_operation_type_allowed",
