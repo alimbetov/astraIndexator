@@ -28,7 +28,11 @@ def upgrade() -> None:
         sa.Column("storage_object_id", postgresql.UUID(as_uuid=True)),
         schema=SCHEMA,
     )
-    op.add_column(JOB_TABLE, sa.Column("storage_object_name", sa.Text()), schema=SCHEMA)
+    op.add_column(
+        JOB_TABLE,
+        sa.Column("storage_object_name", sa.Text()),
+        schema=SCHEMA,
+    )
     op.create_check_constraint(
         "ck_indexation_job_storage_object_name_non_blank",
         JOB_TABLE,
@@ -43,13 +47,26 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
-    op.add_column(TABLE, sa.Column("lifecycle_state", sa.String(length=32), nullable=True), schema=SCHEMA)
     op.add_column(
         TABLE,
-        sa.Column("is_current", sa.Boolean(), server_default=sa.text("false"), nullable=False),
+        sa.Column("lifecycle_state", sa.String(length=32), nullable=True),
         schema=SCHEMA,
     )
-    op.add_column(TABLE, sa.Column("requested_access_zone_code", sa.String(length=4)), schema=SCHEMA)
+    op.add_column(
+        TABLE,
+        sa.Column(
+            "is_current",
+            sa.Boolean(),
+            server_default=sa.text("false"),
+            nullable=False,
+        ),
+        schema=SCHEMA,
+    )
+    op.add_column(
+        TABLE,
+        sa.Column("requested_access_zone_code", sa.String(length=4)),
+        schema=SCHEMA,
+    )
     op.add_column(
         TABLE,
         sa.Column("requested_access_zone_id", postgresql.UUID(as_uuid=True)),
@@ -60,7 +77,11 @@ def upgrade() -> None:
         sa.Column("resolved_access_zone_id", postgresql.UUID(as_uuid=True)),
         schema=SCHEMA,
     )
-    op.add_column(TABLE, sa.Column("requested_ttl_days", sa.Integer()), schema=SCHEMA)
+    op.add_column(
+        TABLE,
+        sa.Column("requested_ttl_days", sa.Integer()),
+        schema=SCHEMA,
+    )
     op.add_column(
         TABLE,
         sa.Column("ingestion_session_id", postgresql.UUID(as_uuid=True)),
@@ -68,7 +89,12 @@ def upgrade() -> None:
     )
     op.add_column(
         TABLE,
-        sa.Column("ready_to_activate", sa.Boolean(), server_default=sa.text("false"), nullable=False),
+        sa.Column(
+            "ready_to_activate",
+            sa.Boolean(),
+            server_default=sa.text("false"),
+            nullable=False,
+        ),
         schema=SCHEMA,
     )
 
@@ -77,14 +103,31 @@ def upgrade() -> None:
         sa.Column("storage_object_id", postgresql.UUID(as_uuid=True)),
         schema=SCHEMA,
     )
-    op.add_column(TABLE, sa.Column("storage_object_name", sa.Text()), schema=SCHEMA)
-    op.add_column(TABLE, sa.Column("source_uri", sa.Text()), schema=SCHEMA)
+    op.add_column(
+        TABLE,
+        sa.Column("storage_object_name", sa.Text()),
+        schema=SCHEMA,
+    )
+    op.add_column(
+        TABLE,
+        sa.Column("source_uri", sa.Text()),
+        schema=SCHEMA,
+    )
 
-    op.add_column(TABLE, sa.Column("activated_at", sa.DateTime(timezone=True)), schema=SCHEMA)
-    op.add_column(TABLE, sa.Column("superseded_at", sa.DateTime(timezone=True)), schema=SCHEMA)
-    op.add_column(TABLE, sa.Column("cancelled_at", sa.DateTime(timezone=True)), schema=SCHEMA)
-    op.add_column(TABLE, sa.Column("deleted_at", sa.DateTime(timezone=True)), schema=SCHEMA)
-    op.add_column(TABLE, sa.Column("failed_at", sa.DateTime(timezone=True)), schema=SCHEMA)
+    for column_name in (
+        "cancel_requested_at",
+        "activated_at",
+        "superseded_at",
+        "cancelled_at",
+        "delete_requested_at",
+        "deleted_at",
+        "failed_at",
+    ):
+        op.add_column(
+            TABLE,
+            sa.Column(column_name, sa.DateTime(timezone=True)),
+            schema=SCHEMA,
+        )
 
     op.execute(
         sa.text(
@@ -96,13 +139,28 @@ def upgrade() -> None:
         )
     )
 
-    op.alter_column(TABLE, "access_zone_code", schema=SCHEMA, existing_type=sa.String(4), nullable=True)
-    op.alter_column(TABLE, "lifecycle_state", schema=SCHEMA, existing_type=sa.String(32), nullable=False)
+    op.alter_column(
+        TABLE,
+        "access_zone_code",
+        schema=SCHEMA,
+        existing_type=sa.String(4),
+        nullable=True,
+    )
+    op.alter_column(
+        TABLE,
+        "lifecycle_state",
+        schema=SCHEMA,
+        existing_type=sa.String(32),
+        nullable=False,
+    )
 
     op.create_check_constraint(
         "ck_knowledge_inventory_lifecycle_state_allowed",
         TABLE,
-        "lifecycle_state IN ('BUILDING','READY','ACTIVE','SUPERSEDED','CANCEL_PENDING','CANCELLED','DELETE_PENDING','DELETED','FAILED')",
+        "lifecycle_state IN ("
+        "'BUILDING','READY','ACTIVE','SUPERSEDED','CANCEL_PENDING','CANCELLED',"
+        "'DELETE_PENDING','DELETED','FAILED'"
+        ")",
         schema=SCHEMA,
     )
     op.create_check_constraint(
@@ -115,7 +173,8 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_knowledge_inventory_requested_access_zone_code_format",
         TABLE,
-        "requested_access_zone_code IS NULL OR requested_access_zone_code ~ '^[0-9]{4}$'",
+        "requested_access_zone_code IS NULL OR "
+        "requested_access_zone_code ~ '^[0-9]{4}$'",
         schema=SCHEMA,
     )
     op.create_check_constraint(
@@ -154,12 +213,22 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("uq_knowledge_inventory_current_active", table_name=TABLE, schema=SCHEMA)
-    op.drop_constraint(
-        "ck_knowledge_inventory_storage_identity_pair", TABLE, schema=SCHEMA, type_="check"
+    op.drop_index(
+        "uq_knowledge_inventory_current_active",
+        table_name=TABLE,
+        schema=SCHEMA,
     )
     op.drop_constraint(
-        "ck_knowledge_inventory_storage_object_name_non_blank", TABLE, schema=SCHEMA, type_="check"
+        "ck_knowledge_inventory_storage_identity_pair",
+        TABLE,
+        schema=SCHEMA,
+        type_="check",
+    )
+    op.drop_constraint(
+        "ck_knowledge_inventory_storage_object_name_non_blank",
+        TABLE,
+        schema=SCHEMA,
+        type_="check",
     )
     op.drop_constraint(
         "ck_knowledge_inventory_requested_ttl_days_non_negative",
@@ -195,17 +264,27 @@ def downgrade() -> None:
     op.execute(
         sa.text(
             f"UPDATE {SCHEMA}.{TABLE} "
-            "SET access_zone_code = COALESCE(access_zone_code, requested_access_zone_code, '0000')"
+            "SET access_zone_code = COALESCE("
+            "access_zone_code, requested_access_zone_code, '0000'"
+            ")"
         )
     )
-    op.alter_column(TABLE, "access_zone_code", schema=SCHEMA, existing_type=sa.String(4), nullable=False)
+    op.alter_column(
+        TABLE,
+        "access_zone_code",
+        schema=SCHEMA,
+        existing_type=sa.String(4),
+        nullable=False,
+    )
 
-    for column in [
+    for column in (
         "failed_at",
         "deleted_at",
+        "delete_requested_at",
         "cancelled_at",
         "superseded_at",
         "activated_at",
+        "cancel_requested_at",
         "source_uri",
         "storage_object_name",
         "storage_object_id",
@@ -217,14 +296,20 @@ def downgrade() -> None:
         "requested_access_zone_code",
         "is_current",
         "lifecycle_state",
-    ]:
+    ):
         op.drop_column(TABLE, column, schema=SCHEMA)
 
     op.drop_constraint(
-        "ck_indexation_job_storage_identity_pair", JOB_TABLE, schema=SCHEMA, type_="check"
+        "ck_indexation_job_storage_identity_pair",
+        JOB_TABLE,
+        schema=SCHEMA,
+        type_="check",
     )
     op.drop_constraint(
-        "ck_indexation_job_storage_object_name_non_blank", JOB_TABLE, schema=SCHEMA, type_="check"
+        "ck_indexation_job_storage_object_name_non_blank",
+        JOB_TABLE,
+        schema=SCHEMA,
+        type_="check",
     )
     op.drop_column(JOB_TABLE, "storage_object_name", schema=SCHEMA)
     op.drop_column(JOB_TABLE, "storage_object_id", schema=SCHEMA)
