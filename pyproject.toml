@@ -52,11 +52,11 @@ test = [
   "testcontainers[postgres]>=4,<5",
   "reportlab>=4,<5",
   "pypdfium2>=4,<5",
+  "grpcio-tools>=1.74,<2",
 ]
 dev = [
   "astra-indexator[test]",
   "build>=1.2,<2",
-  "grpcio-tools>=1.74,<2",
   "mypy>=1.11,<2",
   "ruff>=0.6,<1",
   "types-grpcio>=1.0,<2",
