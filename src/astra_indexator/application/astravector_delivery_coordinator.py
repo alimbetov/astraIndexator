@@ -6,8 +6,12 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from astra_indexator.application.append_delivery import AppendDeliveryRunner, BatchDeliveryOutcome
+from astra_indexator.application.append_delivery import (
+    AppendDeliveryRunner,
+    BatchDeliveryOutcome,
+)
 from astra_indexator.application.coordinator import ClaimedJob, JobCoordinator
+from astra_indexator.application.document_lifecycle import DocumentLifecycleService
 from astra_indexator.application.finalize_reconciliation import (
     FinalizeReadinessIdentityUnavailable,
     FinalizeReconciliationRunner,
@@ -22,7 +26,11 @@ from astra_indexator.astravector.contracts import (
     LogicalBlock,
     StartIngestionCommand,
 )
-from astra_indexator.persistence.delivery import DeliveryBatchRepository, DeliveryIntegrityError
+from astra_indexator.persistence.delivery import (
+    DeliveryBatchRepository,
+    DeliveryIntegrityError,
+)
+from astra_indexator.persistence.lifecycle import DocumentLifecycleRepository
 from astra_indexator.persistence.models import IndexationJob
 
 
@@ -31,12 +39,7 @@ class DeliveryCoordinatorError(RuntimeError):
 
 
 class DeliveryRecoveryContractGap(DeliveryCoordinatorError):
-    """Current AstraVector wire cannot reconstruct readiness identity after ambiguity.
-
-    This does not mean accessZoneCode requires resolution to UUID. The original code remains
-    the immutable producer selector. This error is limited to a wire-recovery case where
-    GetLogicalDocumentIngestionStatus lacks the DocumentRef required by vector-status lookup.
-    """
+    """Current AstraVector wire cannot reconstruct readiness identity after ambiguity."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,17 +59,13 @@ class AstraVectorDeliveryOutcome:
 
 
 class AstraVectorDeliveryCoordinator:
-    """Lease-fenced Start -> Append -> Finalize -> readiness orchestration.
+    """Lease-fenced Start -> Append -> Finalize -> readiness -> lifecycle activation.
 
-    PostgreSQL is the durable recovery boundary. ``requested_access_zone_code`` is producer-owned
-    delivery intent and is preserved unchanged from job creation through Start. AstraIndexator
-    never converts it to an integer, never derives a UUID from it, and never replaces it with a
-    downstream UUID. ``resolved_access_zone_id`` is separate AstraVector response evidence used
-    where the current vector-status wire requires DocumentRef identity.
-
-    A previously bound ingestion session is reused. If Start succeeded remotely but the worker
-    died before binding the session, the next worker replays the same idempotent Start command.
-    Append/finalize/readiness delegate to the durable replay and reconciliation runners.
+    PostgreSQL is the durable recovery boundary. The producer-owned
+    ``requested_access_zone_code`` is preserved unchanged. Downstream UUID identity
+    is separate evidence. M9 lifecycle activation occurs only after AstraVector
+    has persisted ``searchable=true`` evidence, and it is committed before the M2
+    job is marked COMPLETED.
     """
 
     def __init__(
@@ -80,6 +79,8 @@ class AstraVectorDeliveryCoordinator:
         append_runner: AppendDeliveryRunner | None = None,
         finalize_runner: FinalizeReconciliationRunner | None = None,
         readiness_runner: VectorReadinessRunner | None = None,
+        lifecycle_repository: DocumentLifecycleRepository | None = None,
+        lifecycle_service: DocumentLifecycleService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._port = port
@@ -87,13 +88,25 @@ class AstraVectorDeliveryCoordinator:
         self._job_coordinator = job_coordinator or JobCoordinator()
         self._repository = repository or DeliveryBatchRepository()
         self._append_runner = append_runner or AppendDeliveryRunner(
-            session_factory, port, repository=self._repository
+            session_factory,
+            port,
+            repository=self._repository,
         )
         self._finalize_runner = finalize_runner or FinalizeReconciliationRunner(
-            session_factory, port, repository=self._repository
+            session_factory,
+            port,
+            repository=self._repository,
         )
         self._readiness_runner = readiness_runner or VectorReadinessRunner(
-            session_factory, port, repository=self._repository
+            session_factory,
+            port,
+            repository=self._repository,
+        )
+        self._lifecycle_repository = lifecycle_repository or DocumentLifecycleRepository()
+        self._lifecycle_service = lifecycle_service or DocumentLifecycleService(
+            session_factory,
+            port,
+            lifecycle_repository=self._lifecycle_repository,
         )
 
     def deliver(
@@ -107,6 +120,7 @@ class AstraVectorDeliveryCoordinator:
             )
 
         job = self._load_owned_job(claimed)
+        self._ensure_lifecycle_building(job)
         session_id = self._ensure_session(job, claimed, payload)
 
         self._advance_stage(claimed, "ASTRAVECTOR_APPEND")
@@ -145,6 +159,7 @@ class AstraVectorDeliveryCoordinator:
                 "current vector-status wire; producer accessZoneCode remains unchanged"
             )
         self._persist_resolved_zone(job.id, session_id, resolved_zone_id)
+        self._persist_lifecycle_resolved_zone(job, resolved_zone_id)
 
         self._advance_stage(claimed, "ASTRAVECTOR_READINESS")
         readiness = self._readiness_runner.wait_until_ready(
@@ -156,6 +171,9 @@ class AstraVectorDeliveryCoordinator:
             initial_status=finalize.vector_status,
         )
 
+        # M9 business completion is stronger than M8 transport completion:
+        # searchable evidence -> READY -> atomic ACTIVE switch -> job COMPLETED.
+        self._lifecycle_service.activate_ready_job(job.id)
         self._complete(claimed)
         return AstraVectorDeliveryOutcome(
             ingestion_session_id=session_id,
@@ -176,6 +194,14 @@ class AstraVectorDeliveryCoordinator:
                 raise DeliveryCoordinatorError("claimed job lease generation changed")
             session.expunge(job)
             return job
+
+    def _ensure_lifecycle_building(self, job: IndexationJob) -> None:
+        with self._session_factory() as session:
+            with session.begin():
+                attached = session.get(IndexationJob, job.id)
+                if attached is None:
+                    raise DeliveryCoordinatorError("IndexationJob disappeared")
+                self._lifecycle_repository.ensure_building_for_job(session, attached)
 
     def _ensure_session(
         self,
@@ -221,7 +247,9 @@ class AstraVectorDeliveryCoordinator:
             with session.begin():
                 checkpoint = self._repository.checkpoint(session, job_id)
                 if checkpoint is None or checkpoint.ingestion_session_id != session_id:
-                    raise DeliveryIntegrityError("final hash checkpoint belongs to another session")
+                    raise DeliveryIntegrityError(
+                        "final hash checkpoint belongs to another session"
+                    )
                 if (
                     checkpoint.final_content_hash is not None
                     and checkpoint.final_content_hash != final_hash
@@ -232,7 +260,12 @@ class AstraVectorDeliveryCoordinator:
                 checkpoint.final_content_hash = final_hash
                 session.flush()
 
-    def _persist_resolved_zone(self, job_id: UUID, session_id: UUID, zone_id: UUID) -> None:
+    def _persist_resolved_zone(
+        self,
+        job_id: UUID,
+        session_id: UUID,
+        zone_id: UUID,
+    ) -> None:
         with self._session_factory() as session:
             with session.begin():
                 checkpoint = self._repository.checkpoint(session, job_id)
@@ -249,6 +282,20 @@ class AstraVectorDeliveryCoordinator:
                     )
                 checkpoint.resolved_access_zone_id = zone_id
                 session.flush()
+
+    def _persist_lifecycle_resolved_zone(
+        self,
+        job: IndexationJob,
+        zone_id: UUID,
+    ) -> None:
+        with self._session_factory() as session:
+            with session.begin():
+                self._lifecycle_repository.record_resolved_access_zone(
+                    session,
+                    document_id=job.document_id,
+                    document_version=job.document_version,
+                    resolved_access_zone_id=zone_id,
+                )
 
     def _advance_stage(self, claimed: ClaimedJob, stage: str) -> None:
         with self._session_factory() as session:
