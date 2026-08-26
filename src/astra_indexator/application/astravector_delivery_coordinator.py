@@ -102,7 +102,9 @@ class AstraVectorDeliveryCoordinator:
         payload: AstraVectorDeliveryInput,
     ) -> AstraVectorDeliveryOutcome:
         if not payload.logical_blocks:
-            raise DeliveryCoordinatorError("AstraVector delivery requires at least one LogicalBlock")
+            raise DeliveryCoordinatorError(
+                "AstraVector delivery requires at least one LogicalBlock"
+            )
 
         job = self._load_owned_job(claimed)
         session_id = self._ensure_session(job, claimed, payload)
@@ -220,7 +222,10 @@ class AstraVectorDeliveryCoordinator:
                 checkpoint = self._repository.checkpoint(session, job_id)
                 if checkpoint is None or checkpoint.ingestion_session_id != session_id:
                     raise DeliveryIntegrityError("final hash checkpoint belongs to another session")
-                if checkpoint.final_content_hash is not None and checkpoint.final_content_hash != final_hash:
+                if (
+                    checkpoint.final_content_hash is not None
+                    and checkpoint.final_content_hash != final_hash
+                ):
                     raise DeliveryIntegrityError(
                         "reconstructed logical document has a different final_content_hash"
                     )
@@ -232,7 +237,9 @@ class AstraVectorDeliveryCoordinator:
             with session.begin():
                 checkpoint = self._repository.checkpoint(session, job_id)
                 if checkpoint is None or checkpoint.ingestion_session_id != session_id:
-                    raise DeliveryIntegrityError("downstream zone checkpoint belongs to another session")
+                    raise DeliveryIntegrityError(
+                        "downstream zone checkpoint belongs to another session"
+                    )
                 if (
                     checkpoint.resolved_access_zone_id is not None
                     and checkpoint.resolved_access_zone_id != zone_id
