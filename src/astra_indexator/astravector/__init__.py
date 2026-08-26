@@ -19,6 +19,8 @@ from .contracts import (
     AppendBlocksResult,
     AstraVectorIngestionPort,
     AstraVectorTransportError,
+    DeleteDocumentCommand,
+    DeleteDocumentResult,
     DeliveryCompletionLevel,
     DocumentVectorStatus,
     FinalizeIngestionCommand,
@@ -42,6 +44,7 @@ from .grpc_adapter import (
     AstraVectorGrpcError,
     create_grpc_channel,
 )
+from .lifecycle_grpc_adapter import AstraVectorLifecycleGrpcAdapter
 from .policy import (
     ActivationReadinessPolicy,
     GrpcFailure,
@@ -78,10 +81,13 @@ __all__ = [
     "AstraVectorGrpcConfig",
     "AstraVectorGrpcError",
     "AstraVectorIngestionPort",
+    "AstraVectorLifecycleGrpcAdapter",
     "AstraVectorProtoMapper",
     "AstraVectorTransportError",
     "CANONICAL_HASH_CONTRACT_VERSION",
     "CURRENT_WIRE_CONTRACT",
+    "DeleteDocumentCommand",
+    "DeleteDocumentResult",
     "DeliveryBatchPlanningError",
     "DeliveryCompletionLevel",
     "DeterministicBatchPlanner",
