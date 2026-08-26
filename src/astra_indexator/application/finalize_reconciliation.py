@@ -50,6 +50,10 @@ class FinalizeTerminalError(RuntimeError):
         self.status = status
 
 
+class FinalizeIdentityResolutionRequired(RuntimeError):
+    """Resolved access-zone UUID is unavailable after an ambiguous completed Finalize."""
+
+
 class FinalizeReconciliationPending(RuntimeError):
     def __init__(self, *, state: IngestionSessionState, polls: int) -> None:
         super().__init__(
@@ -98,7 +102,7 @@ class FinalizeReconciliationRunner:
         job_id: UUID,
         ingestion_session_id: UUID,
         final_content_hash: str,
-        access_zone_id: UUID,
+        access_zone_id: UUID | None,
         document_id: UUID,
         document_version: int,
     ) -> FinalizeDeliveryOutcome:
@@ -141,7 +145,7 @@ class FinalizeReconciliationRunner:
                         f"{result.raw_operation_state}: {result.message}"
                     )
                 vector_status = self._port.get_document_vector_status(
-                    access_zone_id=access_zone_id,
+                    access_zone_id=result.access_zone_id,
                     document_id=document_id,
                     document_version=document_version,
                 )
@@ -165,6 +169,11 @@ class FinalizeReconciliationRunner:
                 continue
 
             if last_status.state is IngestionSessionState.COMPLETED:
+                if access_zone_id is None:
+                    raise FinalizeIdentityResolutionRequired(
+                        "Finalize completed after an ambiguous transport result, but the public "
+                        "ingestion-status response does not expose resolved accessZoneId"
+                    )
                 vector_status = self._port.get_document_vector_status(
                     access_zone_id=access_zone_id,
                     document_id=document_id,
@@ -221,11 +230,11 @@ class FinalizeReconciliationRunner:
     def _validate_finalize_identity(
         result: FinalizeIngestionResult,
         *,
-        access_zone_id: UUID,
+        access_zone_id: UUID | None,
         document_id: UUID,
         document_version: int,
     ) -> None:
-        if result.access_zone_id != access_zone_id:
+        if access_zone_id is not None and result.access_zone_id != access_zone_id:
             raise DeliveryIntegrityError("Finalize acknowledged a different access_zone_id")
         if result.document_id != document_id:
             raise DeliveryIntegrityError("Finalize acknowledged a different document_id")
