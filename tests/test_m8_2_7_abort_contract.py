@@ -95,8 +95,10 @@ def test_real_generated_grpc_abort_round_trip_preserves_identity_reason_and_dead
         assert request.reason == "operator requested cancellation"
         assert ("x-astra-service", "astra-indexator") in servicer.abort_metadata
         assert servicer.abort_time_remaining is not None
-        assert 0 < servicer.abort_time_remaining <= (
-            DEADLINE_SECONDS + DEADLINE_JITTER_TOLERANCE_SECONDS
+        assert (
+            0
+            < servicer.abort_time_remaining
+            <= (DEADLINE_SECONDS + DEADLINE_JITTER_TOLERANCE_SECONDS)
         )
     finally:
         adapter.close()
