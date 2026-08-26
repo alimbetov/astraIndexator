@@ -8,11 +8,11 @@ from .abort_reconciliation import (
 from .acquisition_checkpoint import AcquisitionCheckpoint
 from .append_delivery import AppendDeliveryRunner, BatchDeliveryOutcome
 from .astravector_delivery_coordinator import (
-    AccessZoneResolutionRequired,
     AstraVectorDeliveryCoordinator,
     AstraVectorDeliveryInput,
     AstraVectorDeliveryOutcome,
     DeliveryCoordinatorError,
+    DeliveryRecoveryContractGap,
 )
 from .coordinator import ClaimedJob, JobCoordinator, LeaseLostError, LeaseToken
 from .prepared_artifact_checkpoint import (
@@ -34,7 +34,6 @@ __all__ = [
     "AbortReconciliationPending",
     "AbortReconciliationRunner",
     "AbortResolution",
-    "AccessZoneResolutionRequired",
     "AcquisitionCheckpoint",
     "AppendDeliveryRunner",
     "AstraVectorDeliveryCoordinator",
@@ -43,6 +42,7 @@ __all__ = [
     "BatchDeliveryOutcome",
     "ClaimedJob",
     "DeliveryCoordinatorError",
+    "DeliveryRecoveryContractGap",
     "InstalledArtifactCheckpoint",
     "JobCoordinator",
     "LeaseLostError",
