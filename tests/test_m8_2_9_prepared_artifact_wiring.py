@@ -110,7 +110,7 @@ def test_m7_fragments_map_to_rooted_deterministic_logical_blocks() -> None:
             "fragment-2",
             2,
             FragmentType.CODE,
-            "println(\"Әлем\")",
+            'println("Әлем")',
             hierarchy=("API", "Examples"),
             page_from=2,
             page_to=2,
@@ -171,7 +171,9 @@ def test_factory_asserts_manifest_identity_before_coordinator_input() -> None:
 def test_malformed_or_ambiguous_m7_fragment_set_fails_closed() -> None:
     first = _fragment("fragment-1", 0, FragmentType.PARAGRAPH, "one")
     duplicate_sequence = _fragment("fragment-2", 0, FragmentType.PARAGRAPH, "two")
-    with pytest.raises(PreparedArtifactDeliveryMappingError, match="sequence values must be unique"):
+    with pytest.raises(
+        PreparedArtifactDeliveryMappingError, match="sequence values must be unique"
+    ):
         PreparedArtifactDeliveryMapper().logical_blocks(_artifact(first, duplicate_sequence))
 
     wrong_identity = _fragment("fragment-3", 3, FragmentType.PARAGRAPH, "three")
