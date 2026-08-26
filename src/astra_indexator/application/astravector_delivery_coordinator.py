@@ -8,7 +8,10 @@ from sqlalchemy.orm import Session
 
 from astra_indexator.application.append_delivery import AppendDeliveryRunner, BatchDeliveryOutcome
 from astra_indexator.application.coordinator import ClaimedJob, JobCoordinator
-from astra_indexator.application.finalize_reconciliation import FinalizeReconciliationRunner
+from astra_indexator.application.finalize_reconciliation import (
+    FinalizeIdentityResolutionRequired,
+    FinalizeReconciliationRunner,
+)
 from astra_indexator.application.vector_readiness import VectorReadinessOutcome, VectorReadinessRunner
 from astra_indexator.astravector.batching import DeterministicBatchPlanner
 from astra_indexator.astravector.contracts import (
@@ -38,6 +41,7 @@ class AstraVectorDeliveryInput:
 @dataclass(frozen=True, slots=True)
 class AstraVectorDeliveryOutcome:
     ingestion_session_id: UUID
+    resolved_access_zone_id: UUID
     batches: tuple[BatchDeliveryOutcome, ...]
     readiness: VectorReadinessOutcome
 
@@ -102,26 +106,34 @@ class AstraVectorDeliveryCoordinator:
         self._advance_stage(claimed, "ASTRAVECTOR_FINALIZE")
 
         expected_zone_id = job.requested_access_zone_id or job.access_zone_id
-        if expected_zone_id is None:
-            raise AccessZoneResolutionRequired(
-                "code-only delivery needs resolved accessZoneId for finalize ambiguity/readiness; "
-                "do not read AstraVector-owned registry tables directly"
+        try:
+            finalize = self._finalize_runner.finalize(
+                job_id=job.id,
+                ingestion_session_id=session_id,
+                final_content_hash=final_hash,
+                access_zone_id=expected_zone_id,
+                document_id=job.document_id,
+                document_version=job.document_version,
             )
+        except FinalizeIdentityResolutionRequired as exc:
+            raise AccessZoneResolutionRequired(str(exc)) from exc
 
-        finalize = self._finalize_runner.finalize(
-            job_id=job.id,
-            ingestion_session_id=session_id,
-            final_content_hash=final_hash,
-            access_zone_id=expected_zone_id,
-            document_id=job.document_id,
-            document_version=job.document_version,
+        resolved_zone_id = (
+            finalize.finalize_result.access_zone_id
+            if finalize.finalize_result is not None
+            else expected_zone_id
         )
+        if resolved_zone_id is None:
+            raise AccessZoneResolutionRequired(
+                "AstraVector completed delivery without recoverable resolved accessZoneId"
+            )
+        self._persist_resolved_zone(job.id, session_id, resolved_zone_id)
 
         self._advance_stage(claimed, "ASTRAVECTOR_READINESS")
         readiness = self._readiness_runner.wait_until_ready(
             job_id=job.id,
             ingestion_session_id=session_id,
-            access_zone_id=expected_zone_id,
+            access_zone_id=resolved_zone_id,
             document_id=job.document_id,
             document_version=job.document_version,
             initial_status=finalize.vector_status,
@@ -130,6 +142,7 @@ class AstraVectorDeliveryCoordinator:
         self._complete(claimed)
         return AstraVectorDeliveryOutcome(
             ingestion_session_id=session_id,
+            resolved_access_zone_id=resolved_zone_id,
             batches=batch_outcomes,
             readiness=readiness,
         )
@@ -196,6 +209,22 @@ class AstraVectorDeliveryCoordinator:
                         "reconstructed logical document has a different final_content_hash"
                     )
                 checkpoint.final_content_hash = final_hash
+                session.flush()
+
+    def _persist_resolved_zone(self, job_id: UUID, session_id: UUID, zone_id: UUID) -> None:
+        with self._session_factory() as session:
+            with session.begin():
+                checkpoint = self._repository.checkpoint(session, job_id)
+                if checkpoint is None or checkpoint.ingestion_session_id != session_id:
+                    raise DeliveryIntegrityError("resolved zone checkpoint belongs to another session")
+                if (
+                    checkpoint.resolved_access_zone_id is not None
+                    and checkpoint.resolved_access_zone_id != zone_id
+                ):
+                    raise DeliveryIntegrityError(
+                        "AstraVector resolved the job to a different accessZoneId than persisted"
+                    )
+                checkpoint.resolved_access_zone_id = zone_id
                 session.flush()
 
     def _advance_stage(self, claimed: ClaimedJob, stage: str) -> None:
