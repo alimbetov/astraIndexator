@@ -108,7 +108,9 @@ def test_contradictory_or_unknown_readiness_fails_closed(overrides: dict[str, ob
         evaluate_vector_readiness(_status(**overrides))
 
 
-def test_real_generated_grpc_vector_status_round_trip_preserves_identity_and_sync_evidence() -> None:
+def test_real_generated_grpc_vector_status_round_trip_preserves_identity_and_sync_evidence() -> (
+    None
+):
     generated = load_generated_client()
     pb = generated.pb
     pb_grpc = generated.pb_grpc
