@@ -160,15 +160,42 @@ def test_append_maps_nested_logical_block_and_provenance(pb: SimpleNamespace) ->
     assert mapped.text == "Нормализованный текст"
     assert mapped.source_location.page_start == 2
     assert mapped.source_links[0].type == pb.SOURCE_LINK_TYPE_PAGE
+    assert mapped.source_links[0].attributes == {"page": "2"}
 
 
-def test_logical_block_rejects_unsupported_type(pb: SimpleNamespace) -> None:
-    block = LogicalBlock("b", "", "MAGIC", "text", 0)
-    with pytest.raises(ProtoMappingError, match="unsupported"):
-        AstraVectorProtoMapper(pb).logical_block(block)
+def test_mapper_rejects_unspecified_application_enums(pb: SimpleNamespace) -> None:
+    mapper = AstraVectorProtoMapper(pb)
+    with pytest.raises(ProtoMappingError, match="block_type"):
+        mapper.logical_block(
+            LogicalBlock(
+                block_id="x",
+                parent_block_id="",
+                block_type="UNSPECIFIED",
+                text="text",
+                order_index=0,
+            )
+        )
+    with pytest.raises(ProtoMappingError, match="source_link.type"):
+        mapper.source_link(SourceLink(type="UNSPECIFIED", url="https://example.test"))
 
 
-def test_source_location_rejects_reversed_ranges(pb: SimpleNamespace) -> None:
-    location = SourceLocation(page_start=5, page_end=4)
+def test_source_location_range_order_is_validated_locally(pb: SimpleNamespace) -> None:
+    mapper = AstraVectorProtoMapper(pb)
     with pytest.raises(ProtoMappingError, match="page_end"):
-        AstraVectorProtoMapper(pb).source_location(location, owner="b")
+        mapper.source_location(SourceLocation(page_start=4, page_end=3), owner="b1")
+    with pytest.raises(ProtoMappingError, match="char_end"):
+        mapper.source_location(SourceLocation(char_start=20, char_end=10), owner="b1")
+
+
+def test_generated_module_contract_mismatch_fails_fast(pb: SimpleNamespace) -> None:
+    del pb.BLOCK_TYPE_PARAGRAPH
+    with pytest.raises(ProtoMappingError, match="contract revision mismatch"):
+        AstraVectorProtoMapper(pb).logical_block(
+            LogicalBlock(
+                block_id="p",
+                parent_block_id="doc",
+                block_type="PARAGRAPH",
+                text="text",
+                order_index=1,
+            )
+        )
