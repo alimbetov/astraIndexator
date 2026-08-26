@@ -42,6 +42,9 @@ def _job(
     version: int,
     code: str | None = None,
     zone_id: UUID | None = None,
+    source_file_name: str = "doc.pdf",
+    storage_object_id: UUID | None = None,
+    storage_object_name: str | None = None,
 ) -> IndexationJob:
     return IndexationJob(
         id=uuid4(),
@@ -54,7 +57,9 @@ def _job(
         requested_access_zone_id=zone_id,
         requested_ttl_days=0,
         source_uri=f"seaweed://sources/{document_id}/{version}.pdf",
-        source_file_name="doc.pdf",
+        source_file_name=source_file_name,
+        storage_object_id=storage_object_id,
+        storage_object_name=storage_object_name,
         source_content_hash="a" * 64,
         processing_fingerprint="pipeline-v1",
         knowledge_type="TECHNICAL",
@@ -62,7 +67,7 @@ def _job(
     )
 
 
-def test_code_only_projection_preserves_leading_zero_and_downstream_identity(
+def test_code_only_projection_preserves_zone_and_dual_source_provenance(
     database_url: str,
 ) -> None:
     engine = create_engine(database_url)
@@ -70,7 +75,17 @@ def test_code_only_projection_preserves_leading_zero_and_downstream_identity(
     document_id = uuid4()
     resolved_zone_id = uuid4()
     session_id = uuid4()
-    job = _job(document_id=document_id, version=1, code="0001")
+    storage_object_id = uuid4()
+    public_name = "Технический регламент 2026.pdf"
+    internal_name = f"{storage_object_id}.pdf"
+    job = _job(
+        document_id=document_id,
+        version=1,
+        code="0001",
+        source_file_name=public_name,
+        storage_object_id=storage_object_id,
+        storage_object_name=internal_name,
+    )
 
     with Session(engine) as session:
         session.add(job)
@@ -113,10 +128,18 @@ def test_code_only_projection_preserves_leading_zero_and_downstream_identity(
     assert projection.resolved_access_zone_id == resolved_zone_id
     assert projection.ingestion_session_id == session_id
     assert projection.searchable is True
+    assert projection.source_file_name == public_name
+    assert projection.storage_object_id == storage_object_id
+    assert projection.storage_object_name == internal_name
+    assert projection.source_file_name != projection.storage_object_name
     assert row is not None
     assert row["requested_access_zone_code"] == "0001"
     assert row["resolved_access_zone_id"] == resolved_zone_id
     assert row["access_zone_code"] == "0001"
+    assert row["source_file_name"] == public_name
+    assert row["storage_object_id"] == storage_object_id
+    assert row["storage_object_name"] == internal_name
+    assert row["source_uri"] == job.source_uri
 
 
 def test_uuid_only_projection_does_not_invent_access_zone_code(database_url: str) -> None:
