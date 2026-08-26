@@ -7,6 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from astra_indexator.domain.contracts import AccessZoneCode
+
 from .models import IndexationJob
 
 
@@ -30,6 +32,28 @@ class NewIndexationJob:
     max_attempts: int = 5
 
     def __post_init__(self) -> None:
+        self._validate_code(self.access_zone_code, field="access_zone_code")
+        self._validate_code(
+            self.requested_access_zone_code,
+            field="requested_access_zone_code",
+        )
+        if (
+            self.access_zone_code is not None
+            and self.requested_access_zone_code is not None
+            and self.access_zone_code != self.requested_access_zone_code
+        ):
+            raise ValueError(
+                "access_zone_code and requested_access_zone_code must be identical when both are set"
+            )
+        if (
+            self.access_zone_id is not None
+            and self.requested_access_zone_id is not None
+            and self.access_zone_id != self.requested_access_zone_id
+        ):
+            raise ValueError(
+                "access_zone_id and requested_access_zone_id must be identical when both are set"
+            )
+
         effective_id = self.requested_access_zone_id or self.access_zone_id
         effective_code = self.requested_access_zone_code or self.access_zone_code
         if effective_id is None and effective_code is None:
@@ -37,13 +61,24 @@ class NewIndexationJob:
         if self.requested_ttl_days is not None and self.requested_ttl_days < 0:
             raise ValueError("requested_ttl_days must be non-negative")
 
+    @staticmethod
+    def _validate_code(value: str | None, *, field: str) -> None:
+        if value is None:
+            return
+        try:
+            AccessZoneCode(value)
+        except ValueError as exc:
+            raise ValueError(f"{field} must match ^[0-9]{{4}}$") from exc
+
 
 class IndexationJobRepository:
     """Persistence-only durable Inbox operations.
 
     Claim/lease/fencing behavior deliberately belongs to M2. M8 requested_*
     columns are the authoritative producer delivery intent; legacy access_zone_*
-    columns are written only for backward compatibility.
+    columns are written only for backward compatibility. AccessZoneCode is always
+    preserved byte-for-byte as a four-character string; it is never converted to
+    an integer and never replaced by an AstraVector-resolved UUID.
     """
 
     def create_or_get(self, session: Session, command: NewIndexationJob) -> IndexationJob:
