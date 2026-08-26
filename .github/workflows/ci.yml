@@ -47,6 +47,7 @@ jobs:
             src/astra_indexator/domain/document_lifecycle.py \
             src/astra_indexator/persistence/models.py \
             src/astra_indexator/persistence/lifecycle_models.py \
+            src/astra_indexator/persistence/knowledge_inventory.py \
             src/astra_indexator/persistence/prepared_artifacts.py \
             src/astra_indexator/persistence/repository.py \
             src/astra_indexator/persistence/delivery.py \
