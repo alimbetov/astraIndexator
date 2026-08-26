@@ -40,11 +40,13 @@ jobs:
       - name: Ruff format check
         run: ruff format --check src tests tools
 
-      - name: M8 scoped mypy
+      - name: M8-M9 scoped mypy
         run: |
           mypy --follow-imports=silent \
             src/astra_indexator/domain/delivery_intent.py \
+            src/astra_indexator/domain/document_lifecycle.py \
             src/astra_indexator/persistence/models.py \
+            src/astra_indexator/persistence/lifecycle_models.py \
             src/astra_indexator/persistence/prepared_artifacts.py \
             src/astra_indexator/persistence/repository.py \
             src/astra_indexator/persistence/delivery.py \
