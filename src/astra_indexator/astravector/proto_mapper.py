@@ -8,6 +8,7 @@ from .canonical_hash import normalize_sha256_hex
 from .contracts import (
     AbortIngestionCommand,
     AppendBlocksCommand,
+    DeleteDocumentCommand,
     FinalizeIngestionCommand,
     LogicalBlock,
     SourceLink,
@@ -48,34 +49,37 @@ class ProtoMappingError(ValueError):
 
 
 class AstraVectorProtoMapper:
-    """Maps AstraIndexator application DTOs to generated AstraVector protobuf messages.
-
-    ``pb`` must be the module generated from the pinned
-    ``llm2/proto/astravector_embedding.proto`` revision. The mapper deliberately
-    depends on generated message constructors instead of maintaining duplicate wire DTOs.
-    """
+    """Maps AstraIndexator application DTOs to generated AstraVector protobuf messages."""
 
     def __init__(self, pb: ModuleType | Any) -> None:
         self._pb = pb
 
     def start_request(self, command: StartIngestionCommand) -> Any:
         access_zone_id, access_zone_code = self._access_zone(
-            command.access_zone_id, command.access_zone_code
+            command.access_zone_id,
+            command.access_zone_code,
         )
         document_version = require_positive_uint32(
-            command.document_version, field="document_version"
+            command.document_version,
+            field="document_version",
         )
         total_bytes_estimate = require_uint64(
-            command.total_bytes_estimate, field="total_bytes_estimate"
+            command.total_bytes_estimate,
+            field="total_bytes_estimate",
         )
         total_blocks_estimate = require_uint32(
-            command.total_blocks_estimate, field="total_blocks_estimate"
+            command.total_blocks_estimate,
+            field="total_blocks_estimate",
         )
         total_pages_estimate = require_uint32(
-            command.total_pages_estimate, field="total_pages_estimate"
+            command.total_pages_estimate,
+            field="total_pages_estimate",
         )
         ttl_days = require_uint32(command.ttl_days, field="ttl_days")
-        idempotency_key = self._required_text(command.idempotency_key, "idempotency_key")
+        idempotency_key = self._required_text(
+            command.idempotency_key,
+            "idempotency_key",
+        )
 
         content_hash = command.content_hash.strip()
         if content_hash:
@@ -122,6 +126,27 @@ class AstraVectorProtoMapper:
             reason=self._required_text(command.reason, "reason"),
         )
 
+    def delete_document_request(self, command: DeleteDocumentCommand) -> Any:
+        version = require_uint64(command.document_version, field="document_version")
+        context = self._pb.RequestContext(
+            correlation_id=command.correlation_id,
+            idempotency_key=self._required_text(
+                command.idempotency_key,
+                "idempotency_key",
+            ),
+            caller_service="astra-indexator",
+        )
+        document = self._pb.DocumentRef(
+            access_zone_id=str(command.access_zone_id),
+            document_id=str(command.document_id),
+            document_version=version,
+        )
+        return self._pb.DeleteDocumentVectorsFacadeRequest(
+            context=context,
+            document=document,
+            reason=self._required_text(command.reason, "reason"),
+        )
+
     def ingestion_status_request(self, ingestion_session_id: Any) -> Any:
         return self._pb.GetLogicalDocumentIngestionStatusRequest(
             ingestion_session_id=str(ingestion_session_id)
@@ -161,7 +186,10 @@ class AstraVectorProtoMapper:
             block.block_type,
             field=f"block[{block_id}].block_type",
         )
-        order_index = require_uint32(block.order_index, field=f"block[{block_id}].order_index")
+        order_index = require_uint32(
+            block.order_index,
+            field=f"block[{block_id}].order_index",
+        )
 
         kwargs: dict[str, Any] = {
             "block_id": block_id,
@@ -173,16 +201,37 @@ class AstraVectorProtoMapper:
             "metadata": dict(block.metadata),
         }
         if block.source_location is not None:
-            kwargs["source_location"] = self.source_location(block.source_location, owner=block_id)
+            kwargs["source_location"] = self.source_location(
+                block.source_location,
+                owner=block_id,
+            )
         return self._pb.LogicalBlock(**kwargs)
 
     def source_location(self, location: SourceLocation, *, owner: str) -> Any:
-        page_start = require_uint32(location.page_start, field=f"block[{owner}].page_start")
-        page_end = require_uint32(location.page_end, field=f"block[{owner}].page_end")
-        char_start = require_uint32(location.char_start, field=f"block[{owner}].char_start")
-        char_end = require_uint32(location.char_end, field=f"block[{owner}].char_end")
-        row_index = require_uint32(location.row_index, field=f"block[{owner}].row_index")
-        column_index = require_uint32(location.column_index, field=f"block[{owner}].column_index")
+        page_start = require_uint32(
+            location.page_start,
+            field=f"block[{owner}].page_start",
+        )
+        page_end = require_uint32(
+            location.page_end,
+            field=f"block[{owner}].page_end",
+        )
+        char_start = require_uint32(
+            location.char_start,
+            field=f"block[{owner}].char_start",
+        )
+        char_end = require_uint32(
+            location.char_end,
+            field=f"block[{owner}].char_end",
+        )
+        row_index = require_uint32(
+            location.row_index,
+            field=f"block[{owner}].row_index",
+        )
+        column_index = require_uint32(
+            location.column_index,
+            field=f"block[{owner}].column_index",
+        )
 
         if page_start and page_end and page_end < page_start:
             raise ProtoMappingError(f"block[{owner}] page_end must be >= page_start")
@@ -202,7 +251,11 @@ class AstraVectorProtoMapper:
         )
 
     def source_link(self, link: SourceLink) -> Any:
-        link_type = self._enum_value(_SOURCE_LINK_TYPE_NAMES, link.type, field="source_link.type")
+        link_type = self._enum_value(
+            _SOURCE_LINK_TYPE_NAMES,
+            link.type,
+            field="source_link.type",
+        )
         url = self._required_text(link.url, "source_link.url")
         return self._pb.SourceLink(
             type=link_type,
@@ -214,7 +267,11 @@ class AstraVectorProtoMapper:
             attributes=dict(link.attributes),
         )
 
-    def _access_zone(self, access_zone_id: Any, access_zone_code: str | None) -> tuple[str, str]:
+    def _access_zone(
+        self,
+        access_zone_id: Any,
+        access_zone_code: str | None,
+    ) -> tuple[str, str]:
         zone_id = str(access_zone_id) if access_zone_id is not None else ""
         zone_code = access_zone_code.strip() if access_zone_code is not None else ""
         if not zone_id and not zone_code:
@@ -223,7 +280,13 @@ class AstraVectorProtoMapper:
             raise ProtoMappingError("access_zone_code must be exactly four ASCII digits")
         return zone_id, zone_code
 
-    def _enum_value(self, mapping: dict[str, str], value: str, *, field: str) -> int:
+    def _enum_value(
+        self,
+        mapping: dict[str, str],
+        value: str,
+        *,
+        field: str,
+    ) -> int:
         normalized = value.strip().upper()
         constant_name = mapping.get(normalized)
         if constant_name is None:
@@ -232,7 +295,8 @@ class AstraVectorProtoMapper:
             return int(getattr(self._pb, constant_name))
         except AttributeError as exc:
             raise ProtoMappingError(
-                f"generated protobuf module does not expose {constant_name}; contract revision mismatch"
+                "generated protobuf module does not expose "
+                f"{constant_name}; contract revision mismatch"
             ) from exc
 
     @staticmethod
