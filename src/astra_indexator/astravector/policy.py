@@ -42,32 +42,55 @@ class VectorReadinessDecision:
     reason: str
 
 
+_TRANSIENT_RESOURCE_EXHAUSTED_MARKERS = (
+    "MAX_CONCURRENT_INGESTION_SESSIONS EXCEEDED",
+    "MAX_SESSIONS_PER_ACCESS_ZONE EXCEEDED",
+    "MAX_SESSIONS_PER_DOCUMENT EXCEEDED",
+)
+
+_RECONCILABLE_PRECONDITION_MARKERS = (
+    "INGESTION_SESSION_FINALIZING",
+    "INGESTION_SESSION_COMPLETED",
+    "INGESTION_SESSION_ABORTED",
+)
+
+
 def classify_grpc_failure(failure: GrpcFailure) -> RetryDecision:
+    """Classify one AstraVector ingestion RPC failure without executing recovery.
+
+    The classifier is deliberately fail-closed. A retry/reconciliation decision is emitted only
+    for transport codes or server markers verified against the pinned AstraVector ingestion
+    implementation. Unknown codes and unknown FAILED_PRECONDITION/RESOURCE_EXHAUSTED messages are
+    permanent until the wire contract is reviewed and re-qualified.
+    """
+
     code = failure.code.strip().upper()
     message = failure.message.strip().upper()
 
     if code == "UNAVAILABLE":
         return RetryDecision.BACKOFF_AND_RETRY
-    if code == "DEADLINE_EXCEEDED":
+    if code in {"DEADLINE_EXCEEDED", "ABORTED"}:
         return RetryDecision.RECONCILE_STATUS
-    if code in {"INVALID_ARGUMENT", "OUT_OF_RANGE", "PERMISSION_DENIED", "UNAUTHENTICATED"}:
-        return RetryDecision.PERMANENT_FAILURE
-    if code == "ABORTED":
-        return RetryDecision.RECONCILE_STATUS
-    if code == "FAILED_PRECONDITION":
-        return (
-            RetryDecision.PERMANENT_FAILURE
-            if "HASH_MISMATCH" in message
-            else RetryDecision.RECONCILE_STATUS
-        )
     if code == "RESOURCE_EXHAUSTED":
-        size_markers = ("MAX_BLOCKS", "MAX_BATCH", "SIZE", "BYTES")
-        if any(marker in message for marker in size_markers):
+        if any(marker in message for marker in _TRANSIENT_RESOURCE_EXHAUSTED_MARKERS):
+            return RetryDecision.BACKOFF_AND_RETRY
+        return RetryDecision.PERMANENT_FAILURE
+    if code == "FAILED_PRECONDITION":
+        if "HASH_MISMATCH" in message:
             return RetryDecision.PERMANENT_FAILURE
-        return RetryDecision.BACKOFF_AND_RETRY
-    if code == "NOT_FOUND":
-        return RetryDecision.RECONCILE_STATUS
-    return RetryDecision.RECONCILE_STATUS
+        if any(marker in message for marker in _RECONCILABLE_PRECONDITION_MARKERS):
+            return RetryDecision.RECONCILE_STATUS
+        return RetryDecision.PERMANENT_FAILURE
+    if code in {
+        "INVALID_ARGUMENT",
+        "OUT_OF_RANGE",
+        "NOT_FOUND",
+        "PERMISSION_DENIED",
+        "UNAUTHENTICATED",
+        "DATA_LOSS",
+    }:
+        return RetryDecision.PERMANENT_FAILURE
+    return RetryDecision.PERMANENT_FAILURE
 
 
 def should_retry_finalize(status: IngestionStatus) -> bool:
