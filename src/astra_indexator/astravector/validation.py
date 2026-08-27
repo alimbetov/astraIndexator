@@ -24,7 +24,6 @@ _SENSITIVE_NAMES = {
     "client_secret",
     "credential",
     "credentials",
-    "key",
     "password",
     "passwd",
     "secret",
@@ -38,13 +37,7 @@ _SENSITIVE_NAMES = {
 
 
 def validate_logical_blocks(blocks: Sequence[LogicalBlock]) -> tuple[LogicalBlock, ...]:
-    """Validate one connected, deterministic LogicalBlock tree.
-
-    The canonical M7 mapper currently emits a simple DOCUMENT-rooted topology, but the application
-    contract also permits structured blocks. This validator protects every caller before batching
-    and wire mapping rather than relying on one producer implementation to happen to build a valid
-    tree.
-    """
+    """Validate one connected, deterministic LogicalBlock tree."""
 
     materialized = tuple(blocks)
     if not materialized:
@@ -99,8 +92,6 @@ def validate_logical_blocks(blocks: Sequence[LogicalBlock]) -> tuple[LogicalBloc
             raise LogicalBlockValidationError(
                 f"logical block {block_id!r} references missing parent {parent_id!r}"
             )
-        if block.block_type.strip().upper() == "DOCUMENT":
-            raise LogicalBlockValidationError("only the root may use block_type DOCUMENT")
 
     # Follow every parent chain to the single root. A repeated node proves a cycle; reaching a
     # blank parent before the root proves a disconnected second root-like component.
@@ -129,8 +120,7 @@ def validate_logical_blocks(blocks: Sequence[LogicalBlock]) -> tuple[LogicalBloc
 def validate_source_link(link: SourceLink) -> None:
     """Reject credential-bearing SourceLink material without echoing secret values."""
 
-    url = link.url.strip()
-    parsed = urlsplit(url)
+    parsed = urlsplit(link.url.strip())
     if parsed.username is not None or parsed.password is not None:
         raise SourceLinkSecurityError("source link URL must not contain userinfo credentials")
 
@@ -153,8 +143,12 @@ def _validate_attributes(attributes: Mapping[str, str]) -> None:
 
 def _sensitive_name(value: str) -> bool:
     normalized = value.strip().lower().replace("-", "_").replace(".", "_")
-    return normalized in _SENSITIVE_NAMES or normalized.endswith("_token") or normalized.endswith(
-        "_secret"
+    return (
+        normalized in _SENSITIVE_NAMES
+        or normalized.endswith("_token")
+        or normalized.endswith("_secret")
+        or normalized.endswith("_password")
+        or normalized.endswith("_api_key")
     )
 
 
