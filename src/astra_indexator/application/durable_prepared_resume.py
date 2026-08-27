@@ -9,7 +9,9 @@ from astra_indexator.application.astravector_delivery_coordinator import AstraVe
 from astra_indexator.application.coordinator import ClaimedJob
 from astra_indexator.application.durable_append_delivery import DurableAppendLeaseFence
 from astra_indexator.application.prepared_artifact_replay import PreparedArtifactReplayService
-from astra_indexator.application.prepared_artifact_wiring import PreparedArtifactDeliveryInputFactory
+from astra_indexator.application.prepared_artifact_wiring import (
+    PreparedArtifactDeliveryInputFactory,
+)
 from astra_indexator.persistence.models import IndexationJob
 from astra_indexator.persistence.prepared_artifacts import PreparedArtifactCheckpoint
 from astra_indexator.prepared_artifacts.model import ArtifactCompatibility, ReplayDecision
