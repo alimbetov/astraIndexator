@@ -13,6 +13,7 @@ from .canonical_hash import (
 )
 from .contracts import AppendBlocksCommand, LogicalBlock
 from .proto_mapper import AstraVectorProtoMapper
+from .validation import LogicalBlockValidationError, validate_logical_blocks
 
 
 class DeliveryBatchPlanningError(ValueError):
@@ -116,16 +117,11 @@ class DeterministicBatchPlanner:
 
     @staticmethod
     def _ordered(blocks: Sequence[LogicalBlock]) -> tuple[LogicalBlock, ...]:
-        if not blocks:
-            raise DeliveryBatchPlanningError("logical document must contain at least one block")
-        ordered = tuple(sorted(blocks, key=lambda block: (block.order_index, block.block_id)))
-        block_ids = [block.block_id for block in ordered]
-        if len(block_ids) != len(set(block_ids)):
-            raise DeliveryBatchPlanningError("logical block_id values must be unique")
-        order_indices = [block.order_index for block in ordered]
-        if len(order_indices) != len(set(order_indices)):
-            raise DeliveryBatchPlanningError("logical block order_index values must be unique")
-        return ordered
+        try:
+            validated = validate_logical_blocks(blocks)
+        except LogicalBlockValidationError as exc:
+            raise DeliveryBatchPlanningError(str(exc)) from exc
+        return tuple(sorted(validated, key=lambda block: (block.order_index, block.block_id)))
 
     def _wire_block_size_bytes(self, block: LogicalBlock) -> int:
         """Mirror pinned AstraVector ``logical_block_size_bytes`` exactly.
