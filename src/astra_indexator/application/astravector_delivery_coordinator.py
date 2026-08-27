@@ -6,8 +6,12 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from astra_indexator.application.append_delivery import AppendDeliveryRunner, BatchDeliveryOutcome
-from astra_indexator.application.coordinator import ClaimedJob, JobCoordinator
+from astra_indexator.application.coordinator import ClaimedJob, JobCoordinator, LeaseToken
+from astra_indexator.application.durable_append_delivery import (
+    DurableAppendDeliveryRunner,
+    DurableAppendLeaseFence,
+    DurableBatchDeliveryOutcome,
+)
 from astra_indexator.application.finalize_reconciliation import (
     FinalizeReadinessIdentityUnavailable,
     FinalizeReconciliationRunner,
@@ -52,7 +56,7 @@ class AstraVectorDeliveryOutcome:
     ingestion_session_id: UUID
     access_zone_code: str | None
     resolved_access_zone_id: UUID
-    batches: tuple[BatchDeliveryOutcome, ...]
+    batches: tuple[DurableBatchDeliveryOutcome, ...]
     readiness: VectorReadinessOutcome
 
 
@@ -65,9 +69,12 @@ class AstraVectorDeliveryCoordinator:
     downstream UUID. ``resolved_access_zone_id`` is separate AstraVector response evidence used
     where the current vector-status wire requires DocumentRef identity.
 
-    A previously bound ingestion session is reused. If Start succeeded remotely but the worker
-    died before binding the session, the next worker replays the same idempotent Start command.
-    Append/finalize/readiness delegate to the durable replay and reconciliation runners.
+    M8.3 makes the production path lease-aware at every durable mutation boundary owned by this
+    coordinator. Start is fenced immediately before the mutating RPC and again in the transaction
+    that binds the returned session. Append uses ``DurableAppendDeliveryRunner``. Final-content
+    hash and resolved-zone checkpoint mutations are fenced in the same PostgreSQL transaction.
+    A lease lost during a remote mutation therefore prevents the stale worker from committing
+    authoritative local delivery state; the next owner resumes from deterministic checkpoints.
     """
 
     def __init__(
@@ -78,7 +85,8 @@ class AstraVectorDeliveryCoordinator:
         *,
         job_coordinator: JobCoordinator | None = None,
         repository: DeliveryBatchRepository | None = None,
-        append_runner: AppendDeliveryRunner | None = None,
+        append_runner: DurableAppendDeliveryRunner | None = None,
+        lease_fence: DurableAppendLeaseFence | None = None,
         finalize_runner: FinalizeReconciliationRunner | None = None,
         readiness_runner: VectorReadinessRunner | None = None,
     ) -> None:
@@ -87,8 +95,12 @@ class AstraVectorDeliveryCoordinator:
         self._planner = planner
         self._job_coordinator = job_coordinator or JobCoordinator()
         self._repository = repository or DeliveryBatchRepository()
-        self._append_runner = append_runner or AppendDeliveryRunner(
-            session_factory, port, repository=self._repository
+        self._lease_fence = lease_fence or DurableAppendLeaseFence()
+        self._append_runner = append_runner or DurableAppendDeliveryRunner(
+            session_factory,
+            port,
+            repository=self._repository,
+            lease_fence=self._lease_fence,
         )
         self._finalize_runner = finalize_runner or FinalizeReconciliationRunner(
             session_factory, port, repository=self._repository
@@ -113,16 +125,20 @@ class AstraVectorDeliveryCoordinator:
         self._advance_stage(claimed, "ASTRAVECTOR_APPEND")
         batches = self._planner.plan(payload.logical_blocks)
         batch_outcomes = self._append_runner.deliver(
-            job_id=job.id,
+            token=claimed.token,
             ingestion_session_id=session_id,
             batches=batches,
         )
 
         final_hash = self._planner.final_content_hash(payload.logical_blocks)
-        self._persist_final_hash(job.id, session_id, final_hash)
+        self._persist_final_hash(claimed.token, session_id, final_hash)
         self._advance_stage(claimed, "ASTRAVECTOR_FINALIZE")
 
         downstream_zone_id = job.requested_access_zone_id or job.access_zone_id
+        # Finalize is mutating. Prove ownership immediately before entering the qualified
+        # Finalize/reconciliation runner. If ownership is lost during the RPC, subsequent fenced
+        # checkpoint/JobCoordinator mutations fail closed and the new owner reconciles.
+        self._assert_owned(claimed.token)
         try:
             finalize = self._finalize_runner.finalize(
                 job_id=job.id,
@@ -145,7 +161,7 @@ class AstraVectorDeliveryCoordinator:
                 "AstraVector delivery completed without DocumentRef identity required by the "
                 "current vector-status wire; producer accessZoneCode remains unchanged"
             )
-        self._persist_resolved_zone(job.id, session_id, resolved_zone_id)
+        self._persist_resolved_zone(claimed.token, session_id, resolved_zone_id)
 
         self._advance_stage(claimed, "ASTRAVECTOR_READINESS")
         readiness = self._readiness_runner.wait_until_ready(
@@ -168,15 +184,13 @@ class AstraVectorDeliveryCoordinator:
 
     def _load_owned_job(self, claimed: ClaimedJob) -> IndexationJob:
         with self._session_factory() as session:
-            job = session.get(IndexationJob, claimed.token.job_id)
-            if job is None:
-                raise DeliveryCoordinatorError("claimed IndexationJob no longer exists")
-            if job.worker_id != claimed.token.worker_id:
-                raise DeliveryCoordinatorError("claimed job is no longer owned by this worker")
-            if job.lease_generation != claimed.token.lease_generation:
-                raise DeliveryCoordinatorError("claimed job lease generation changed")
-            session.expunge(job)
-            return job
+            with session.begin():
+                self._lease_fence.assert_owned(session, claimed.token)
+                job = session.get(IndexationJob, claimed.token.job_id)
+                if job is None:
+                    raise DeliveryCoordinatorError("claimed IndexationJob no longer exists")
+                session.expunge(job)
+                return job
 
     def _ensure_session(
         self,
@@ -185,9 +199,11 @@ class AstraVectorDeliveryCoordinator:
         payload: AstraVectorDeliveryInput,
     ) -> UUID:
         with self._session_factory() as session:
-            checkpoint = self._repository.checkpoint(session, job.id)
-            if checkpoint is not None and checkpoint.ingestion_session_id is not None:
-                return checkpoint.ingestion_session_id
+            with session.begin():
+                self._lease_fence.assert_owned(session, claimed.token)
+                checkpoint = self._repository.checkpoint(session, job.id)
+                if checkpoint is not None and checkpoint.ingestion_session_id is not None:
+                    return checkpoint.ingestion_session_id
 
         self._advance_stage(claimed, "ASTRAVECTOR_START")
         command = StartIngestionCommand(
@@ -205,10 +221,15 @@ class AstraVectorDeliveryCoordinator:
             metadata=payload.metadata or {},
             ttl_days=job.requested_ttl_days or 0,
         )
+
+        # Start is idempotent by the stable command identity, but it is still a downstream
+        # mutation. A stale worker is forbidden to initiate it once ownership is no longer valid.
+        self._assert_owned(claimed.token)
         started = self._port.start(command)
 
         with self._session_factory() as session:
             with session.begin():
+                self._lease_fence.assert_owned(session, claimed.token)
                 self._repository.bind_session(
                     session,
                     job_id=job.id,
@@ -217,10 +238,16 @@ class AstraVectorDeliveryCoordinator:
                 )
         return started.ingestion_session_id
 
-    def _persist_final_hash(self, job_id: UUID, session_id: UUID, final_hash: str) -> None:
+    def _persist_final_hash(
+        self,
+        token: LeaseToken,
+        session_id: UUID,
+        final_hash: str,
+    ) -> None:
         with self._session_factory() as session:
             with session.begin():
-                checkpoint = self._repository.checkpoint(session, job_id)
+                self._lease_fence.assert_owned(session, token)
+                checkpoint = self._repository.checkpoint(session, token.job_id)
                 if checkpoint is None or checkpoint.ingestion_session_id != session_id:
                     raise DeliveryIntegrityError("final hash checkpoint belongs to another session")
                 if (
@@ -233,10 +260,16 @@ class AstraVectorDeliveryCoordinator:
                 checkpoint.final_content_hash = final_hash
                 session.flush()
 
-    def _persist_resolved_zone(self, job_id: UUID, session_id: UUID, zone_id: UUID) -> None:
+    def _persist_resolved_zone(
+        self,
+        token: LeaseToken,
+        session_id: UUID,
+        zone_id: UUID,
+    ) -> None:
         with self._session_factory() as session:
             with session.begin():
-                checkpoint = self._repository.checkpoint(session, job_id)
+                self._lease_fence.assert_owned(session, token)
+                checkpoint = self._repository.checkpoint(session, token.job_id)
                 if checkpoint is None or checkpoint.ingestion_session_id != session_id:
                     raise DeliveryIntegrityError(
                         "downstream zone checkpoint belongs to another session"
@@ -250,6 +283,11 @@ class AstraVectorDeliveryCoordinator:
                     )
                 checkpoint.resolved_access_zone_id = zone_id
                 session.flush()
+
+    def _assert_owned(self, token: LeaseToken) -> None:
+        with self._session_factory() as session:
+            with session.begin():
+                self._lease_fence.assert_owned(session, token)
 
     def _advance_stage(self, claimed: ClaimedJob, stage: str) -> None:
         with self._session_factory() as session:
