@@ -109,7 +109,11 @@ def test_safe_source_link_is_accepted() -> None:
     [
         SourceLink(type="DOWNLOAD", url="https://user:password@example.test/file.pdf"),
         SourceLink(type="DOWNLOAD", url="https://example.test/file.pdf?access_token=secret-123"),
-        SourceLink(type="EXTERNAL_SYSTEM", url="https://example.test", attributes={"api-key": "secret-123"}),
+        SourceLink(
+            type="EXTERNAL_SYSTEM",
+            url="https://example.test",
+            attributes={"api-key": "secret-123"},
+        ),
         SourceLink(
             type="EXTERNAL_SYSTEM",
             url="https://example.test",
