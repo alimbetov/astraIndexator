@@ -32,6 +32,7 @@ from astra_indexator.persistence.repository import IndexationJobRepository, NewI
 ROOT = Path(__file__).resolve().parents[1]
 ZONE_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+ZONE_CODE = "0600"
 
 
 def _psycopg_url(url: str) -> str:
@@ -100,6 +101,7 @@ def _enqueue_and_claim(engine):
                 document_version=1,
                 source_uri="seaweed://documents/m8-3.txt",
                 access_zone_id=ZONE_ID,
+                access_zone_code=ZONE_CODE,
                 source_content_hash="a" * 64,
             ),
         )
