@@ -233,9 +233,7 @@ class DurableFailureHandler:
                 )
                 return FailureDecision(
                     failure_class=failure_class,
-                    action=(
-                        FailureAction.DEAD_LETTER if retryable else FailureAction.FAILED
-                    ),
+                    action=(FailureAction.DEAD_LETTER if retryable else FailureAction.FAILED),
                     error_code=error_code,
                     error_message=error_message,
                 )
