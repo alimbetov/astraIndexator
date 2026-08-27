@@ -14,6 +14,7 @@ from .contracts import (
     SourceLocation,
     StartIngestionCommand,
 )
+from .validation import SourceLinkSecurityError, validate_source_link
 from .wire_contract import require_positive_uint32, require_uint32, require_uint64
 
 _ACCESS_ZONE_CODE = re.compile(r"^[0-9]{4}$")
@@ -202,6 +203,10 @@ class AstraVectorProtoMapper:
         )
 
     def source_link(self, link: SourceLink) -> Any:
+        try:
+            validate_source_link(link)
+        except SourceLinkSecurityError as exc:
+            raise ProtoMappingError(str(exc)) from exc
         link_type = self._enum_value(_SOURCE_LINK_TYPE_NAMES, link.type, field="source_link.type")
         url = self._required_text(link.url, "source_link.url")
         return self._pb.SourceLink(
