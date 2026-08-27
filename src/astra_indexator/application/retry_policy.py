@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import Enum
-import hashlib
 from typing import Callable
 
 from sqlalchemy import func, select
