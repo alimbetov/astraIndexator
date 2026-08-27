@@ -87,7 +87,7 @@ class _HashMapper:
 
 
 def _block() -> LogicalBlock:
-    return LogicalBlock("b-0", "", "PARAGRAPH", "payload", 0)
+    return LogicalBlock("root", "", "DOCUMENT", "Document", 0)
 
 
 def _enqueue_and_claim(engine):

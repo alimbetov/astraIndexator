@@ -26,6 +26,7 @@ from astra_indexator.astravector.contracts import (
     LogicalBlock,
     StartIngestionCommand,
 )
+from astra_indexator.astravector.validation import validate_logical_blocks
 from astra_indexator.persistence.delivery import DeliveryBatchRepository, DeliveryIntegrityError
 from astra_indexator.persistence.models import IndexationJob
 
@@ -69,12 +70,13 @@ class AstraVectorDeliveryCoordinator:
     downstream UUID. ``resolved_access_zone_id`` is separate AstraVector response evidence used
     where the current vector-status wire requires DocumentRef identity.
 
-    M8.3 makes the production path lease-aware at every durable mutation boundary owned by this
-    coordinator. Mutating RPCs start only when their configured deadline plus safety margin fits
-    inside the remaining PostgreSQL lease window. Start is fenced again in the transaction that
-    binds the returned session. Append uses ``DurableAppendDeliveryRunner``. Final-content hash
-    and resolved-zone checkpoint mutations are fenced in the same PostgreSQL transaction. A lease
-    lost during a remote mutation therefore prevents the stale worker from committing authoritative
+    The complete LogicalBlock graph is validated before any downstream mutation. M8.3 makes the
+    production path lease-aware at every durable mutation boundary owned by this coordinator.
+    Mutating RPCs start only when their configured deadline plus safety margin fits inside the
+    remaining PostgreSQL lease window. Start is fenced again in the transaction that binds the
+    returned session. Append uses ``DurableAppendDeliveryRunner``. Final-content hash and
+    resolved-zone checkpoint mutations are fenced in the same PostgreSQL transaction. A lease lost
+    during a remote mutation therefore prevents the stale worker from committing authoritative
     local delivery state; the next owner resumes from deterministic checkpoints.
     """
 
@@ -125,10 +127,7 @@ class AstraVectorDeliveryCoordinator:
         claimed: ClaimedJob,
         payload: AstraVectorDeliveryInput,
     ) -> AstraVectorDeliveryOutcome:
-        if not payload.logical_blocks:
-            raise DeliveryCoordinatorError(
-                "AstraVector delivery requires at least one LogicalBlock"
-            )
+        validate_logical_blocks(payload.logical_blocks)
 
         job = self._load_owned_job(claimed)
         session_id = self._ensure_session(job, claimed, payload)

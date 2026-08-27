@@ -135,7 +135,7 @@ class _Port:
             raw_status="COMPLETED",
             state=IngestionSessionState.COMPLETED,
             received_batches=2,
-            received_blocks=3,
+            received_blocks=4,
             received_bytes=100,
             expires_at="",
         )
@@ -156,9 +156,10 @@ class _Port:
 
 def _blocks() -> tuple[LogicalBlock, ...]:
     return (
-        LogicalBlock("b-0", "", "PARAGRAPH", "first", 0),
-        LogicalBlock("b-1", "", "PARAGRAPH", "second", 1),
-        LogicalBlock("b-2", "", "PARAGRAPH", "third", 2),
+        LogicalBlock("root", "", "DOCUMENT", "Document", 0),
+        LogicalBlock("b-0", "root", "PARAGRAPH", "first", 1),
+        LogicalBlock("b-1", "root", "PARAGRAPH", "second", 2),
+        LogicalBlock("b-2", "root", "PARAGRAPH", "third", 3),
     )
 
 
