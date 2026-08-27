@@ -70,11 +70,12 @@ class AstraVectorDeliveryCoordinator:
     where the current vector-status wire requires DocumentRef identity.
 
     M8.3 makes the production path lease-aware at every durable mutation boundary owned by this
-    coordinator. Start is fenced immediately before the mutating RPC and again in the transaction
-    that binds the returned session. Append uses ``DurableAppendDeliveryRunner``. Final-content
-    hash and resolved-zone checkpoint mutations are fenced in the same PostgreSQL transaction.
-    A lease lost during a remote mutation therefore prevents the stale worker from committing
-    authoritative local delivery state; the next owner resumes from deterministic checkpoints.
+    coordinator. Mutating RPCs start only when their configured deadline plus safety margin fits
+    inside the remaining PostgreSQL lease window. Start is fenced again in the transaction that
+    binds the returned session. Append uses ``DurableAppendDeliveryRunner``. Final-content hash
+    and resolved-zone checkpoint mutations are fenced in the same PostgreSQL transaction. A lease
+    lost during a remote mutation therefore prevents the stale worker from committing authoritative
+    local delivery state; the next owner resumes from deterministic checkpoints.
     """
 
     def __init__(
@@ -89,18 +90,28 @@ class AstraVectorDeliveryCoordinator:
         lease_fence: DurableAppendLeaseFence | None = None,
         finalize_runner: FinalizeReconciliationRunner | None = None,
         readiness_runner: VectorReadinessRunner | None = None,
+        mutating_rpc_deadline_seconds: float = 30.0,
+        rpc_safety_margin_seconds: float = 5.0,
     ) -> None:
+        if mutating_rpc_deadline_seconds <= 0:
+            raise ValueError("mutating_rpc_deadline_seconds must be positive")
+        if rpc_safety_margin_seconds < 0:
+            raise ValueError("rpc_safety_margin_seconds must not be negative")
         self._session_factory = session_factory
         self._port = port
         self._planner = planner
         self._job_coordinator = job_coordinator or JobCoordinator()
         self._repository = repository or DeliveryBatchRepository()
         self._lease_fence = lease_fence or DurableAppendLeaseFence()
+        self._mutating_rpc_deadline_seconds = mutating_rpc_deadline_seconds
+        self._rpc_safety_margin_seconds = rpc_safety_margin_seconds
         self._append_runner = append_runner or DurableAppendDeliveryRunner(
             session_factory,
             port,
             repository=self._repository,
             lease_fence=self._lease_fence,
+            rpc_deadline_seconds=mutating_rpc_deadline_seconds,
+            rpc_safety_margin_seconds=rpc_safety_margin_seconds,
         )
         self._finalize_runner = finalize_runner or FinalizeReconciliationRunner(
             session_factory, port, repository=self._repository
@@ -135,10 +146,7 @@ class AstraVectorDeliveryCoordinator:
         self._advance_stage(claimed, "ASTRAVECTOR_FINALIZE")
 
         downstream_zone_id = job.requested_access_zone_id or job.access_zone_id
-        # Finalize is mutating. Prove ownership immediately before entering the qualified
-        # Finalize/reconciliation runner. If ownership is lost during the RPC, subsequent fenced
-        # checkpoint/JobCoordinator mutations fail closed and the new owner reconciles.
-        self._assert_owned(claimed.token)
+        self._assert_safe_mutating_rpc_window(claimed.token)
         try:
             finalize = self._finalize_runner.finalize(
                 job_id=job.id,
@@ -222,9 +230,7 @@ class AstraVectorDeliveryCoordinator:
             ttl_days=job.requested_ttl_days or 0,
         )
 
-        # Start is idempotent by the stable command identity, but it is still a downstream
-        # mutation. A stale worker is forbidden to initiate it once ownership is no longer valid.
-        self._assert_owned(claimed.token)
+        self._assert_safe_mutating_rpc_window(claimed.token)
         started = self._port.start(command)
 
         with self._session_factory() as session:
@@ -284,10 +290,15 @@ class AstraVectorDeliveryCoordinator:
                 checkpoint.resolved_access_zone_id = zone_id
                 session.flush()
 
-    def _assert_owned(self, token: LeaseToken) -> None:
+    def _assert_safe_mutating_rpc_window(self, token: LeaseToken) -> None:
         with self._session_factory() as session:
             with session.begin():
-                self._lease_fence.assert_owned(session, token)
+                self._lease_fence.assert_safe_rpc_window(
+                    session,
+                    token,
+                    rpc_deadline_seconds=self._mutating_rpc_deadline_seconds,
+                    safety_margin_seconds=self._rpc_safety_margin_seconds,
+                )
 
     def _advance_stage(self, claimed: ClaimedJob, stage: str) -> None:
         with self._session_factory() as session:
