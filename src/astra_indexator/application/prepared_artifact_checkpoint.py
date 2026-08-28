@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -26,8 +25,7 @@ class InstalledArtifactCheckpoint:
     manifest_uri: str
     manifest_sha256: str
     compatibility_sha256: str
-    requested_access_zone_id: UUID | None
-    requested_access_zone_code: str | None
+    access_zone_code: str
     requested_ttl_days: int
 
 
@@ -82,10 +80,9 @@ class PreparedArtifactCheckpointService:
                 "prepared artifact identity does not match locked indexation job"
             )
 
-        requested_zone_id = job.requested_access_zone_id or job.access_zone_id
-        requested_zone_code = job.requested_access_zone_code or job.access_zone_code
-        if requested_zone_id is None and requested_zone_code is None:
-            raise MissingDeliveryIntent("indexation job has no AccessZone producer intent")
+        access_zone_code = job.access_zone_code
+        if not access_zone_code:
+            raise MissingDeliveryIntent("indexation job has no accessZoneCode producer intent")
         ttl_days = job.requested_ttl_days if job.requested_ttl_days is not None else 0
         if ttl_days < 0:
             raise MissingDeliveryIntent("indexation job has invalid negative TTL intent")
@@ -101,20 +98,14 @@ class PreparedArtifactCheckpointService:
             "element_count": manifest.total_element_count,
             "fragment_count": manifest.total_fragment_count,
             "lease_generation": token.lease_generation,
-            "requested_access_zone_id": requested_zone_id,
-            "requested_access_zone_code": requested_zone_code,
+            "access_zone_code": access_zone_code,
             "requested_ttl_days": ttl_days,
         }
         if checkpoint is None:
             checkpoint = PreparedArtifactCheckpoint(job_id=token.job_id, **values)
             session.add(checkpoint)
         else:
-            # Producer delivery intent is immutable across artifact replacement/replay.
-            if checkpoint.requested_access_zone_id not in (None, requested_zone_id):
-                raise PreparedArtifactIdentityMismatch(
-                    "AccessZone ID changed across checkpoint replay"
-                )
-            if checkpoint.requested_access_zone_code not in (None, requested_zone_code):
+            if checkpoint.access_zone_code != access_zone_code:
                 raise PreparedArtifactIdentityMismatch(
                     "AccessZone code changed across checkpoint replay"
                 )
@@ -140,8 +131,7 @@ class PreparedArtifactCheckpointService:
                     "compatibilitySha256": manifest.compatibility_sha256,
                     "elementCount": manifest.total_element_count,
                     "fragmentCount": manifest.total_fragment_count,
-                    "requestedAccessZoneId": str(requested_zone_id) if requested_zone_id else None,
-                    "requestedAccessZoneCode": requested_zone_code,
+                    "accessZoneCode": access_zone_code,
                     "requestedTtlDays": ttl_days,
                 },
             )
@@ -152,7 +142,6 @@ class PreparedArtifactCheckpointService:
             manifest_uri=resolved_uri,
             manifest_sha256=published.manifest_sha256,
             compatibility_sha256=manifest.compatibility_sha256,
-            requested_access_zone_id=requested_zone_id,
-            requested_access_zone_code=requested_zone_code,
+            access_zone_code=access_zone_code,
             requested_ttl_days=ttl_days,
         )
