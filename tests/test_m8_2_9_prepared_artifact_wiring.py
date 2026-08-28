@@ -1,166 +1,183 @@
 from __future__ import annotations
 
-import hashlib
-from dataclasses import replace
+from dataclasses import asdict
 from uuid import UUID
 
 import pytest
 
+from astra_indexator.application.prepared_artifact_delivery import (
+    PreparedArtifactDeliveryMapper,
+    PreparedArtifactDeliveryMappingError,
+)
 from astra_indexator.application.prepared_artifact_wiring import (
     PreparedArtifactDeliveryInputFactory,
     PreparedArtifactIdentityMismatch,
 )
-from astra_indexator.astravector.contracts import LogicalBlock
 from astra_indexator.prepared_artifacts.model import (
+    ArtifactCompatibility,
     ArtifactIdentity,
     ArtifactManifest,
+    ArtifactPart,
     PreparedArtifact,
-    PreparedArtifactPart,
-    PreparedLogicalFragment,
+)
+from astra_indexator.splitter.model import (
+    FragmentSource,
+    FragmentStatistics,
+    FragmentType,
+    LogicalFragment,
+    SplitDecision,
 )
 
-DOCUMENT_ID = UUID("11111111-1111-1111-1111-111111111111")
+DOCUMENT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+DOCUMENT_VERSION = 3
 SOURCE_SHA256 = "a" * 64
-COMPATIBILITY_SHA256 = "b" * 64
-MANIFEST_SHA256 = "c" * 64
-PART_SHA256 = "d" * 64
 
 
 def _fragment(
     fragment_id: str,
-    *,
-    parent_fragment_id: str | None,
-    kind: str,
+    sequence: int,
+    fragment_type: FragmentType,
     text: str,
-    order_index: int,
-) -> PreparedLogicalFragment:
-    return PreparedLogicalFragment(
+    *,
+    context_prefix: str = "",
+    hierarchy: tuple[str, ...] = (),
+    page_from: int | None = None,
+    page_to: int | None = None,
+) -> dict[str, object]:
+    fragment = LogicalFragment(
         fragment_id=fragment_id,
-        parent_fragment_id=parent_fragment_id,
-        kind=kind,
-        text=text,
-        order_index=order_index,
-        metadata={},
-        source_links=(),
-    )
-
-
-def _artifact() -> PreparedArtifact:
-    identity = ArtifactIdentity(
         document_id=DOCUMENT_ID,
-        document_version=1,
-        source_sha256=SOURCE_SHA256,
-    )
-    fragments = (
-        _fragment(
-            "root",
-            parent_fragment_id=None,
-            kind="DOCUMENT",
-            text="Document",
-            order_index=0,
+        document_version=DOCUMENT_VERSION,
+        sequence=sequence,
+        fragment_type=fragment_type,
+        normalized_text=text,
+        context_prefix=context_prefix,
+        hierarchy=hierarchy,
+        source=FragmentSource(
+            element_ids=(f"element-{sequence}",),
+            element_from=f"element-{sequence}",
+            element_to=f"element-{sequence}",
+            page_from=page_from,
+            page_to=page_to,
         ),
-        _fragment(
-            "paragraph-1",
-            parent_fragment_id="root",
-            kind="PARAGRAPH",
-            text="Text",
-            order_index=1,
+        statistics=FragmentStatistics(char_count=len(text), word_count=1, sentence_count=1),
+        split=SplitDecision(
+            reason="STRUCTURE_BOUNDARY",
+            forced=False,
+            profile="multilingual-general-v1",
+            splitter_version="logical-v1",
         ),
-    )
-    part = PreparedArtifactPart(
-        part_index=0,
-        uri="seaweed://prepared/part-0000.json",
-        sha256=PART_SHA256,
-        byte_size=10,
-        fragment_count=len(fragments),
-    )
-    manifest = ArtifactManifest(
-        schema_version="prepared-artifact-v1",
-        identity=identity,
-        compatibility_sha256=COMPATIBILITY_SHA256,
-        parts=(part,),
-        manifest_sha256=MANIFEST_SHA256,
-    )
-    return PreparedArtifact(manifest=manifest, fragments=fragments)
-
-
-def test_factory_maps_verified_m7_artifact_to_coordinator_input() -> None:
-    delivery = PreparedArtifactDeliveryInputFactory().build(
-        _artifact(),
-        document_id=DOCUMENT_ID,
-        document_version=1,
-        source_file_name="document.txt",
+        primary_language="kk",
+        languages=("kk",),
         metadata={"source": "m7"},
     )
+    return asdict(fragment)
 
-    assert delivery.source_content_hash == SOURCE_SHA256
-    assert delivery.prepared_compatibility_sha256 == COMPATIBILITY_SHA256
-    assert delivery.source_file_name == "document.txt"
-    assert delivery.metadata == {"source": "m7"}
-    assert tuple(block.block_id for block in delivery.logical_blocks) == (
-        "root",
-        "paragraph-1",
+
+def _artifact(*records: dict[str, object]) -> PreparedArtifact:
+    identity = ArtifactIdentity(DOCUMENT_ID, DOCUMENT_VERSION, SOURCE_SHA256)
+    compatibility = ArtifactCompatibility(
+        schema_version="prepared-v1",
+        parser_name="canonical",
+        parser_version="m4-v1",
+        parser_profile="default",
+        normalizer_version="text-normalizer-v1",
+        splitter_profile="multilingual-general-v1",
+        splitter_version="logical-v1",
     )
-    assert all(isinstance(block, LogicalBlock) for block in delivery.logical_blocks)
-
-
-def test_factory_is_deterministic_for_same_verified_artifact() -> None:
-    artifact = _artifact()
-    factory = PreparedArtifactDeliveryInputFactory()
-    first = factory.build(
-        artifact,
-        document_id=DOCUMENT_ID,
-        document_version=1,
+    part = ArtifactPart(
+        kind="FRAGMENTS",
+        path="parts/fragments-00000.jsonl",
+        sha256="b" * 64,
+        record_count=len(records),
+        byte_count=100,
     )
-    second = factory.build(
-        artifact,
-        document_id=DOCUMENT_ID,
-        document_version=1,
+    manifest = ArtifactManifest(
+        identity=identity,
+        compatibility=compatibility,
+        artifact_id="c" * 64,
+        compatibility_sha256="d" * 64,
+        parts=(part,),
+        total_element_count=0,
+        total_fragment_count=len(records),
     )
-    assert first.logical_blocks == second.logical_blocks
-    assert first.source_content_hash == second.source_content_hash
-    assert first.prepared_compatibility_sha256 == second.prepared_compatibility_sha256
+    return PreparedArtifact(manifest=manifest, elements=(), fragments=tuple(records))
 
 
-def test_factory_rejects_wrong_document_id() -> None:
-    with pytest.raises(PreparedArtifactIdentityMismatch):
-        PreparedArtifactDeliveryInputFactory().build(
-            _artifact(),
-            document_id=UUID("22222222-2222-2222-2222-222222222222"),
-            document_version=1,
-        )
-
-
-def test_factory_rejects_wrong_document_version() -> None:
-    with pytest.raises(PreparedArtifactIdentityMismatch):
-        PreparedArtifactDeliveryInputFactory().build(
-            _artifact(),
-            document_id=DOCUMENT_ID,
-            document_version=2,
-        )
-
-
-def test_prepared_compatibility_evidence_changes_with_manifest_contract() -> None:
-    artifact = _artifact()
-    changed = replace(
-        artifact,
-        manifest=replace(
-            artifact.manifest,
-            compatibility_sha256=hashlib.sha256(b"changed-contract").hexdigest(),
+def test_m7_fragments_map_to_rooted_deterministic_logical_blocks() -> None:
+    artifact = _artifact(
+        _fragment(
+            "fragment-2",
+            2,
+            FragmentType.CODE,
+            'println("Әлем")',
+            hierarchy=("API", "Examples"),
+            page_from=2,
+            page_to=2,
+        ),
+        _fragment(
+            "fragment-1",
+            1,
+            FragmentType.PARAGRAPH,
+            "Негізгі мәтін",
+            context_prefix="Бөлім тақырыбы",
+            hierarchy=("Бөлім тақырыбы",),
+            page_from=1,
+            page_to=1,
         ),
     )
+
+    blocks = PreparedArtifactDeliveryMapper().logical_blocks(artifact)
+
+    assert [block.block_type for block in blocks] == ["DOCUMENT", "PARAGRAPH", "CODE_BLOCK"]
+    assert [block.order_index for block in blocks] == [0, 1, 2]
+    assert blocks[1].parent_block_id == blocks[0].block_id
+    assert blocks[2].parent_block_id == blocks[0].block_id
+    assert blocks[1].text == "Бөлім тақырыбы\n\nНегізгі мәтін"
+    assert blocks[1].metadata["astra.context_prefix"] == "Бөлім тақырыбы"
+    assert blocks[1].metadata["astra.primary_language"] == "kk"
+    assert blocks[1].source_location is not None
+    assert blocks[1].source_location.page_start == 1
+    assert blocks[1].source_location.page_end == 1
+    assert blocks[1].source_location.section_path == "Бөлім тақырыбы"
+    assert blocks[2].source_location is not None
+    assert blocks[2].source_location.heading == "Examples"
+
+
+def test_factory_asserts_manifest_identity_before_coordinator_input() -> None:
+    artifact = _artifact(_fragment("fragment-1", 0, FragmentType.PARAGRAPH, "text"))
     factory = PreparedArtifactDeliveryInputFactory()
-    original_delivery = factory.build(
+
+    payload = factory.build(
         artifact,
         document_id=DOCUMENT_ID,
-        document_version=1,
+        document_version=DOCUMENT_VERSION,
+        source_file_name="document.pdf",
+        metadata={"preparedArtifactId": artifact.manifest.artifact_id},
     )
-    changed_delivery = factory.build(
-        changed,
-        document_id=DOCUMENT_ID,
-        document_version=1,
-    )
-    assert (
-        original_delivery.prepared_compatibility_sha256
-        != changed_delivery.prepared_compatibility_sha256
-    )
+    assert payload.source_file_name == "document.pdf"
+    assert payload.source_content_hash == SOURCE_SHA256
+    assert payload.prepared_compatibility_sha256 == artifact.manifest.compatibility_sha256
+    assert payload.metadata == {"preparedArtifactId": artifact.manifest.artifact_id}
+    assert payload.logical_blocks[0].block_type == "DOCUMENT"
+
+    with pytest.raises(PreparedArtifactIdentityMismatch):
+        factory.build(
+            artifact,
+            document_id=UUID("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+            document_version=DOCUMENT_VERSION,
+        )
+
+
+def test_malformed_or_ambiguous_m7_fragment_set_fails_closed() -> None:
+    first = _fragment("fragment-1", 0, FragmentType.PARAGRAPH, "one")
+    duplicate_sequence = _fragment("fragment-2", 0, FragmentType.PARAGRAPH, "two")
+    with pytest.raises(
+        PreparedArtifactDeliveryMappingError, match="sequence values must be unique"
+    ):
+        PreparedArtifactDeliveryMapper().logical_blocks(_artifact(first, duplicate_sequence))
+
+    wrong_identity = _fragment("fragment-3", 3, FragmentType.PARAGRAPH, "three")
+    wrong_identity["document_version"] = 99
+    with pytest.raises(PreparedArtifactDeliveryMappingError, match="identity does not match"):
+        PreparedArtifactDeliveryMapper().logical_blocks(_artifact(wrong_identity))
