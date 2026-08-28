@@ -15,6 +15,7 @@ from astra_indexator.application.finalize_reconciliation import (
 )
 from astra_indexator.application.retry_policy import (
     DurableFailureHandler,
+    FailureAction,
     FailureClass,
     FailureDecision,
 )
@@ -45,7 +46,8 @@ class AstraVectorDeliveryExecutor:
     """Production exception boundary for one owned AstraVector delivery turn.
 
     The coordinator owns protocol execution. ``DurableFailureHandler`` owns durable state
-    transitions. This layer never retries a downstream mutation itself.
+    transitions. This layer never retries a downstream mutation itself. Ownership loss is handled
+    locally as ABANDON because a stale worker must not attempt another authoritative DB mutation.
     """
 
     def __init__(
@@ -67,17 +69,7 @@ class AstraVectorDeliveryExecutor:
             failure_class, error_code, error_message = self._classify(exc)
             if failure_class is FailureClass.OWNERSHIP_LOST:
                 return DeliveryExecutionResult(
-                    failure=FailureDecision(
-                        failure_class=failure_class,
-                        action=self._failure_handler.handle(
-                            claimed.token,
-                            failure_class=failure_class,
-                            error_code=error_code,
-                            error_message=error_message,
-                        ).action,
-                        error_code=error_code,
-                        error_message=error_message,
-                    )
+                    failure=self._abandon(error_code=error_code, error_message=error_message)
                 )
             try:
                 decision = self._failure_handler.handle(
@@ -87,14 +79,7 @@ class AstraVectorDeliveryExecutor:
                     error_message=error_message,
                 )
             except LeaseLostError as lease_exc:
-                decision = FailureDecision(
-                    failure_class=FailureClass.OWNERSHIP_LOST,
-                    action=self._failure_handler.handle(
-                        claimed.token,
-                        failure_class=FailureClass.OWNERSHIP_LOST,
-                        error_code="OWNERSHIP_LOST",
-                        error_message=str(lease_exc),
-                    ).action,
+                decision = self._abandon(
                     error_code="OWNERSHIP_LOST",
                     error_message=str(lease_exc),
                 )
@@ -114,3 +99,12 @@ class AstraVectorDeliveryExecutor:
         ):
             return FailureClass.PERMANENT_POLICY, type(exc).__name__, str(exc)
         return self._failure_handler.classify_exception(exc)
+
+    @staticmethod
+    def _abandon(*, error_code: str, error_message: str) -> FailureDecision:
+        return FailureDecision(
+            failure_class=FailureClass.OWNERSHIP_LOST,
+            action=FailureAction.ABANDON,
+            error_code=error_code,
+            error_message=error_message,
+        )
