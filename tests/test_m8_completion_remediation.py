@@ -67,9 +67,10 @@ def test_source_identity_requires_durable_verified_sha256() -> None:
 
 def test_delivery_compatibility_fingerprint_is_deterministic_and_contract_sensitive() -> None:
     baseline = DeliveryCompatibilityFingerprint(PREPARED_COMPATIBILITY_SHA256)
-    assert baseline.sha256() == DeliveryCompatibilityFingerprint(
-        PREPARED_COMPATIBILITY_SHA256
-    ).sha256()
+    assert (
+        baseline.sha256()
+        == DeliveryCompatibilityFingerprint(PREPARED_COMPATIBILITY_SHA256).sha256()
+    )
 
     changed_prepared = DeliveryCompatibilityFingerprint(OTHER_SHA256)
     assert changed_prepared.sha256() != baseline.sha256()

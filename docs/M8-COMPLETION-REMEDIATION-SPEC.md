@@ -173,6 +173,7 @@ CR-02 mandatory verified source SHA-256         IMPLEMENTED / qualification runn
 CR-03 durable runtime failure executor          IMPLEMENTED / qualification running
 CR-04 ambiguous Finalize disposition            IMPLEMENTED / real-service evidence open
 CR-05 immutable delivery compatibility          IMPLEMENTED / qualification running
+CR-06 canonical runtime bootstrap               IMPLEMENTED / local integration qualification running
 Docs reconciliation                             IMPLEMENTED / qualification running
 M8.F real AstraVector qualification             OUTSIDE this branch's qualification claim
 ```
@@ -199,6 +200,54 @@ post-merge main CI                PASS
 ```
 
 The branch MAY be merged with CR-04's finalized-AstraVector public-contract limitation explicitly documented, provided all local behavior is fail-closed and qualified. M8 itself remains NOT QUALIFIED until real AstraVector M8.F evidence passes.
+
+## 11.1 CR-06 canonical runtime bootstrap
+
+The canonical AstraIndexator runtime command is:
+
+```bash
+python -m astra_indexator
+```
+
+Runtime startup is a composition root, not a second delivery engine. It loads explicit configuration,
+validates PostgreSQL connectivity and Alembic head, constructs the SQLAlchemy engine/session factory,
+wires the existing `JobCoordinator`, durable failure handler, lazy AstraVector gRPC delivery
+coordinator/executor, and starts a polling worker loop.
+
+Required configuration:
+
+```text
+ASTRA_INDEXATOR_DATABASE_URL
+```
+
+Optional configuration:
+
+```text
+ASTRA_INDEXATOR_ASTRAVECTOR_GRPC_TARGET
+ASTRA_INDEXATOR_WORKER_ID
+ASTRA_INDEXATOR_LEASE_SECONDS
+ASTRA_INDEXATOR_POLL_INTERVAL_SECONDS
+ASTRA_INDEXATOR_RPC_TIMEOUT_SECONDS
+ASTRA_INDEXATOR_RPC_SAFETY_MARGIN_SECONDS
+ASTRA_INDEXATOR_LOG_LEVEL
+```
+
+Alembic remains the schema authority. Runtime startup validates the current revision and fails closed
+when the database is missing, unreachable or not at head. It does not auto-migrate and does not create
+a divergent ORM schema.
+
+AstraVector availability policy is lazy. Startup requires a syntactically valid gRPC target but does
+not require an immediate live AstraVector connection when no queued job needs downstream delivery.
+M8 delivery still uses the pinned generated gRPC client and public AstraVector APIs only; direct
+AstraVector PostgreSQL/Qdrant access remains forbidden.
+
+`SIGINT` and `SIGTERM` request graceful shutdown: the worker stops taking new jobs, finishes the
+current bounded operation through the existing lease-fenced/durable failure semantics, closes local
+resources and exits deterministically.
+
+This CR-06 runtime bootstrap does not claim final M8.F real AstraVector qualification. Real-service
+qualification remains a separate B2 task; the portable AstraVector deployment reference is
+`alimbetov/agent-astradeployment-portable-local-1.0`.
 
 ---
 

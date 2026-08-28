@@ -95,7 +95,9 @@ def test_ownership_loss_abandons_without_failure_handler_mutation() -> None:
 def test_ambiguous_finalize_enters_reconcile_not_blind_retry() -> None:
     handler = _RecordingFailureHandler(action=FailureAction.RECONCILE)
     executor = AstraVectorDeliveryExecutor(  # type: ignore[arg-type]
-        _FailingCoordinator(DeliveryRecoveryContractGap("completed session has no recoverable UUID")),
+        _FailingCoordinator(
+            DeliveryRecoveryContractGap("completed session has no recoverable UUID")
+        ),
         handler,
     )
 
