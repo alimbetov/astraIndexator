@@ -40,6 +40,15 @@ class PreparedBatchState:
 class DeliveryBatchRepository:
     """Transactional checkpoint/replay semantics for AstraVector Append delivery."""
 
+    def ensure_checkpoint(self, session: Session, job_id: UUID) -> DeliveryCheckpoint:
+        stmt = (
+            insert(DeliveryCheckpoint)
+            .values(job_id=job_id, next_batch_index=0)
+            .on_conflict_do_nothing(index_elements=[DeliveryCheckpoint.job_id])
+        )
+        session.execute(stmt)
+        return self._checkpoint_for_update(session, job_id)
+
     def bind_session(
         self,
         session: Session,
