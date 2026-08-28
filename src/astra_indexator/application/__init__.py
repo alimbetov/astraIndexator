@@ -15,6 +15,18 @@ from .astravector_delivery_coordinator import (
     DeliveryRecoveryContractGap,
 )
 from .coordinator import ClaimedJob, JobCoordinator, LeaseLostError, LeaseToken
+from .delivery_compatibility import (
+    DeliveryCompatibilityError,
+    DeliveryCompatibilityFingerprint,
+    delivery_compatibility_sha256,
+)
+from .delivery_execution import AstraVectorDeliveryExecutor, DeliveryExecutionResult
+from .delivery_identity import (
+    DeliveryIdentityError,
+    require_source_sha256,
+    resolve_verified_source_sha256,
+    start_idempotency_key,
+)
 from .prepared_artifact_checkpoint import (
     InstalledArtifactCheckpoint,
     PreparedArtifactCheckpointService,
@@ -37,11 +49,16 @@ __all__ = [
     "AcquisitionCheckpoint",
     "AppendDeliveryRunner",
     "AstraVectorDeliveryCoordinator",
+    "AstraVectorDeliveryExecutor",
     "AstraVectorDeliveryInput",
     "AstraVectorDeliveryOutcome",
     "BatchDeliveryOutcome",
     "ClaimedJob",
+    "DeliveryCompatibilityError",
+    "DeliveryCompatibilityFingerprint",
     "DeliveryCoordinatorError",
+    "DeliveryExecutionResult",
+    "DeliveryIdentityError",
     "DeliveryRecoveryContractGap",
     "InstalledArtifactCheckpoint",
     "JobCoordinator",
@@ -54,4 +71,8 @@ __all__ = [
     "VectorReadinessPending",
     "VectorReadinessRunner",
     "VectorReadinessTerminalError",
+    "delivery_compatibility_sha256",
+    "require_source_sha256",
+    "resolve_verified_source_sha256",
+    "start_idempotency_key",
 ]
