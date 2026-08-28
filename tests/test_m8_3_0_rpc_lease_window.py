@@ -1,31 +1,28 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, func, update
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from testcontainers.postgres import PostgresContainer
 
-from astra_indexator.application.astravector_delivery_coordinator import (
-    AstraVectorDeliveryCoordinator,
-    AstraVectorDeliveryInput,
-)
 from astra_indexator.application.coordinator import JobCoordinator
-from astra_indexator.application.durable_append_delivery import InsufficientLeaseWindowError
-from astra_indexator.astravector.batching import DeterministicBatchPlanner
+from astra_indexator.application.durable_append_delivery import (
+    DurableAppendDeliveryRunner,
+    DurableAppendLeaseFence,
+    LeaseRpcWindowTooShort,
+)
+from astra_indexator.astravector.batching import PlannedDeliveryBatch
 from astra_indexator.astravector.contracts import LogicalBlock
-from astra_indexator.persistence.models import IndexationJob
+from astra_indexator.persistence.models import DeliveryBatch
 from astra_indexator.persistence.repository import IndexationJobRepository, NewIndexationJob
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_SHA256 = "a" * 64
-PREPARED_COMPATIBILITY_SHA256 = "b" * 64
+SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 
 
 def _psycopg_url(url: str) -> str:
@@ -43,98 +40,144 @@ def database_url() -> str:
         cfg.set_main_option("sqlalchemy.url", url)
         command.upgrade(cfg, "head")
         yield url
+        command.downgrade(cfg, "base")
 
 
-class _HashMapper:
-    def logical_block(self, block: LogicalBlock):
-        return SimpleNamespace(
-            block_id=block.block_id,
-            parent_block_id=block.parent_block_id,
-            block_type=4,
-            text=block.text,
-            order_index=block.order_index,
-            metadata=block.metadata,
-            source_links=(),
-            HasField=lambda name: False,
-        )
-
-
-class _NoCallPort:
-    def __init__(self) -> None:
-        self.start_calls = 0
-
-    def start(self, command):
-        self.start_calls += 1
-        raise AssertionError("Start must not run with insufficient lease window")
-
-    def append(self, command):
-        raise AssertionError("Append must not run")
-
-    def finalize(self, command):
-        raise AssertionError("Finalize must not run")
-
-    def abort(self, command):
-        raise AssertionError("Abort must not run")
-
-    def get_ingestion_status(self, ingestion_session_id):
-        raise AssertionError("status must not run")
-
-    def get_document_vector_status(self, **kwargs):
-        raise AssertionError("vector status must not run")
-
-
-def _payload() -> AstraVectorDeliveryInput:
-    return AstraVectorDeliveryInput(
-        logical_blocks=(
-            LogicalBlock("root", "", "DOCUMENT", "Document", 0),
-            LogicalBlock("p", "root", "PARAGRAPH", "text", 1),
-        ),
-        source_content_hash=SOURCE_SHA256,
-        prepared_compatibility_sha256=PREPARED_COMPATIBILITY_SHA256,
-    )
-
-
-def test_start_is_blocked_when_remaining_lease_is_below_rpc_window(database_url: str) -> None:
+@pytest.fixture(autouse=True)
+def clean_database(database_url: str):
     engine = create_engine(database_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "TRUNCATE TABLE "
+                "astra_indexator.knowledge_inventory, "
+                "astra_indexator.job_event, "
+                "astra_indexator.delivery_batch, "
+                "astra_indexator.delivery_checkpoint, "
+                "astra_indexator.processing_attempt, "
+                "astra_indexator.indexation_job CASCADE"
+            )
+        )
+    yield
+    engine.dispose()
+
+
+def _claim(engine):
     with Session(engine) as session:
         job = IndexationJobRepository().create_or_get(
             session,
             NewIndexationJob(
                 producer_request_id=uuid4(),
-                document_id=UUID("11111111-1111-1111-1111-111111111111"),
+                document_id=uuid4(),
                 document_version=1,
-                source_uri="seaweed://source",
+                source_uri="seaweed://documents/m8-3-window.txt",
                 access_zone_code="0600",
-                source_content_hash=SOURCE_SHA256,
             ),
         )
+        session.commit()
         job_id = job.id
-        session.commit()
-
     with Session(engine) as session:
-        claimed = JobCoordinator().claim_next(session, worker_id="worker-short", lease_seconds=120)
-        assert claimed is not None
-        session.commit()
-
-    with Session(engine) as session:
-        session.execute(
-            update(IndexationJob)
-            .where(IndexationJob.id == job_id)
-            .values(lease_until=func.now() + timedelta(seconds=5))
+        claimed = JobCoordinator().claim_next(
+            session,
+            worker_id="window-worker",
+            lease_seconds=120,
         )
+        assert claimed is not None
+        assert claimed.token.job_id == job_id
         session.commit()
+        return claimed
 
-    port = _NoCallPort()
-    planner = DeterministicBatchPlanner(_HashMapper(), max_blocks_per_batch=100)  # type: ignore[arg-type]
-    coordinator = AstraVectorDeliveryCoordinator(
-        lambda: Session(engine),
-        port,  # type: ignore[arg-type]
-        planner,
-        mutating_rpc_deadline_seconds=10,
-        rpc_safety_margin_seconds=2,
+
+def _set_remaining_lease(engine, job_id, seconds: int) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE astra_indexator.indexation_job "
+                "SET lease_until = now() + make_interval(secs => :seconds) "
+                "WHERE id = :job_id"
+            ),
+            {"seconds": seconds, "job_id": job_id},
+        )
+
+
+def _batch() -> PlannedDeliveryBatch:
+    block = LogicalBlock(
+        block_id="b-0",
+        parent_block_id="",
+        block_type="PARAGRAPH",
+        text="payload",
+        order_index=0,
+    )
+    return PlannedDeliveryBatch(
+        batch_index=0,
+        blocks=(block,),
+        is_last_batch=True,
+        batch_content_hash="a" * 64,
+        serialized_bytes=64,
     )
 
-    with pytest.raises(InsufficientLeaseWindowError):
-        coordinator.deliver(claimed, _payload())
-    assert port.start_calls == 0
+
+def test_safe_rpc_window_uses_postgresql_time(database_url: str) -> None:
+    engine = create_engine(database_url)
+    claimed = _claim(engine)
+    fence = DurableAppendLeaseFence()
+
+    _set_remaining_lease(engine, claimed.token.job_id, 20)
+    with Session(engine) as session:
+        with pytest.raises(LeaseRpcWindowTooShort) as error:
+            with session.begin():
+                fence.assert_safe_rpc_window(
+                    session,
+                    claimed.token,
+                    rpc_deadline_seconds=30,
+                    safety_margin_seconds=5,
+                )
+    assert error.value.required_seconds == 35
+    assert 0 < error.value.remaining_seconds < 35
+
+    _set_remaining_lease(engine, claimed.token.job_id, 60)
+    with Session(engine) as session:
+        with session.begin():
+            remaining = fence.assert_safe_rpc_window(
+                session,
+                claimed.token,
+                rpc_deadline_seconds=30,
+                safety_margin_seconds=5,
+            )
+    assert remaining > 35
+    engine.dispose()
+
+
+def test_append_is_not_sent_when_deadline_does_not_fit_lease(database_url: str) -> None:
+    engine = create_engine(database_url)
+    claimed = _claim(engine)
+    _set_remaining_lease(engine, claimed.token.job_id, 20)
+
+    class Port:
+        calls = 0
+
+        def append(self, command):
+            self.calls += 1
+            raise AssertionError("Append must not start outside the safe lease window")
+
+    port = Port()
+    runner = DurableAppendDeliveryRunner(
+        lambda: Session(engine),
+        port,  # type: ignore[arg-type]
+        rpc_deadline_seconds=30,
+        rpc_safety_margin_seconds=5,
+    )
+
+    with pytest.raises(LeaseRpcWindowTooShort):
+        runner.deliver(
+            token=claimed.token,
+            ingestion_session_id=SESSION_ID,
+            batches=(_batch(),),
+        )
+
+    assert port.calls == 0
+    with Session(engine) as session:
+        persisted = session.get(DeliveryBatch, (claimed.token.job_id, 0))
+        assert persisted is not None
+        assert persisted.status == "PREPARED"
     engine.dispose()
