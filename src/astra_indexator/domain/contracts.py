@@ -53,19 +53,14 @@ class AccessZoneCode:
 
 @dataclass(frozen=True, slots=True)
 class AccessZoneIntent:
-    """Normalized producer-owned AccessZone selector.
+    """Producer-owned AccessZone selector for AstraIndexator.
 
-    AstraIndexator preserves the selector but does not resolve a code to a UUID.
-    When both forms are supplied they are correlation assertions; AstraVector is
-    the authority that proves they denote the same effective zone.
+    AstraIndexator accepts and preserves only the public immutable AccessZoneCode.
+    AstraVector owns any internal code-to-UUID resolution required by its storage,
+    retrieval, GraphRAG, TTL, or lifecycle implementation.
     """
 
-    access_zone_id: UUID | None = None
-    access_zone_code: AccessZoneCode | None = None
-
-    def __post_init__(self) -> None:
-        if self.access_zone_id is None and self.access_zone_code is None:
-            raise ValueError("exactly one effective AccessZone must be selectable")
+    access_zone_code: AccessZoneCode
 
 
 @dataclass(frozen=True, slots=True)
