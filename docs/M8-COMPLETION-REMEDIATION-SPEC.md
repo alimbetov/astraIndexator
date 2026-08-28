@@ -4,13 +4,12 @@
 
 **Milestone:** M8 AstraVector Delivery & Reliability  
 **Work package:** Completion Remediation  
-**Status:** SPECIFICATION — IMPLEMENTATION NOT STARTED  
+**Status:** IMPLEMENTATION IN PROGRESS  
 **AstraIndexator baseline:** `main@ec7ddc97a6446fe40d822f7e5a0e081fba3ceeb6`  
 **Baseline CI:** AstraIndexator CI #328 — SUCCESS  
+**Implementation branch:** `spec/m8-completion-remediation`  
 
-This specification defines the remediation required before final real-AstraVector qualification and before M8 may be declared QUALIFIED.
-
-The implementation phase SHALL be performed separately after this specification is reviewed and merged. This specification does not authorize production-code changes in the specification PR.
+This specification defines the remediation required before final real-AstraVector qualification and before M8 may be declared QUALIFIED. By explicit project decision, implementation is performed in this same reviewed branch; this document remains the normative acceptance contract for CR-01..CR-05.
 
 ---
 
@@ -18,9 +17,7 @@ The implementation phase SHALL be performed separately after this specification 
 
 The current M8 implementation has strong durable-delivery primitives but still contains release-level gaps around logical Start idempotency, source identity, unified failure execution, ambiguous Finalize recovery and replay compatibility evidence.
 
-The purpose of Completion Remediation is to close those gaps without expanding M8 into document lifecycle management and without weakening already-qualified M1–M7 invariants.
-
-Completion Remediation SHALL preserve the architecture:
+Completion Remediation closes those gaps without expanding M8 into document lifecycle management and without weakening qualified M1–M7 invariants.
 
 ```text
 producer
@@ -42,7 +39,7 @@ producer
 
 AstraIndexator producer/domain/inventory AccessZone identity is exclusively `access_zone_code`.
 
-The following producer/domain fields are forbidden:
+Forbidden producer/domain fields:
 
 ```text
 access_zone_id
@@ -54,9 +51,7 @@ requested_access_zone_code
 
 `accessZoneCode` / `accessZoneCodes` may be accepted at the external normalization boundary only to produce exactly one effective `access_zone_code`.
 
-`access_zone_code` MUST match `^[0-9]{4}$` and leading zeroes are significant.
-
-AstraVector owns code-to-UUID resolution.
+`access_zone_code` MUST match `^[0-9]{4}$`; leading zeroes are significant. AstraVector owns code-to-UUID resolution.
 
 The sole UUID exception in AstraIndexator is:
 
@@ -64,51 +59,37 @@ The sole UUID exception in AstraIndexator is:
 delivery_checkpoint.resolved_access_zone_id
 ```
 
-It is private downstream recovery/status evidence returned by the finalized AstraVector contract. It MUST NOT become producer identity, inventory identity, authorization input or a replacement for `access_zone_code`.
+It is private downstream recovery/status evidence returned by finalized AstraVector. It MUST NOT become producer identity, inventory identity, authorization input or a replacement for `access_zone_code`.
 
 ### 3.2 TTL
 
-`ttl_days = 0` means inherit AstraVector AccessZone/platform policy.  
-`ttl_days > 0` means explicit finite relative TTL.  
-Negative values are invalid.
-
-AstraIndexator MUST NOT derive TTL from AccessZoneCode.
+`ttl_days = 0` means inherit AstraVector AccessZone/platform policy. `ttl_days > 0` means explicit finite relative TTL. Negative values are invalid. AstraIndexator MUST NOT derive TTL from AccessZoneCode.
 
 ### 3.3 Ownership and time
 
-PostgreSQL remains authoritative for job ownership, retry scheduling and lease time.
-
-Every authoritative worker-side mutation MUST remain fenced by:
+PostgreSQL remains authoritative for job ownership, retry scheduling and lease time. Every authoritative worker mutation MUST remain fenced by:
 
 ```text
 job_id + worker_id + lease_generation + non-expired lease
 ```
 
-A downstream mutating RPC MUST NOT start unless the remaining PostgreSQL lease safely exceeds its RPC deadline plus configured safety margin.
+A downstream mutating RPC MUST NOT start unless remaining PostgreSQL lease safely exceeds its RPC deadline plus safety margin.
 
 ### 3.4 Processing/replay boundary
 
-M7 prepared artifacts remain the canonical expensive-processing restart boundary. M8 MUST NOT rerun parser/OCR/normalization/splitting when a compatible verified M7 artifact is available.
+M7 prepared artifacts remain the canonical expensive-processing restart boundary. M8 MUST NOT rerun parser/OCR/normalization/splitting when a compatible verified M7 artifact exists.
 
 ### 3.5 AstraVector boundary
 
-Generated/pinned AstraVector protobuf + gRPC is the transport authority. AstraIndexator MUST NOT access AstraVector PostgreSQL or Qdrant directly and MUST NOT introduce a parallel handwritten wire protocol.
+Generated/pinned AstraVector protobuf + gRPC is the transport authority. AstraIndexator MUST NOT access AstraVector PostgreSQL/Qdrant directly and MUST NOT introduce a parallel handwritten wire protocol.
 
-Session `COMPLETED` is not equivalent to searchable knowledge. Local successful completion requires authoritative vector readiness evidence.
+Session `COMPLETED` is not searchable proof. Local successful completion requires authoritative vector readiness evidence.
 
 ---
 
 # 4. CR-01 — Stable logical Start idempotency
 
-## 4.1 Current gap
-
-The current coordinator derives Start idempotency from local job identity. A new local job representing the same logical document version may therefore produce a different downstream idempotency key.
-
-Local execution identity MUST NOT define downstream logical-document identity.
-
-## 4.2 Required decision
-
-The Start idempotency identity SHALL be deterministically derived from immutable logical document identity:
+Start idempotency SHALL derive from immutable logical identity:
 
 ```text
 document_id + document_version + verified source content hash
@@ -120,296 +101,146 @@ Canonical semantic form:
 astra-indexator:{documentId}:{documentVersion}:{contentHash}
 ```
 
-An implementation MAY hash this canonical form before transport, but equivalent inputs MUST always produce the same key and any change to one identity component MUST change the key.
+`job_id`, `attempt_id`, `worker_id`, `lease_generation` and session ID MUST NOT participate. Retries, reclaim and M7 replay of the same document/version/content MUST reuse the same key. Conflicting content for the same logical version MUST fail closed or enter an explicitly qualified conflict/version path.
 
-`job_id`, `attempt_id`, `worker_id`, `lease_generation` and ingestion session ID MUST NOT participate in the logical Start idempotency identity.
+Required evidence proves deterministic equality across execution identity changes and inequality when document version/content identity changes.
 
-## 4.3 Recovery semantics
-
-Retries, worker reclaim and M7 replay of the same logical document/version/content MUST reuse the same Start identity.
-
-A conflicting replay for the same document/version with different verified content MUST fail closed or enter an explicitly qualified version/conflict path; it MUST NOT masquerade as the same logical Start.
-
-## 4.4 Required evidence
-
-Tests SHALL prove:
-
-- different job IDs with same document/version/hash produce identical Start key;
-- different content hash changes the key;
-- different document version changes the key;
-- worker reclaim does not change the key;
-- M7 replay preserves the key;
-- the key is deterministic across process restart.
-
-## 4.5 Acceptance criterion
-
-No production Start request is keyed by local job execution identity.
+**Acceptance:** no production Start request is keyed by local job execution identity.
 
 ---
 
 # 5. CR-02 — Verified source identity before downstream mutation
 
-## 5.1 Current gap
+A non-empty verified SHA-256 source content hash is mandatory before the first AstraVector mutating RPC.
 
-M8 can currently construct Start with an empty source content hash when neither delivery input nor job state supplies one.
+The authoritative value SHALL originate from durable acquisition/job lineage and may be repeated by verified M7 evidence. M8 MUST NOT invent a hash, use an empty string or let payload evidence silently replace missing durable evidence.
 
-This weakens source provenance, idempotency and replay integrity.
+Canonical representation is lowercase 64-character hexadecimal.
 
-## 5.2 Required decision
+Missing/malformed/conflicting source hash is a local integrity/input failure before Start, not transient AstraVector unavailability.
 
-A non-empty, syntactically valid, verified SHA-256 source content hash is mandatory before the first AstraVector mutating RPC.
-
-The authoritative value SHALL originate from qualified acquisition/prepared-artifact evidence. M8 MUST NOT invent a hash, silently use an empty string, or compute identity from unverified mutable source metadata.
-
-Canonical representation SHALL be lowercase 64-character hexadecimal unless an earlier frozen source-hash contract explicitly defines another representation.
-
-## 5.3 Failure semantics
-
-Missing, malformed or lineage-conflicting source hash is a local integrity/input failure. It MUST fail before Start and MUST NOT be classified as transient AstraVector unavailability.
-
-## 5.4 Required evidence
-
-Tests SHALL prove:
+Required evidence:
 
 - missing hash blocks Start;
 - malformed hash blocks Start;
-- hash mismatch between durable source/M7 evidence blocks delivery;
-- valid M7 replay preserves the verified hash;
-- no AstraVector mutating call occurs on source-identity failure.
-
-## 5.5 Acceptance criterion
-
-Every Start is backed by durable verified source SHA-256 evidence.
+- durable/M7 mismatch blocks delivery;
+- valid replay preserves hash;
+- no downstream mutation occurs on identity failure.
 
 ---
 
 # 6. CR-03 — Durable runtime failure execution
 
-## 6.1 Current gap
-
-The codebase contains delivery, retry, reconciliation and fencing primitives, but `main` lacks one production execution layer that deterministically maps delivery outcomes/errors into durable job state transitions.
-
-## 6.2 Required execution policy
-
-A production executor SHALL own one claimed-job delivery attempt and apply exactly one of the following semantic dispositions:
+One production executor SHALL own one claimed-job delivery turn and map every delivery exception to a defined disposition:
 
 ```text
 SUCCESS
     -> COMPLETED only after authoritative SEARCHABLE evidence
 
 TRANSIENT / DEPENDENCY_UNAVAILABLE
-    -> RETRY_WAIT with bounded backoff while attempt budget remains
-    -> DEAD_LETTER when the qualified attempt budget is exhausted
+    -> RETRY_WAIT while budget remains
+    -> DEAD_LETTER on exhaustion
 
-PERMANENT_INPUT / PERMANENT_POLICY / RESOURCE_LIMIT
+PERMANENT_INPUT / PERMANENT_POLICY / RESOURCE_LIMIT / INTERNAL_BUG
     -> FAILED
 
 DOWNSTREAM_AMBIGUOUS
     -> RECONCILE
-    -> never blind replay of an ambiguous mutation
+    -> never blind retry
 
 OWNERSHIP_LOST
-    -> ABANDON current execution
+    -> ABANDON
     -> no stale-worker authoritative mutation
 ```
 
-Unknown/unclassified downstream failures MUST fail closed into an explicit operator-visible state/disposition; they MUST NOT default to blind retry.
+Unknown/unclassified failures fail closed and MUST NOT default to retry.
 
-## 6.3 Transaction/fencing requirements
+Retry scheduling uses PostgreSQL time and bounded deterministic/configurable backoff. Durable transitions use current lease fencing. If ownership is lost during failure persistence, the stale worker returns ABANDON without a second authoritative mutation.
 
-Every durable transition performed by the executor MUST use the current lease token and PostgreSQL-time fencing.
-
-If ownership is lost while handling an exception, the old worker MUST NOT persist retry/failure/completion decisions for the job.
-
-Failure handling itself MUST be safe under process crash and duplicate invocation.
-
-## 6.4 Backoff
-
-Retry backoff SHALL be bounded and deterministic/configurable. Retry scheduling MUST use PostgreSQL time. Attempt exhaustion MUST have a durable terminal disposition and audit event.
-
-## 6.5 Observability
-
-Each disposition SHALL record enough correlation for operations:
-
-```text
-job_id
-document_id
-document_version
-attempt_id
-lease_generation
-ingestion_session_id when known
-error class/code
-reconciliation reason when applicable
-```
-
-Credentials, tokens and sensitive SourceLink query material MUST NOT be logged.
-
-## 6.6 Required evidence
-
-The failure-injection matrix SHALL include at least:
-
-- transient Start failure;
-- transient Append failure;
-- permanent input/policy failure;
-- resource limit failure;
-- attempt exhaustion;
-- lease loss before failure persistence;
-- crash after remote mutation but before local checkpoint;
-- unknown downstream error;
-- executor restart/reclaim;
-- success path proving completion only after SEARCHABLE.
-
-## 6.7 Acceptance criterion
-
-No production delivery exception can escape without a defined durable or ownership-lost disposition.
+Required failure-injection evidence includes transient Start/Append, permanent failure, attempt exhaustion, lease loss, remote mutation/local checkpoint crash, unknown error, reclaim/restart and searchable success.
 
 ---
 
 # 7. CR-04 — Ambiguous Finalize recovery
 
-## 7.1 Problem statement
+Finalize timeout/transport loss after request transmission is ambiguous. AstraVector may have committed while AstraIndexator did not receive `DocumentRef.access_zone_id`.
 
-Finalize is a mutating RPC. Timeout/transport loss after request transmission is ambiguous: AstraVector may have committed Finalize while AstraIndexator did not receive the response containing downstream `DocumentRef.access_zone_id`.
-
-The finalized AstraVector vector-status wire currently requires that UUID. AstraIndexator producer identity remains code-only and MUST NOT solve this by reintroducing producer UUID.
-
-## 7.2 Required recovery algorithm
-
-After ambiguous Finalize, AstraIndexator SHALL first reconcile the existing ingestion session through public AstraVector APIs.
-
-It MUST NOT create a new logical document version/session merely because the Finalize response was lost.
-
-Conceptual flow:
+AstraIndexator SHALL reconcile the existing ingestion session through public AstraVector APIs first and MUST NOT create a new logical document version/session merely because the response was lost.
 
 ```text
 Finalize ambiguous
-  -> persist/retain reconciliation evidence
+  -> retain reconciliation evidence
   -> GetLogicalDocumentIngestionStatus(existing session)
-     -> not terminal: remain bounded reconciliation/pending
-     -> failed/conflict: classify explicitly
+     -> non-terminal: reconciliation pending
+     -> terminal failure/conflict: explicit classification
      -> completed:
           recover authoritative DocumentRef/resolved UUID if public contract permits
           -> GetDocumentVectorStatus
           -> SEARCHABLE => local completion
 ```
 
-## 7.3 Contract-gap rule
+If the finalized public API proves session completion but cannot recover the authoritative UUID required for readiness, AstraIndexator SHALL return/persist explicit operator-visible reconciliation gap evidence. It MUST NOT infer UUID from code, read AstraVector private storage, mark COMPLETED without searchable proof, blindly create a duplicate version or blindly replay an ambiguous mutation.
 
-If the finalized AstraVector public API can prove session completion but cannot recover the authoritative DocumentRef UUID needed for vector readiness, AstraIndexator SHALL enter an explicit durable operator-visible reconciliation failure/gap state.
+`resolved_access_zone_id`, once obtained, is private checkpoint evidence and conflicting replacement is an integrity error.
 
-It MUST NOT:
-
-- infer a UUID from AccessZoneCode;
-- query AstraVector PostgreSQL/Qdrant directly;
-- mark the job COMPLETED without searchable proof;
-- blindly re-Finalize or create a new logical version unless the downstream contract explicitly proves that operation safe.
-
-`resolved_access_zone_id`, once obtained, SHALL be persisted only in the private delivery checkpoint and protected against conflicting replacement.
-
-## 7.4 Required evidence
-
-Tests SHALL cover:
-
-- normal Finalize response with resolved UUID;
-- Finalize ACK loss but session still processing;
-- ACK loss and session completed with recoverable identity;
-- ACK loss and completed session without recoverable identity;
-- restart during reconciliation;
-- conflicting recovered UUID;
-- no duplicate logical version/session caused by ambiguity.
-
-Real AstraVector qualification SHALL include an ambiguous Finalize scenario.
-
-## 7.5 Acceptance criterion
-
-Every ambiguous Finalize converges either to authoritative searchable completion or to an explicit durable operator-visible unresolved state; never to silent duplication or false completion.
+Real AstraVector M8.F qualification SHALL include ambiguous Finalize.
 
 ---
 
 # 8. CR-05 — Immutable delivery compatibility fingerprint
 
-## 8.1 Purpose
+M7 replay is safe only when its prepared artifact remains compatible with current M8 mapping/wire/hash/validation semantics.
 
-M7 replay is safe only if the prepared artifact remains compatible with the M8 mapper/wire semantics used after restart or deployment.
-
-## 8.2 Required fingerprint
-
-A durable immutable compatibility fingerprint SHALL bind, at minimum:
+A deterministic versioned delivery compatibility fingerprint SHALL bind at least:
 
 ```text
-prepared artifact schema/revision
+M7 prepared compatibility SHA-256
 logical-block mapping contract revision
-AstraVector protobuf/wire revision
-canonical hash algorithm/revision
-relevant structural-validation revision
+AstraVector pinned wire revision
+canonical hash contract revision
+structural validation revision
+fingerprint format revision
 ```
 
-The exact serialization SHALL be deterministic and versioned.
+It MUST exclude worker ID, attempt ID, hostname, timestamp and other ephemeral deployment values.
 
-The fingerprint MUST NOT contain deployment-specific ephemeral values such as worker ID, job attempt, hostname or timestamp.
+Before downstream mutation, current fingerprint SHALL be compared to any durable checkpoint value. Unknown/malformed/incompatible evidence fails closed before Start.
 
-## 8.3 Replay rule
-
-Before downstream mutation from a persisted M7 artifact, M8 SHALL verify compatibility.
-
-Unknown/incompatible fingerprint MUST fail closed before Start. Compatibility MUST NOT be silently assumed after a deployment changes mapper/wire/hash semantics.
-
-## 8.4 Required evidence
-
-Tests SHALL prove:
-
-- deterministic fingerprint generation;
-- restart with same contract accepts replay;
-- changed wire revision rejects incompatible replay;
-- changed hash/mapping revision rejects incompatible replay;
-- worker/attempt changes do not affect fingerprint.
-
-## 8.5 Acceptance criterion
-
-No persisted M7 artifact is replayed into M8 under unknown delivery semantics.
+Required tests prove deterministic generation, same-contract replay acceptance, changed wire/mapping/prepared evidence incompatibility, and execution-identity independence.
 
 ---
 
-# 9. Documentation reconciliation requirements
+# 9. Documentation reconciliation
 
-The implementation phase SHALL reconcile historical documentation with the code-only AccessZone contract.
+Implementation SHALL:
 
-At minimum:
-
-1. `README.md` SHALL point to Roadmap 2.0 and reflect the actual M1–M8 phase.
-2. `IMPLEMENTATION-ROADMAP-2.0.md` SHALL remove producer/requested AccessZone UUID semantics and update M8 status from executable evidence.
-3. `M8.0-CONTRACT-FREEZE-GAP-AUDIT.md` SHALL be explicitly marked historically superseded where it permits producer AccessZone UUIDs.
-4. `ACCESS-ZONE-CODE-CONTRACT-FREEZE.md` SHALL remain the active AccessZone producer/domain authority unless replaced by an explicitly newer reviewed contract.
-5. M8.F real-service qualification SHALL test code-only producer behavior; “AccessZone by UUID” is obsolete for AstraIndexator producer qualification.
-
-Historical documents MAY retain old text for audit history only when clearly labelled superseded and when the current authority is unambiguous.
+1. update `README.md` to Roadmap 2.0/current M8 phase;
+2. remove/supersede producer UUID semantics in Roadmap 2.0;
+3. explicitly mark producer UUID portions of `M8.0-CONTRACT-FREEZE-GAP-AUDIT.md` historical/superseded;
+4. keep `ACCESS-ZONE-CODE-CONTRACT-FREEZE.md` as active AccessZone authority unless explicitly replaced;
+5. make M8.F qualification code-only and include producer UUID rejection rather than AccessZone-by-UUID producer success.
 
 ---
 
-# 10. Required implementation sequencing
-
-Implementation SHALL be performed in a separate implementation branch after this specification is approved.
-
-Recommended order:
+# 10. Implementation state in this branch
 
 ```text
-CR-01 stable logical Start identity
-  -> CR-02 mandatory verified source hash
-  -> CR-05 compatibility fingerprint
-  -> CR-03 runtime failure executor
-  -> CR-04 ambiguous Finalize closure
-  -> documentation/traceability reconciliation
-  -> real AstraVector M8.F qualification
-  -> M8.G final qualification
+CR-01 stable logical Start identity             IMPLEMENTED / qualification running
+CR-02 mandatory verified source SHA-256         IMPLEMENTED / qualification running
+CR-03 durable runtime failure executor          IMPLEMENTED / qualification running
+CR-04 ambiguous Finalize convergence            EXISTING RECONCILIATION + explicit gap; final evidence open
+CR-05 immutable delivery compatibility          IMPLEMENTED / qualification running
+Docs reconciliation                             IN PROGRESS
+M8.F real AstraVector qualification              NOT PART OF merge claim yet
 ```
 
-CR-03 and CR-04 may share durable reconciliation primitives, but the implementation MUST avoid creating a second delivery engine parallel to `AstraVectorDeliveryCoordinator`.
+This table is implementation tracking only; no item becomes QUALIFIED until required tests/CI/merge evidence exists.
 
 ---
 
 # 11. Qualification gates
 
-Completion Remediation implementation is not QUALIFIED until all applicable gates pass:
+Completion Remediation implementation is not QUALIFIED until:
 
 ```text
 Ruff lint                         PASS
@@ -418,41 +249,24 @@ M8 scoped mypy                    PASS
 full pytest                       PASS
 PostgreSQL integration            PASS
 failure-injection matrix          PASS
-migration verification if needed PASS
+migration verification            PASS
 package build                     PASS
 reviewed PR                       MERGED
 post-merge main CI                PASS
 ```
 
-In addition, M8 itself remains NOT QUALIFIED until real AstraVector M8.F evidence passes.
+M8 itself remains NOT QUALIFIED until real AstraVector M8.F evidence passes.
 
 ---
 
 # 12. Out of scope
 
-Completion Remediation SHALL NOT implement:
-
-- M9 business/document lifecycle;
-- delete/reindex product semantics beyond what is required to reconcile one M8 delivery;
-- authorization policy redesign;
-- AstraVector internal storage changes;
-- direct Qdrant/PostgreSQL access in AstraVector;
-- tokenizer-aware searchable chunking in AstraIndexator;
-- embeddings in AstraIndexator;
-- production deployment/Kubernetes work owned by M12;
-- broad observability/platform API work owned by M10 except minimum failure correlation required by CR-03.
+Completion Remediation SHALL NOT implement M9 business/document lifecycle, product delete/reindex semantics beyond one-delivery reconciliation, authorization redesign, AstraVector internal storage changes, direct Qdrant/PostgreSQL access, AstraIndexator embeddings/tokenizer-aware searchable chunking, M12 deployment work, or broad M10 observability/API work beyond minimum CR-03 correlation.
 
 ---
 
-# 13. Definition of specification approval
+# 13. Merge readiness
 
-This specification is APPROVED when:
+This branch is merge-ready only when CR-01..CR-05 have executable evidence, code-only AccessZone remains unambiguous, no implementation depends on AstraVector private persistence, scope does not leak into M9/M10/M12, and all branch quality/test/migration gates are green.
 
-- it is reviewed against current `main` implementation;
-- AccessZone code-only semantics are unambiguous;
-- CR-01..CR-05 have testable acceptance criteria;
-- no requirement depends on AstraVector private persistence;
-- implementation scope does not leak into M9/M10/M12;
-- specification PR is merged with green CI.
-
-Only after that gate may the implementation branch be opened and production code changed for Completion Remediation.
+Merge plus post-merge `main` CI are required before Completion Remediation is called merged/qualified. Final M8 qualification additionally remains blocked on M8.F real AstraVector evidence.
