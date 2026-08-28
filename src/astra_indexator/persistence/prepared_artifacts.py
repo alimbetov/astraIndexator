@@ -29,12 +29,8 @@ class PreparedArtifactCheckpoint(Base):
             "fragment_count >= 0", name="prepared_artifact_fragment_count_non_negative"
         ),
         CheckConstraint(
-            "requested_access_zone_code IS NULL OR requested_access_zone_code ~ '^[0-9]{4}$'",
+            "access_zone_code ~ '^[0-9]{4}$'",
             name="prepared_artifact_access_zone_code_format",
-        ),
-        CheckConstraint(
-            "requested_access_zone_id IS NOT NULL OR requested_access_zone_code IS NOT NULL",
-            name="prepared_artifact_access_zone_selector_present",
         ),
         CheckConstraint(
             "requested_ttl_days IS NULL OR requested_ttl_days >= 0",
@@ -58,8 +54,7 @@ class PreparedArtifactCheckpoint(Base):
     lease_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     # Immutable producer delivery intent captured with the M7 replay checkpoint.
-    requested_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
-    requested_access_zone_code: Mapped[str | None] = mapped_column(String(4))
+    access_zone_code: Mapped[str] = mapped_column(String(4), nullable=False)
     requested_ttl_days: Mapped[int | None] = mapped_column(Integer)
 
     created_at: Mapped[datetime] = mapped_column(
