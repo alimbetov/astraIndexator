@@ -1,119 +1,159 @@
-# AccessZoneCode Contract Freeze
+# AstraIndexator AccessZoneCode Contract Freeze
 
-Status: **FROZEN for AstraIndexator 1.0 / M8 delivery**
+## Status
 
-This document is the short canonical reminder for all future AstraIndexator work involving Access Zones. Detailed semantics remain in `TZ-10-access-zones-ttl.md`; AstraVector runtime authority remains `alimbetov/llm2` (`src/access_zone_registry/mod.rs` and `proto/astravector_embedding.proto`).
+**Status:** ACTIVE / AUTHORITATIVE FOR ASTRAINDEXATOR PRODUCER, DOMAIN AND INVENTORY ACCESSZONE IDENTITY  
+**Current M8 remediation:** `docs/M8-COMPLETION-REMEDIATION-SPEC.md`
 
-## 1. Canonical type and range
+This document supersedes historical AstraIndexator requirements that allowed producer/domain AccessZone UUID selectors.
 
-`accessZoneCode` is a public immutable **four-character string**:
+## Frozen invariant
+
+AstraIndexator accepts, persists and propagates AccessZone producer intent exclusively as `access_zone_code`.
 
 ```text
-0000 .. 9999
+Spring Boot / trusted producer
+        |
+        | accessZoneCode / accessZoneCodes
+        v
+boundary normalization
+        |
+        | exactly one effective four-digit code
+        v
+IndexationJob.access_zone_code
+        |
+        +--> M3/M4/M5/M6 context
+        +--> M7 prepared-artifact lineage
+        v
+M8 StartIngestion
+        |
+        | access_zone_code=<original code>
+        | access_zone_id=None
+        v
+AstraVector AccessZone registry
+        |
+        | code -> internal UUID
+        v
+private delivery_checkpoint.resolved_access_zone_id
+        |
+        v
+GetDocumentVectorStatus / recovery only
 ```
 
-Validation:
+## Producer boundary
 
-```regex
+Allowed input representations:
+
+```text
+accessZoneCode
+accessZoneCodes
+```
+
+They must normalize to exactly one effective value.
+
+Forbidden producer representations:
+
+```text
+accessZoneId
+accessZoneIds
+access_zone_id
+requested_access_zone_id
+```
+
+Forbidden UUID input must be rejected rather than ignored.
+
+## Code lexical contract
+
+`accessZoneCode` is exactly four ASCII digits:
+
+```text
 ^[0-9]{4}$
 ```
 
-Leading zeroes are significant. Never convert `accessZoneCode` to an integer in DTO, persistence, hashing, logging, replay, or wire mapping.
+It is a string, never an integer. Leading zeroes are significant and must survive every boundary byte-for-byte.
 
 Examples:
 
 ```text
-"0000" valid
-"0001" valid
-"0600" valid
-"9999" valid
-"1"    invalid
-600    invalid wire/application type
+0000
+0001
+0010
+0100
+0600
+0999
+9999
 ```
 
-## 2. Producer compatibility fields
+The current implementation retains `0000` as a valid legacy/canonical GENERAL code. Any future decision to reserve or forbid `0000` requires an explicit migration and reviewed contract change; it must not be changed implicitly inside M8 remediation.
 
-The producer-facing compatibility surface is:
+## Domain/persistence rules
+
+`IndexationJob` contains exactly one producer-owned AccessZone identity field:
 
 ```text
-accessZoneId
-accessZoneIds[]
-accessZoneCode
-accessZoneCodes[]
+access_zone_code
 ```
 
-For ingestion, singular/plural values normalize to **exactly one distinct effective zone**. Repeating the same code is allowed and deduplicates; multiple different codes for one ingestion job are rejected.
-
-For retrieval, multiple IDs/codes are allowed subject to AstraVector limits.
-
-## 3. Primary ingestion rule
-
-Normal document upload/indexation SHOULD preserve `accessZoneCode` from producer input all the way to AstraVector:
+The following fields are not part of the current domain model:
 
 ```text
-Spring Boot / producer
-  accessZoneCode="0600"
-        ↓
-AstraIndexator boundary normalization
-        ↓
-IndexationJob.requested_access_zone_code="0600"
-        ↓
-PreparedArtifactCheckpoint.requested_access_zone_code="0600"
-        ↓ restart/replay uses persisted value
-AstraVectorDeliveryCoordinator
-        ↓
-StartLogicalDocumentIngestionRequest.access_zone_code="0600"
-        ↓
-AstraVector Access Zone Registry
+access_zone_id
+requested_access_zone_id
+requested_access_zone_code
 ```
 
-The code must be passed **unchanged**. No integer conversion, padding repair, family inference, UUID derivation, or code replacement is allowed in AstraIndexator.
+`KnowledgeInventory` uses `access_zone_code`, not AstraVector UUID.
 
-## 4. UUID is a separate representation, not a replacement
+M7 prepared-artifact checkpoint/replay preserves `access_zone_code` and must not request the producer to resubmit it after crash/restart.
 
-`accessZoneId` and `accessZoneCode` are two representations supported by AstraVector. AstraIndexator does **not** require a code to be converted/resolved to UUID before ingestion.
+## Downstream UUID exception
 
-Rules:
-
-- code-only ingestion is valid;
-- id-only ingestion is valid when supplied by a trusted producer;
-- when both are supplied they are a consistency assertion and AstraVector Registry is authoritative;
-- AstraIndexator must not derive UUID from code;
-- AstraIndexator must not overwrite persisted `requested_access_zone_code` with a UUID or with a code returned from another source.
-
-AstraVector may return its internal `access_zone_id` in `DocumentRef`. AstraIndexator may persist that separately as downstream evidence (`DeliveryCheckpoint.resolved_access_zone_id`) for APIs that currently require `DocumentRef`. That field never replaces producer `requested_access_zone_code`.
-
-## 5. Shared PostgreSQL does not change service ownership
-
-AstraIndexator and AstraVector may use the same PostgreSQL database/instance, but separate schema ownership remains authoritative:
+AstraVector internally resolves AccessZoneCode to its own UUID. Because the finalized public vector-status contract currently identifies `DocumentRef` using UUID, AstraIndexator may persist:
 
 ```text
-astra_indexator.*  owned by AstraIndexator
-astravector.*      owned by AstraVector
+delivery_checkpoint.resolved_access_zone_id
 ```
 
-AstraIndexator must not resolve `accessZoneCode` by directly reading `astravector.access_zones`. The service contract is AstraVector gRPC/public facade. Shared PostgreSQL is deployment topology, not an integration API.
+This value is private downstream technical evidence only. It may be used for public AstraVector status/reconciliation operations that require it.
 
-## 6. Current wire recovery caveat
+It must not be used as:
 
-`StartLogicalDocumentIngestion` accepts `access_zone_code` directly. A successful `FinalizeLogicalDocumentIngestion` returns `DocumentRef`, including AstraVector internal `access_zone_id`.
+- producer input;
+- domain AccessZone identity;
+- KnowledgeInventory identity;
+- authorization/routing input from the producer;
+- substitute for `access_zone_code`;
+- a reason to read AstraVector private PostgreSQL/Qdrant state.
 
-If Finalize has an ambiguous transport result and later `GetLogicalDocumentIngestionStatus` reports `COMPLETED`, the current status response does not expose `DocumentRef`, while `GetDocumentVectorStatus` currently requires an internal `access_zone_id` in its `DocumentRef`.
+Conflicting replacement of a persisted resolved UUID is an integrity failure.
 
-This is a **wire recovery identity gap**, not evidence that `accessZoneCode` requires UUID resolution. Code-based ingestion remains valid and the original code must remain durable. Any future fix should improve AstraVector public recovery/status contract rather than introducing cross-schema SQL lookup or local code-to-UUID derivation.
+## TTL independence
 
-## 7. Required regression tests
+TTL remains independent producer intent:
 
-CI must keep tests proving:
+```text
+ttl_days = 0  -> inherit AstraVector AccessZone/platform policy
+ttl_days > 0  -> explicit finite relative TTL
+```
 
-1. `"0001"` remains `"0001"` through normalization and PostgreSQL persistence;
-2. plural `accessZoneCodes=["0600","0600"]` normalizes to `"0600"`;
-3. distinct ingestion codes are rejected;
-4. mismatched legacy/requested code fields are rejected instead of silently preferring one;
-5. restart/replay preserves `requested_access_zone_code`;
-6. code-only M8 coordinator sends `StartIngestionCommand.access_zone_code` unchanged and `access_zone_id=None`;
-7. downstream `resolved_access_zone_id` never mutates/replaces `requested_access_zone_code`.
+AstraIndexator must not derive TTL from AccessZoneCode.
 
-## 8. Review rule
+## M8 completion relationship
 
-Any change touching Access Zone DTOs, job creation, persistence, replay, coordinator, protobuf mapping, or Spring integration must preserve this contract. If a future AstraVector proto changes it, update this file, TZ-10, contract tests, and integration documentation in the same change.
+M8 Completion Remediation must preserve this contract while adding stable logical Start idempotency, verified source SHA-256, durable runtime failure execution, ambiguous Finalize handling and immutable delivery compatibility evidence.
+
+In particular, ambiguous Finalize must never be solved by reintroducing producer UUID. If the finalized AstraVector public API cannot recover a required resolved UUID, AstraIndexator fails closed into explicit reconciliation rather than inferring identity or accessing private storage.
+
+## Qualification expectations
+
+Executable evidence must prove:
+
+- leading-zero code preservation;
+- singular/plural normalization to exactly one code;
+- producer UUID rejection;
+- persistence/replay code lineage;
+- Start sends `access_zone_code` and no producer UUID;
+- returned/resolved UUID remains confined to private downstream checkpoint/recovery paths;
+- `ttl_days=0` inheritance is preserved.
+
+Real AstraVector M8.F qualification is code-based. Producer “AccessZone by UUID success” is obsolete for AstraIndexator.
