@@ -32,14 +32,6 @@ class IndexationJob(Base):
         CheckConstraint("document_version > 0", name="document_version_positive"),
         CheckConstraint("access_zone_code ~ '^[0-9]{4}$'", name="access_zone_code_format"),
         CheckConstraint(
-            "requested_access_zone_code IS NULL OR requested_access_zone_code ~ '^[0-9]{4}$'",
-            name="requested_access_zone_code_format",
-        ),
-        CheckConstraint(
-            "requested_access_zone_id IS NOT NULL OR requested_access_zone_code IS NOT NULL",
-            name="requested_access_zone_selector_present",
-        ),
-        CheckConstraint(
             "requested_ttl_days IS NULL OR requested_ttl_days >= 0",
             name="requested_ttl_days_non_negative",
         ),
@@ -90,11 +82,7 @@ class IndexationJob(Base):
     external_revision: Mapped[str | None] = mapped_column(String(255))
 
     knowledge_type: Mapped[str | None] = mapped_column(String(32))
-    # Pre-M8 compatibility columns. UUID-only M8 selectors legitimately leave the code unset.
-    access_zone_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
-    access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
-    requested_access_zone_code: Mapped[str | None] = mapped_column(String(4))
-    requested_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    access_zone_code: Mapped[str] = mapped_column(String(4), nullable=False)
     requested_ttl_days: Mapped[int | None] = mapped_column(Integer)
 
     source_uri: Mapped[str] = mapped_column(Text, nullable=False)
@@ -192,6 +180,7 @@ class DeliveryCheckpoint(Base):
         ForeignKey(f"{SCHEMA}.indexation_job.id", ondelete="CASCADE"),
         primary_key=True,
     )
+    # Private AstraVector recovery evidence. Not a producer/domain AccessZone selector.
     resolved_access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     ingestion_session_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     next_batch_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
@@ -301,7 +290,6 @@ class KnowledgeInventory(Base):
     )
     knowledge_type: Mapped[str | None] = mapped_column(String(32))
     access_zone_code: Mapped[str] = mapped_column(String(4), nullable=False)
-    access_zone_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     source_file_name: Mapped[str | None] = mapped_column(Text)
     source_content_hash: Mapped[str | None] = mapped_column(String(128))
     processing_fingerprint: Mapped[str | None] = mapped_column(String(128))
