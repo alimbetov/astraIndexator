@@ -4,11 +4,12 @@
 
 **Status:** ACTIVE ROADMAP  
 **Supersedes for forward planning:** `docs/IMPLEMENTATION-ROADMAP-1.0.md`  
-**Historical contract freeze remains authoritative:** `docs/M8.0-CONTRACT-FREEZE-GAP-AUDIT.md`
+**Historical M8 freeze:** `docs/M8.0-CONTRACT-FREEZE-GAP-AUDIT.md`  
+**Current M8 remediation authority:** `docs/M8-COMPLETION-REMEDIATION-SPEC.md`
 
-Roadmap 2.0 reconciles the original implementation plan with the implementation and qualification evidence accumulated through M8.3.
+Roadmap 2.0 reconciles the implementation plan with executable evidence accumulated through M8 durable delivery and the code-only AccessZone refactor.
 
-Core rule remains unchanged:
+Core rule:
 
 ```text
 code exists != milestone complete
@@ -22,16 +23,18 @@ A milestone marked **QUALIFIED** must have executable evidence. A later mileston
 ## 2. Sources of truth and precedence
 
 ```text
-1. AstraIndexator TZ-00..TZ-18                 normative system requirements
-2. actual AstraVector wire contract in llm2    downstream wire authority
-3. approved integration contract               producer/application mapping
-4. qualified executable tests                  implementation evidence
-5. this roadmap                                sequencing and release gates
+1. current reviewed TZ-00..TZ-18 requirements
+2. current AccessZone code-only contract freeze
+3. actual finalized AstraVector wire contract in llm2
+4. approved integration contract
+5. qualified executable tests
+6. current M8 Completion Remediation spec
+7. this roadmap
 ```
 
-When roadmap wording conflicts with a frozen TZ contract, the TZ contract wins and the roadmap must be corrected.
+Generated AstraVector protobuf is transport-only. AstraIndexator must not maintain a parallel hand-written wire protocol and must not access AstraVector PostgreSQL or Qdrant directly.
 
-Generated AstraVector protobuf is transport-only. AstraIndexator must not maintain a parallel hand-written wire contract and must not access AstraVector PostgreSQL or Qdrant directly.
+Historical documents that describe producer AccessZone UUID compatibility are superseded for that topic by `ACCESS-ZONE-CODE-CONTRACT-FREEZE.md`, migration `0006_access_zone_code_only`, and current executable code/tests.
 
 ---
 
@@ -44,17 +47,20 @@ Generated AstraVector protobuf is transport-only. AstraIndexator must not mainta
 5. Every authoritative worker-side mutation is fenced by `job_id + worker_id + lease_generation + non-expired lease`.
 6. Mutating downstream RPCs may start only when the remaining lease safely exceeds the RPC deadline plus safety margin.
 7. `documentId`, `documentVersion`, `jobId`, `attemptId`, `fragmentId`, `ingestionSessionId` and AstraVector chunk identity are distinct.
-8. One document version maps to one effective AccessZone.
+8. One document version maps to one effective AccessZoneCode.
 9. `accessZoneCode` is exactly four ASCII digits; leading zeroes are significant.
-10. Requested AccessZone identity is producer intent and remains distinct from AstraVector-resolved `access_zone_id`.
-11. `ttl_days=0` means inherit AstraVector policy; it never means client-forced forever.
-12. M7 prepared artifacts are the preferred restart boundary after parser/OCR/splitter work.
-13. M8 recovery must not silently rerun parser/OCR when a compatible verified M7 artifact is available.
-14. Append replay identity is `session_id + batch_index + batch_content_hash`.
-15. A mutating RPC timeout is an ambiguous outcome, not proof of failure.
-16. Ingestion session `COMPLETED` is not equivalent to document `SEARCHABLE`.
-17. Local business completion requires authoritative AstraVector readiness evidence.
-18. Unknown downstream states/errors fail closed unless explicitly classified by a qualified contract.
+10. AstraIndexator producer/domain/inventory AccessZone identity is code-only. Producer UUID selectors are rejected.
+11. AstraVector owns code-to-internal-UUID resolution. `delivery_checkpoint.resolved_access_zone_id` is private downstream recovery/status evidence only.
+12. `ttl_days=0` means inherit AstraVector policy; it never means client-forced forever.
+13. M7 prepared artifacts are the preferred restart boundary after parser/OCR/splitter work.
+14. M8 recovery must not silently rerun parser/OCR when a compatible verified M7 artifact is available.
+15. Append replay identity is `session_id + batch_index + batch_content_hash`.
+16. Stable Start identity is derived from `document_id + document_version + verified source SHA-256`, not local `job_id`.
+17. A mutating RPC timeout is an ambiguous outcome, not proof of failure.
+18. Ingestion session `COMPLETED` is not equivalent to document `SEARCHABLE`.
+19. Local business completion requires authoritative AstraVector readiness evidence.
+20. Unknown downstream states/errors fail closed unless explicitly classified by a qualified contract.
+21. M7→M8 replay must verify immutable delivery compatibility evidence before downstream mutation.
 
 ---
 
@@ -64,7 +70,7 @@ Generated AstraVector protobuf is transport-only. AstraIndexator must not mainta
 
 **Status:** PARTIALLY DELIVERED / CONTINUOUS HARDENING
 
-Foundation capabilities are introduced when first required rather than as an isolated big-bang phase.
+Foundation capabilities are introduced when required rather than through a separate big-bang phase.
 
 Already present:
 
@@ -74,7 +80,7 @@ Already present:
 - Ruff and scoped mypy gates;
 - typed configuration components.
 
-Remaining production-facing foundation work is owned by M10/M12.
+Remaining production-facing foundation work belongs primarily to M10/M12.
 
 ---
 
@@ -84,7 +90,7 @@ Remaining production-facing foundation work is owned by M10/M12.
 
 Durable PostgreSQL model established for jobs, attempts, delivery checkpoints/batches, events and knowledge inventory.
 
-Key qualified invariants include producer request idempotency, positive immutable document version, AccessZone code preservation and PostgreSQL migration verification.
+Key invariants include producer request idempotency, positive immutable document version, AccessZoneCode preservation and PostgreSQL migration verification.
 
 ---
 
@@ -102,23 +108,15 @@ Qualified capabilities:
 - PostgreSQL-time retry scheduling;
 - durable processing attempts/events.
 
-M2 supplies the ownership primitive consumed by all later worker stages.
-
 ---
 
 ## M3 — SeaweedFS Safe Acquisition
 
 **Status:** ✅ IMPLEMENTED IN CURRENT PIPELINE
 
-Key capabilities:
+Capabilities include approved source boundary, immutable/bounded acquisition, SHA-256/source evidence, attempt workspace safety and mutation/partial-acquisition protection.
 
-- approved SeaweedFS source boundary;
-- immutable/bounded source acquisition;
-- SHA-256/source evidence;
-- attempt workspace safety;
-- source mutation/partial acquisition protection.
-
-**Roadmap 2.0 action:** include M3 in the later full traceability audit; do not reopen its architecture unless audit evidence reveals a gap.
+Release-level traceability remains part of later audits.
 
 ---
 
@@ -126,9 +124,7 @@ Key capabilities:
 
 **Status:** ✅ IMPLEMENTED
 
-Deterministic structural parsing exists for the qualified format baseline and extended formats.
-
-**Remaining work:** release-level regression evidence belongs to M11, not a redesign of M4.
+Deterministic structural parsing exists for the qualified baseline and extended formats. Release-level regression evidence belongs to M11.
 
 ---
 
@@ -136,9 +132,7 @@ Deterministic structural parsing exists for the qualified format baseline and ex
 
 **Status:** ✅ IMPLEMENTED / HARDENED
 
-Includes OCR policy, offline model/runtime controls, multilingual verification and PP-OCRv5 qualification assets.
-
-**Remaining work:** real production throughput and deployment/resource evidence belongs to M11/M12.
+Includes OCR policy, offline model/runtime controls, multilingual verification and PP-OCRv5 qualification assets. Production throughput/resource evidence belongs to M11/M12.
 
 ---
 
@@ -154,9 +148,7 @@ Produces deterministic semantic fragments while preserving AstraVector ownership
 
 **Status:** ✅ QUALIFIED
 
-M7 is the canonical expensive-processing restart boundary.
-
-Qualified design:
+M7 is the canonical expensive-processing restart boundary:
 
 ```text
 parser/OCR/normalizer/splitter
@@ -170,196 +162,111 @@ PostgreSQL PreparedArtifactCheckpoint
 verified replay after crash/retry
 ```
 
-Manifest/parts carry SHA-256 and compatibility evidence. M8 must consume this boundary and must not construct a second processing pipeline.
+Manifest/parts carry SHA-256 and compatibility evidence. M8 consumes this boundary and must not construct a second processing pipeline.
 
 ---
 
 # M8 — AstraVector Delivery & Reliability
 
-**Status:** 🚧 ACTIVE — ARCHITECTURE APPROVED, FINAL RELEASE QUALIFICATION OPEN
+**Status:** 🚧 ACTIVE — COMPLETION REMEDIATION / FINAL REAL-SERVICE QUALIFICATION OPEN
 
-M8 is one coherent milestone. Roadmap 2.0 retains the useful M8.1/M8.2/M8.3 implementation history while restoring the original M8.0 requirement that reconciliation, real downstream evidence and post-implementation traceability must be completed before declaring **M8 QUALIFIED**.
+M8 remains one coherent milestone. The durable-delivery core is implemented, but final M8 qualification is blocked by completion-remediation evidence, documentation/traceability reconciliation and real AstraVector qualification.
 
 ## M8.A — AccessZone / TTL durable lineage
 
-**Historical implementation label:** M8.1  
-**Status:** ✅ QUALIFIED
+**Status:** ✅ QUALIFIED / CODE-ONLY CONTRACT MERGED
 
-Qualified invariants:
+Current invariants:
 
-- singular/plural boundary normalization;
-- exactly one effective AccessZone;
-- four-digit `AccessZoneCode` preserved byte-for-byte;
-- requested ID + requested code may coexist as correlation assertion;
-- `ttlDays=0` inheritance semantics;
-- negative TTL rejected;
-- AccessZone/TTL survive PostgreSQL and M7 replay.
+- boundary normalizes singular/plural AccessZoneCode representations to exactly one effective code;
+- producer UUID selectors are explicitly rejected;
+- `access_zone_code` is preserved as exactly four ASCII digits;
+- leading zeroes are significant;
+- `ttlDays=0` inherits AstraVector policy;
+- negative TTL is rejected;
+- AccessZoneCode/TTL survive PostgreSQL and M7 replay;
+- AstraVector receives `access_zone_code`; compatibility `access_zone_id` on Start is absent/None;
+- resolved AstraVector UUID may be retained only in the private delivery checkpoint for public status/recovery.
 
 ## M8.B — AstraVector wire adapter
 
-**Historical implementation label:** M8.2  
 **Status:** ✅ QUALIFIED / MERGED
 
-Qualified capabilities:
+Capabilities:
 
 - pinned AstraVector proto/client generation;
 - canonical batch/final hash contract and golden vectors;
-- `LogicalBlock` → generated protobuf mapper;
-- real generated-gRPC Start/Append/Finalize/Abort/status round-trips;
+- `LogicalBlock` generated-protobuf mapper;
+- generated-gRPC Start/Append/Finalize/Abort/status round-trips;
 - deterministic bounded batching;
 - response identity/ack validation;
-- fail-closed gRPC failure classification;
+- fail-closed gRPC classification;
 - `READY_TO_ACTIVATE != SEARCHABLE`;
-- `ACTIVE + searchable=true + consistent sync evidence -> SEARCHABLE`;
 - real M7 prepared-artifact → M8 delivery-input mapping.
 
 ## M8.C — Durable delivery execution
 
-**Historical implementation label:** M8.3  
-**Status:** 🚧 IMPLEMENTED / FINAL CI AND MERGE OPEN
+**Status:** ✅ CORE IMPLEMENTED / COMPLETION REMEDIATION IN PROGRESS
 
-### M8.C.1 Ownership and fencing
+Existing capabilities include lease-fenced PREPARED/ACCEPTED batch mutations, stale-worker rejection, Start/session/final-hash/resolved-zone fencing, RPC lease-window guards, retry/dead-letter primitives, crash/reclaim from M7 artifacts and failure-injection coverage.
 
-**Status:** ✅ QUALIFIED BY GREEN IMPLEMENTATION GATES
+Completion Remediation adds/qualifies the missing release-level closure rather than creating a second delivery engine.
 
-Includes:
+## M8.CR — Completion Remediation
 
-- lease-fenced PREPARED/ACCEPTED batch mutations;
-- stale worker rejection;
-- production coordinator fencing for Start/session binding/final hash/resolved zone;
-- RPC deadline vs remaining lease window guard.
+**Normative spec:** `docs/M8-COMPLETION-REMEDIATION-SPEC.md`  
+**Status:** 🚧 IMPLEMENTATION IN PROGRESS
 
-### M8.C.2 Retry / backoff / dead letter
-
-**Historical label:** M8.3.1  
-**Status:** IMPLEMENTED — FINAL BRANCH QUALITY GATE OPEN
-
-Contract:
+Required work packages:
 
 ```text
-TRANSIENT / DEPENDENCY_UNAVAILABLE
-    -> bounded RETRY_WAIT
-    -> DEAD_LETTER after attempt budget
-
-PERMANENT_INPUT / PERMANENT_POLICY / RESOURCE_LIMIT
-    -> FAILED
-
-DOWNSTREAM_AMBIGUOUS
-    -> RECONCILE
-    -> never blind retry
-
-OWNERSHIP_LOST
-    -> ABANDON without stale-worker mutation
+CR-01 stable logical Start idempotency
+CR-02 mandatory verified source SHA-256 before mutation
+CR-03 unified durable runtime failure executor
+CR-04 ambiguous Finalize convergence / explicit public-contract gap
+CR-05 immutable M7→M8 delivery compatibility fingerprint
 ```
 
-### M8.C.3 Crash / resume from M7 prepared artifacts
+Branch qualification requires Ruff lint/format, scoped mypy, full pytest, PostgreSQL/migration verification and package build. No CR item is called QUALIFIED before merge and post-merge main CI.
 
-**Historical label:** M8.3.2  
-**Status:** IMPLEMENTED — FINAL BRANCH QUALITY GATE OPEN
+## M8.D — Post-implementation traceability reconciliation
 
-Required recovery path:
+**Status:** 🚧 UPDATE REQUIRED AFTER COMPLETION REMEDIATION
+
+Audit current requirements against executable evidence. Historical UUID-producer requirements must be marked obsolete/superseded rather than reintroduced.
+
+Each requirement receives one disposition:
 
 ```text
-new lease owner
-  -> verify current ownership
-  -> load PreparedArtifactCheckpoint
-  -> verify manifest / artifact / source hashes
-  -> verify compatibility
-  -> verify document/version + AccessZone/TTL lineage
-  -> rebuild M8 delivery input from verified M7 artifact
-  -> resume delivery without parser/OCR rerun
+QUALIFIED
+IMPLEMENTED
+MOVED
+GAP
+OBSOLETE/SUPERSEDED
 ```
 
-### M8.C.4 Durable failure-injection matrix
-
-**Historical label:** M8.3.3  
-**Status:** IMPLEMENTED — FINAL BRANCH QUALITY GATE OPEN
-
-Must cover at least:
-
-- ownership loss before/after Start;
-- Start ACK loss;
-- PREPARED-before-Append crash;
-- remote Append accepted / local ACK commit lost;
-- same-index/same-hash replay;
-- insufficient lease window;
-- bounded retry and attempt exhaustion;
-- crash/reclaim using M7 artifact;
-- Finalize ambiguity;
-- Abort ambiguity;
-- session complete while vector readiness is pending.
-
-### M8.C exit gate
-
-M8.C is not QUALIFIED until all of the following are true:
-
-```text
-Ruff lint                    PASS
-Ruff format                  PASS
-M8 scoped mypy               PASS
-package build                PASS
-full pytest                  PASS
-PostgreSQL integration       PASS
-PR merged to main            YES
-post-merge main CI           PASS
-```
-
-## M8.D — Post-implementation traceability audit
-
-**Status:** ⬜ NEXT AFTER M8.C MERGE
-
-This replaces the ambiguous earlier notion of immediately creating a new M8.4 subsystem.
-
-Audit every original M8.0 P0/P1/P2 requirement against executable evidence and the current implementation.
-
-Required normative inputs:
-
-```text
-TZ-01 Indexation API / Job Contract
-TZ-10 Access Zones / TTL
-TZ-11 AstraVector Integration
-TZ-13 Reliability / Recovery
-TZ-17 Testing / Verification
-M8.0 Contract Freeze & Gap Audit
-```
-
-Every M8.0 checkbox must receive one disposition:
-
-```text
-QUALIFIED       executable evidence exists
-IMPLEMENTED     code exists, evidence incomplete
-MOVED           explicitly owned by later milestone with rationale
-GAP             release blocker
-OBSOLETE        superseded by newer authoritative contract, with citation
-```
-
-No unchecked historical list may remain as the operational status source.
+No unchecked historical list may remain the operational status source.
 
 ## M8.E — Reconciliation closure
 
-**Status:** ⬜ CONDITIONAL NEXT
-
-Implement only the gaps identified by M8.D.
+**Status:** 🚧 PART OF COMPLETION REMEDIATION
 
 Scope is convergence after ambiguous downstream mutations, not a duplicate delivery engine.
 
-Minimum expected responsibilities:
+Minimum responsibilities:
 
-- reconcile ambiguous Start/Finalize/Abort outcomes;
 - reuse existing session/document identity where authoritative evidence exists;
-- prevent duplicate logical document versions;
+- prevent blind replay after ambiguous mutations;
 - reconcile local checkpoint with AstraVector public status only;
-- never read AstraVector PostgreSQL or Qdrant directly;
-- preserve AccessZone/TTL/document identity during recovery;
-- converge to deterministic local state or explicit operator-visible failure.
-
-Long-running reconciliation scheduling/persistence is introduced only where the traceability audit proves the current inline reconciliation insufficient.
+- never read AstraVector PostgreSQL/Qdrant directly;
+- preserve AccessZoneCode/TTL/document identity;
+- converge to deterministic local state or explicit operator-visible unresolved state.
 
 ## M8.F — Real AstraVector qualification
 
 **Status:** ⬜ REQUIRED BEFORE M8 QUALIFIED
 
-In-process generated-gRPC tests are necessary but not sufficient for final M8 release qualification.
+In-process/generated-gRPC tests are necessary but not sufficient.
 
 Required real-service evidence:
 
@@ -374,30 +281,33 @@ Required real-service evidence:
 
 Required variants:
 
-- AccessZone by code, including a leading-zero code;
-- AccessZone by UUID;
+- AccessZoneCode with a leading-zero code;
+- explicit proof that producer UUID selectors are rejected by AstraIndexator;
 - `ttl_days=0` inheritance;
 - finite positive TTL;
 - multi-batch large document;
 - duplicate/replayed delivery without duplicate logical version;
 - AstraVector unavailable/restarted during delivery;
-- ambiguous Finalize recovery;
-- worker crash/reclaim using M7 prepared artifact.
+- ambiguous Finalize recovery or explicit finalized-public-contract gap evidence;
+- worker crash/reclaim using M7 prepared artifact;
+- M7→M8 compatibility fingerprint acceptance/rejection cases.
+
+Producer “AccessZone by UUID success” is obsolete and is not an AstraIndexator qualification variant.
 
 ## M8.G — Final M8 qualification
 
-**Status:** ⬜ BLOCKED BY M8.C/D/E/F
+**Status:** ⬜ BLOCKED BY M8.CR/D/F
 
-M8 becomes **QUALIFIED** only when:
+M8 becomes QUALIFIED only when:
 
 ```text
-M8.A AccessZone/TTL lineage          QUALIFIED
-M8.B wire adapter                    QUALIFIED
-M8.C durable delivery                QUALIFIED
-M8.D traceability audit              COMPLETE, no unresolved P0
-M8.E reconciliation gaps             QUALIFIED or proven unnecessary
+M8.A AccessZone/TTL lineage           QUALIFIED
+M8.B wire adapter                     QUALIFIED
+M8.C durable delivery core            QUALIFIED
+M8.CR completion remediation          QUALIFIED
+M8.D traceability reconciliation      COMPLETE, no unresolved P0
 M8.F real AstraVector evidence        PASS
-full CI on final branch/main          PASS
+full final main CI                    PASS
 ```
 
 Required final document:
@@ -408,19 +318,11 @@ docs/M8-FINAL-QUALIFICATION.md
 
 It must contain exact commit pins, CI runs, AstraVector revision, test matrix and remaining non-blocking debt.
 
-Only then:
-
-```text
-M8 = QUALIFIED
-```
-
 ---
 
 # M9 — Document Lifecycle & Knowledge Reconciliation
 
 **Status:** ⬜ PLANNED — BLOCKED BY M8 QUALIFICATION
-
-M9 owns business/document lifecycle beyond delivery reliability.
 
 Scope:
 
@@ -429,11 +331,12 @@ Scope:
 - delete lifecycle through public AstraVector facade;
 - cancellation at business lifecycle level;
 - Knowledge Inventory projection;
-- requested/resolved AccessZone visibility;
+- AccessZoneCode visibility;
+- downstream resolved UUID visibility only where operationally required and never as producer identity;
 - TTL/expiry visibility where public downstream evidence exists;
-- operator-visible lifecycle reconciliation not already required to make M8 delivery safe.
+- operator-visible lifecycle reconciliation beyond one M8 delivery operation.
 
-Important boundary:
+Boundary:
 
 ```text
 M8 reconciliation = make one delivery operation converge safely
@@ -446,21 +349,9 @@ M9 reconciliation = maintain document lifecycle / inventory over time
 
 **Status:** ⬜ PLANNED
 
-Scope:
+Scope includes FastAPI internal surfaces, health/capabilities, diagnostics, smoke orchestration through production path, structured logs/correlation IDs, Prometheus metrics, optional tracing, graceful shutdown, lease draining, bounded concurrency/backpressure and dependency readiness semantics.
 
-- FastAPI internal surfaces;
-- live/ready/capabilities health;
-- job and knowledge diagnostics;
-- smoke-test orchestration through normal production path;
-- structured logs and correlation IDs;
-- Prometheus metrics;
-- optional tracing;
-- graceful worker shutdown;
-- lease draining;
-- bounded worker concurrency/backpressure;
-- dependency readiness semantics.
-
-Operational hardening is not permitted to redefine delivery correctness established by M8.
+Operational hardening may not redefine M8 delivery correctness.
 
 ---
 
@@ -468,9 +359,7 @@ Operational hardening is not permitted to redefine delivery correctness establis
 
 **Status:** ⬜ PLANNED
 
-This is the product-level verification stage.
-
-Required end-to-end pipeline:
+Required product pipeline:
 
 ```text
 submission
@@ -484,18 +373,7 @@ submission
  -> retrieval proof
 ```
 
-Required evidence:
-
-- clean PostgreSQL initialization and migrations;
-- real SeaweedFS source;
-- real OCR where applicable;
-- real AstraVector;
-- worker/process restart matrix;
-- DB/SeaweedFS/AstraVector outage/recovery;
-- large-document bounded-memory/RPC behavior;
-- repeated delivery/version scenarios;
-- RU/KK/EN and mixed-language corpora;
-- RAG Recall@K, MRR, nDCG, duplicate-context and citation correctness evidence.
+Evidence includes clean PostgreSQL initialization/migrations, real SeaweedFS/OCR/AstraVector, restart/outage matrices, large-document bounded behavior, repeated version scenarios, RU/KK/EN corpora and RAG quality metrics.
 
 ---
 
@@ -503,124 +381,4 @@ Required evidence:
 
 **Status:** ⬜ PLANNED
 
-Outputs:
-
-- reproducible container image;
-- controlled Alembic migration job/step;
-- worker role topology;
-- model preload/checksum verification;
-- ConfigMap/Secret integration;
-- resource requests/limits based on measured evidence;
-- readiness/liveness;
-- post-deploy smoke;
-- autoscaling only when justified by measurements;
-- backup/restore verification;
-- rollback procedure;
-- operational runbooks;
-- clean-install production qualification.
-
-Final release gate:
-
-```text
-M0..M12 required release criteria satisfied
-       ↓
-ASTRAINDEXATOR 1.0 RELEASE QUALIFIED
-```
-
----
-
-## 5. Current position — 2026-08-27
-
-```text
-M0   Foundation                              PARTIAL / CONTINUOUS
-M1   Persistence Foundation                  ✅ QUALIFIED
-M2   Job Coordinator                         ✅ QUALIFIED
-M3   SeaweedFS Safe Acquisition              ✅ IMPLEMENTED
-M4   Canonical Parser                        ✅ IMPLEMENTED
-M5   OCR Pipeline                            ✅ IMPLEMENTED/HARDENED
-M6   Normalization / Logical Splitter        ✅ IMPLEMENTED/HARDENED
-M7   Prepared Artifacts / Replay             ✅ QUALIFIED
-
-M8   AstraVector Delivery & Reliability      🚧 ACTIVE
- ├─ M8.A AccessZone / TTL lineage            ✅ QUALIFIED
- ├─ M8.B Wire Adapter                        ✅ QUALIFIED / MERGED
- ├─ M8.C Durable Delivery                    🚧 FINAL GATE OPEN
- ├─ M8.D Traceability Audit                  ⬜ NEXT
- ├─ M8.E Reconciliation Closure              ⬜ AFTER AUDIT
- ├─ M8.F Real AstraVector Qualification      ⬜ REQUIRED
- └─ M8.G Final M8 Qualification              ⬜
-
-M9   Document Lifecycle / Inventory          ⬜
-M10  Internal API / Operational Hardening    ⬜
-M11  Full E2E / Reliability / RAG            ⬜
-M12  Deployment / Production Readiness       ⬜
-```
-
-Current development position:
-
-```text
-feat/m8-3-durable-delivery / PR #37
-        ↓
-fix final branch quality gate
-        ↓
-M8.C QUALIFIED + merge + post-merge CI
-        ↓
-M8.D POST-IMPLEMENTATION TRACEABILITY AUDIT
-```
-
----
-
-## 6. Immediate execution sequence
-
-No new functional branch should start before the current gate is closed.
-
-```text
-STEP 1
-Repair final M8.C quality failure
-  -> Ruff
-  -> format
-  -> scoped mypy
-  -> build
-  -> full pytest/PostgreSQL
-
-STEP 2
-Merge PR #37 after green final head
-  -> verify post-merge main CI
-  -> M8.C = QUALIFIED
-
-STEP 3
-Execute M8.D traceability audit
-  -> TZ-01 / TZ-10 / TZ-11 / TZ-13 / TZ-17
-  -> M8.0 P0/P1/P2 matrix
-  -> identify only real remaining gaps
-
-STEP 4
-Implement M8.E reconciliation closure
-  -> only audit-proven gaps
-
-STEP 5
-Execute M8.F real AstraVector qualification
-  -> real service
-  -> crash/restart/duplicate/large-doc
-  -> AccessZone ID/code
-  -> TTL inherit/finite
-  -> SEARCHABLE + retrieval evidence
-
-STEP 6
-Produce M8-FINAL-QUALIFICATION.md
-  -> final green main
-  -> M8 = QUALIFIED
-
-STEP 7
-Begin M9 document lifecycle
-```
-
----
-
-## 7. Change-control rule
-
-No implementation milestone may silently redefine a qualified invariant.
-
-Any required change to AccessZone, TTL, identity, lifecycle, downstream wire semantics, hash canonicalization, retry ownership, lease fencing or completion semantics must update the relevant TZ/contract in the same reviewed change.
-
-Roadmap numbering is organizational. The frozen system contracts and executable qualification evidence are authoritative.
+Outputs include reproducible image, controlled Alembic migration step, worker topology, model preload/checksum verification, ConfigMap/Secret integration, measured resources, readiness/liveness, post-deploy smoke, justified autoscaling, backup/restore, rollback and operational runbooks.
