@@ -35,7 +35,7 @@ class DurablePreparedArtifactResumeService:
 
     This service never invokes acquisition, parser, OCR, normalization or splitting. It may only
     reuse a M7 artifact after the current lease is proven, M7 replay validation succeeds and the
-    checkpoint's immutable AccessZone/TTL lineage still matches the job.
+    checkpoint's immutable AccessZoneCode/TTL lineage still matches the job.
     """
 
     session_factory: Callable[[], Session]
@@ -91,11 +91,7 @@ class DurablePreparedArtifactResumeService:
             raise PreparedArtifactLineageMismatch(
                 "prepared artifact source hash differs from durable job source hash"
             )
-        if checkpoint.requested_access_zone_id != job.requested_access_zone_id:
-            raise PreparedArtifactLineageMismatch(
-                "prepared artifact accessZoneId differs from durable job delivery intent"
-            )
-        if checkpoint.requested_access_zone_code != job.requested_access_zone_code:
+        if checkpoint.access_zone_code != job.access_zone_code:
             raise PreparedArtifactLineageMismatch(
                 "prepared artifact accessZoneCode differs from durable job delivery intent"
             )
