@@ -100,7 +100,6 @@ def _enqueue_and_claim(engine):
                 document_id=document_id,
                 document_version=1,
                 source_uri="seaweed://documents/m8-3.txt",
-                access_zone_id=ZONE_ID,
                 access_zone_code=ZONE_CODE,
                 source_content_hash="a" * 64,
             ),
@@ -134,6 +133,8 @@ class _StartLosesLeasePort:
         self.start_calls = 0
 
     def start(self, command):
+        assert command.access_zone_id is None
+        assert command.access_zone_code == ZONE_CODE
         self.start_calls += 1
         _expire(self.engine, self.job_id)
         return StartIngestionResult(
