@@ -38,11 +38,11 @@ from astra_indexator.splitter.model import (
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCUMENT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-ZONE_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 SOURCE_SHA = "a" * 64
 COMPAT_SHA = "d" * 64
 ARTIFACT_ID = "c" * 64
 MANIFEST_SHA = "e" * 64
+ZONE_CODE = "0001"
 
 
 def _psycopg_url(url: str) -> str:
@@ -163,9 +163,7 @@ def _seed_and_claim(engine):
                 document_id=DOCUMENT_ID,
                 document_version=1,
                 source_uri="seaweed://documents/recovery.pdf",
-                access_zone_id=ZONE_ID,
-                requested_access_zone_id=ZONE_ID,
-                requested_access_zone_code="0001",
+                access_zone_code=ZONE_CODE,
                 requested_ttl_days=30,
                 source_file_name="recovery.pdf",
                 source_content_hash=SOURCE_SHA,
@@ -183,8 +181,7 @@ def _seed_and_claim(engine):
                 element_count=0,
                 fragment_count=1,
                 lease_generation=1,
-                requested_access_zone_id=ZONE_ID,
-                requested_access_zone_code="0001",
+                access_zone_code=ZONE_CODE,
                 requested_ttl_days=30,
             )
         )
