@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
-from uuid import UUID
 
 from .contracts import AccessZoneCode, AccessZoneIntent, DeliveryIntent, TtlIntent
 
@@ -12,22 +11,26 @@ class DeliveryIntentValidationError(ValueError):
 
 
 def normalize_delivery_intent(payload: Mapping[str, Any]) -> DeliveryIntent:
-    """Normalize Spring compatibility fields into one immutable producer intent."""
+    """Normalize producer input into immutable code-only AccessZone/TTL intent.
 
-    zone_id = _normalize_selector(
-        singular=payload.get("accessZoneId"),
-        plural=payload.get("accessZoneIds"),
-        field="accessZoneId",
-        parser=_uuid,
-    )
+    AstraIndexator accepts only ``accessZoneCode`` / ``accessZoneCodes`` at its producer
+    boundary. AstraVector UUID identities are downstream-private implementation details and
+    therefore ``accessZoneId`` / ``accessZoneIds`` are rejected rather than ignored.
+    """
+
+    if payload.get("accessZoneId") is not None or payload.get("accessZoneIds") is not None:
+        raise DeliveryIntentValidationError(
+            "accessZoneId/accessZoneIds are not supported; use accessZoneCode/accessZoneCodes"
+        )
+
     zone_code = _normalize_selector(
         singular=payload.get("accessZoneCode"),
         plural=payload.get("accessZoneCodes"),
         field="accessZoneCode",
         parser=_zone_code,
     )
-    if zone_id is None and zone_code is None:
-        raise DeliveryIntentValidationError("exactly one effective AccessZone is required")
+    if zone_code is None:
+        raise DeliveryIntentValidationError("exactly one effective accessZoneCode is required")
 
     ttl_raw = payload.get("ttlDays", 0)
     if isinstance(ttl_raw, bool) or not isinstance(ttl_raw, int):
@@ -38,7 +41,7 @@ def normalize_delivery_intent(payload: Mapping[str, Any]) -> DeliveryIntent:
         raise DeliveryIntentValidationError(str(exc)) from exc
 
     return DeliveryIntent(
-        access_zone=AccessZoneIntent(access_zone_id=zone_id, access_zone_code=zone_code),
+        access_zone=AccessZoneIntent(access_zone_code=zone_code),
         ttl=ttl,
     )
 
@@ -64,17 +67,6 @@ def _normalize_selector(
     if single is not None and plural_value is not None and single != plural_value:
         raise DeliveryIntentValidationError(f"conflicting {field} and {field}s")
     return single if single is not None else plural_value
-
-
-def _uuid(value: Any, field: str) -> UUID:
-    if isinstance(value, UUID):
-        return value
-    if not isinstance(value, str):
-        raise DeliveryIntentValidationError(f"{field} must contain UUID strings")
-    try:
-        return UUID(value)
-    except ValueError as exc:
-        raise DeliveryIntentValidationError(f"{field} contains an invalid UUID") from exc
 
 
 def _zone_code(value: Any, field: str) -> AccessZoneCode:

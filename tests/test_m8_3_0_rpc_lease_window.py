@@ -22,7 +22,6 @@ from astra_indexator.persistence.models import DeliveryBatch
 from astra_indexator.persistence.repository import IndexationJobRepository, NewIndexationJob
 
 ROOT = Path(__file__).resolve().parents[1]
-ZONE_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 
 
@@ -72,7 +71,6 @@ def _claim(engine):
                 document_id=uuid4(),
                 document_version=1,
                 source_uri="seaweed://documents/m8-3-window.txt",
-                access_zone_id=ZONE_ID,
                 access_zone_code="0600",
             ),
         )

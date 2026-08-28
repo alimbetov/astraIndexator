@@ -37,12 +37,13 @@ def test_new_job_rejects_invalid_code_before_postgres() -> None:
         _job(access_zone_code="600")
 
 
-def test_new_job_rejects_legacy_requested_code_mismatch() -> None:
-    with pytest.raises(ValueError, match="must be identical"):
-        _job(access_zone_code="0001", requested_access_zone_code="0600")
-
-
-def test_new_job_keeps_matching_requested_code_byte_exact() -> None:
-    job = _job(access_zone_code="0001", requested_access_zone_code="0001")
+def test_new_job_keeps_code_byte_exact() -> None:
+    job = _job(access_zone_code="0001")
     assert job.access_zone_code == "0001"
-    assert job.requested_access_zone_code == "0001"
+
+
+def test_new_job_has_no_uuid_or_duplicate_access_zone_selector_fields() -> None:
+    fields = NewIndexationJob.__dataclass_fields__
+    assert "access_zone_id" not in fields
+    assert "requested_access_zone_id" not in fields
+    assert "requested_access_zone_code" not in fields

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from uuid import uuid4
-
 import pytest
 
 from astra_indexator.domain.contracts import (
@@ -31,30 +29,10 @@ def test_access_zone_rejects_non_wire_codes(code: str) -> None:
         AccessZoneCode(code)
 
 
-def test_access_zone_intent_requires_selector() -> None:
-    with pytest.raises(ValueError):
-        AccessZoneIntent()
-
-
-def test_access_zone_intent_accepts_code() -> None:
+def test_access_zone_intent_accepts_code_only() -> None:
     intent = AccessZoneIntent(access_zone_code=AccessZoneCode("0001"))
     assert str(intent.access_zone_code) == "0001"
-
-
-def test_access_zone_intent_accepts_registry_id() -> None:
-    zone_id = uuid4()
-    intent = AccessZoneIntent(access_zone_id=zone_id)
-    assert intent.access_zone_id == zone_id
-
-
-def test_access_zone_id_and_code_are_preserved_as_correlation_assertion() -> None:
-    zone_id = uuid4()
-    intent = AccessZoneIntent(
-        access_zone_id=zone_id,
-        access_zone_code=AccessZoneCode("1500"),
-    )
-    assert intent.access_zone_id == zone_id
-    assert str(intent.access_zone_code) == "1500"
+    assert set(intent.__dataclass_fields__) == {"access_zone_code"}
 
 
 def test_zero_ttl_means_inherit_not_forever() -> None:

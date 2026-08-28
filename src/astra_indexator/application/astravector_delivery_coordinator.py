@@ -36,11 +36,10 @@ class DeliveryCoordinatorError(RuntimeError):
 
 
 class DeliveryRecoveryContractGap(DeliveryCoordinatorError):
-    """Current AstraVector wire cannot reconstruct readiness identity after ambiguity.
+    """Finalized AstraVector wire cannot reconstruct readiness UUID after ambiguity.
 
-    This does not mean accessZoneCode requires resolution to UUID. The original code remains
-    the immutable producer selector. This error is limited to a wire-recovery case where
-    GetLogicalDocumentIngestionStatus lacks the DocumentRef required by vector-status lookup.
+    AstraIndexator's producer/domain identity remains AccessZoneCode-only. The UUID involved in
+    this recovery case is downstream AstraVector evidence required by the current DocumentRef wire.
     """
 
 
@@ -55,7 +54,7 @@ class AstraVectorDeliveryInput:
 @dataclass(frozen=True, slots=True)
 class AstraVectorDeliveryOutcome:
     ingestion_session_id: UUID
-    access_zone_code: str | None
+    access_zone_code: str
     resolved_access_zone_id: UUID
     batches: tuple[DurableBatchDeliveryOutcome, ...]
     readiness: VectorReadinessOutcome
@@ -64,20 +63,14 @@ class AstraVectorDeliveryOutcome:
 class AstraVectorDeliveryCoordinator:
     """Lease-fenced Start -> Append -> Finalize -> readiness orchestration.
 
-    PostgreSQL is the durable recovery boundary. ``requested_access_zone_code`` is producer-owned
-    delivery intent and is preserved unchanged from job creation through Start. AstraIndexator
-    never converts it to an integer, never derives a UUID from it, and never replaces it with a
-    downstream UUID. ``resolved_access_zone_id`` is separate AstraVector response evidence used
-    where the current vector-status wire requires DocumentRef identity.
+    ``access_zone_code`` is the only producer-owned AccessZone identity in AstraIndexator and is
+    preserved unchanged through Start. AstraIndexator never accepts or derives an AccessZone UUID.
+    ``resolved_access_zone_id`` is retained only as private downstream recovery evidence because
+    the finalized AstraVector GetDocumentVectorStatus wire currently requires DocumentRef UUID.
 
-    The complete LogicalBlock graph is validated before any downstream mutation. M8.3 makes the
-    production path lease-aware at every durable mutation boundary owned by this coordinator.
-    Mutating RPCs start only when their configured deadline plus safety margin fits inside the
-    remaining PostgreSQL lease window. Start is fenced again in the transaction that binds the
-    returned session. Append uses ``DurableAppendDeliveryRunner``. Final-content hash and
-    resolved-zone checkpoint mutations are fenced in the same PostgreSQL transaction. A lease lost
-    during a remote mutation therefore prevents the stale worker from committing authoritative
-    local delivery state; the next owner resumes from deterministic checkpoints.
+    PostgreSQL is the durable recovery boundary. The complete LogicalBlock graph is validated
+    before downstream mutation. Mutating RPCs start only when their configured deadline plus safety
+    margin fits inside the remaining PostgreSQL lease window.
     """
 
     def __init__(
@@ -144,14 +137,13 @@ class AstraVectorDeliveryCoordinator:
         self._persist_final_hash(claimed.token, session_id, final_hash)
         self._advance_stage(claimed, "ASTRAVECTOR_FINALIZE")
 
-        downstream_zone_id = job.requested_access_zone_id or job.access_zone_id
         self._assert_safe_mutating_rpc_window(claimed.token)
         try:
             finalize = self._finalize_runner.finalize(
                 job_id=job.id,
                 ingestion_session_id=session_id,
                 final_content_hash=final_hash,
-                access_zone_id=downstream_zone_id,
+                access_zone_id=None,
                 document_id=job.document_id,
                 document_version=job.document_version,
             )
@@ -161,12 +153,12 @@ class AstraVectorDeliveryCoordinator:
         resolved_zone_id = (
             finalize.finalize_result.access_zone_id
             if finalize.finalize_result is not None
-            else downstream_zone_id
+            else None
         )
         if resolved_zone_id is None:
             raise DeliveryRecoveryContractGap(
-                "AstraVector delivery completed without DocumentRef identity required by the "
-                "current vector-status wire; producer accessZoneCode remains unchanged"
+                "AstraVector delivery completed without the downstream DocumentRef UUID required "
+                "by the finalized vector-status wire; producer accessZoneCode remains unchanged"
             )
         self._persist_resolved_zone(claimed.token, session_id, resolved_zone_id)
 
@@ -183,7 +175,7 @@ class AstraVectorDeliveryCoordinator:
         self._complete(claimed)
         return AstraVectorDeliveryOutcome(
             ingestion_session_id=session_id,
-            access_zone_code=job.requested_access_zone_code,
+            access_zone_code=job.access_zone_code,
             resolved_access_zone_id=resolved_zone_id,
             batches=batch_outcomes,
             readiness=readiness,
@@ -214,8 +206,8 @@ class AstraVectorDeliveryCoordinator:
 
         self._advance_stage(claimed, "ASTRAVECTOR_START")
         command = StartIngestionCommand(
-            access_zone_id=job.requested_access_zone_id,
-            access_zone_code=job.requested_access_zone_code,
+            access_zone_id=None,
+            access_zone_code=job.access_zone_code,
             document_id=job.document_id,
             document_version=job.document_version,
             source_uri=job.source_uri,
