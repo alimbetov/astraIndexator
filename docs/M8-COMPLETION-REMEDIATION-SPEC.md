@@ -15,9 +15,7 @@ This specification defines the remediation required before final real-AstraVecto
 
 ## 2. Purpose
 
-The current M8 implementation has strong durable-delivery primitives but still contains release-level gaps around logical Start idempotency, source identity, unified failure execution, ambiguous Finalize recovery and replay compatibility evidence.
-
-Completion Remediation closes those gaps without expanding M8 into document lifecycle management and without weakening qualified M1–M7 invariants.
+Completion Remediation closes release-level gaps around logical Start idempotency, source identity, unified failure execution, ambiguous Finalize recovery and replay compatibility evidence without expanding M8 into document lifecycle management or weakening qualified M1–M7 invariants.
 
 ```text
 producer
@@ -37,29 +35,11 @@ producer
 
 ### 3.1 AccessZone boundary
 
-AstraIndexator producer/domain/inventory AccessZone identity is exclusively `access_zone_code`.
-
-Forbidden producer/domain fields:
-
-```text
-access_zone_id
-accessZoneId
-accessZoneIds
-requested_access_zone_id
-requested_access_zone_code
-```
-
-`accessZoneCode` / `accessZoneCodes` may be accepted at the external normalization boundary only to produce exactly one effective `access_zone_code`.
+AstraIndexator producer/domain/inventory AccessZone identity is exclusively `access_zone_code`. Producer/domain UUID selectors (`access_zone_id`, `accessZoneId`, `accessZoneIds`, `requested_access_zone_id`) are forbidden. `accessZoneCode` / `accessZoneCodes` may be accepted only at the external normalization boundary to produce exactly one effective code.
 
 `access_zone_code` MUST match `^[0-9]{4}$`; leading zeroes are significant. AstraVector owns code-to-UUID resolution.
 
-The sole UUID exception in AstraIndexator is:
-
-```text
-delivery_checkpoint.resolved_access_zone_id
-```
-
-It is private downstream recovery/status evidence returned by finalized AstraVector. It MUST NOT become producer identity, inventory identity, authorization input or a replacement for `access_zone_code`.
+The sole UUID exception in AstraIndexator is `delivery_checkpoint.resolved_access_zone_id`. It is private downstream recovery/status evidence returned by finalized AstraVector and MUST NOT become producer identity, inventory identity, authorization input or a replacement for `access_zone_code`.
 
 ### 3.2 TTL
 
@@ -67,11 +47,7 @@ It is private downstream recovery/status evidence returned by finalized AstraVec
 
 ### 3.3 Ownership and time
 
-PostgreSQL remains authoritative for job ownership, retry scheduling and lease time. Every authoritative worker mutation MUST remain fenced by:
-
-```text
-job_id + worker_id + lease_generation + non-expired lease
-```
+PostgreSQL remains authoritative for job ownership, retry scheduling and lease time. Every authoritative worker mutation MUST remain fenced by `job_id + worker_id + lease_generation + non-expired lease`.
 
 A downstream mutating RPC MUST NOT start unless remaining PostgreSQL lease safely exceeds its RPC deadline plus safety margin.
 
@@ -101,9 +77,7 @@ Canonical semantic form:
 astra-indexator:{documentId}:{documentVersion}:{contentHash}
 ```
 
-`job_id`, `attempt_id`, `worker_id`, `lease_generation` and session ID MUST NOT participate. Retries, reclaim and M7 replay of the same document/version/content MUST reuse the same key. Conflicting content for the same logical version MUST fail closed or enter an explicitly qualified conflict/version path.
-
-Required evidence proves deterministic equality across execution identity changes and inequality when document version/content identity changes.
+`job_id`, `attempt_id`, `worker_id`, `lease_generation` and session ID MUST NOT participate. Retries, reclaim and M7 replay of the same document/version/content MUST reuse the same key. Conflicting content for the same logical version MUST fail closed.
 
 **Acceptance:** no production Start request is keyed by local job execution identity.
 
@@ -111,21 +85,11 @@ Required evidence proves deterministic equality across execution identity change
 
 # 5. CR-02 — Verified source identity before downstream mutation
 
-A non-empty verified SHA-256 source content hash is mandatory before the first AstraVector mutating RPC.
-
-The authoritative value SHALL originate from durable acquisition/job lineage and may be repeated by verified M7 evidence. M8 MUST NOT invent a hash, use an empty string or let payload evidence silently replace missing durable evidence.
-
-Canonical representation is lowercase 64-character hexadecimal.
+A non-empty verified SHA-256 source content hash is mandatory before the first AstraVector mutating RPC. Durable acquisition/job lineage is authoritative; verified M7 evidence may repeat but may not replace or contradict it. Canonical representation is lowercase 64-character hexadecimal.
 
 Missing/malformed/conflicting source hash is a local integrity/input failure before Start, not transient AstraVector unavailability.
 
-Required evidence:
-
-- missing hash blocks Start;
-- malformed hash blocks Start;
-- durable/M7 mismatch blocks delivery;
-- valid replay preserves hash;
-- no downstream mutation occurs on identity failure.
+Required evidence covers missing, malformed, durable/M7 mismatch, replay preservation and proof that no downstream mutation occurs on identity failure.
 
 ---
 
@@ -136,28 +100,18 @@ One production executor SHALL own one claimed-job delivery turn and map every de
 ```text
 SUCCESS
     -> COMPLETED only after authoritative SEARCHABLE evidence
-
 TRANSIENT / DEPENDENCY_UNAVAILABLE
     -> RETRY_WAIT while budget remains
     -> DEAD_LETTER on exhaustion
-
 PERMANENT_INPUT / PERMANENT_POLICY / RESOURCE_LIMIT / INTERNAL_BUG
     -> FAILED
-
 DOWNSTREAM_AMBIGUOUS
-    -> RECONCILE
-    -> never blind retry
-
+    -> RECONCILE; never blind retry
 OWNERSHIP_LOST
-    -> ABANDON
-    -> no stale-worker authoritative mutation
+    -> ABANDON; no stale-worker authoritative mutation
 ```
 
-Unknown/unclassified failures fail closed and MUST NOT default to retry.
-
-Retry scheduling uses PostgreSQL time and bounded deterministic/configurable backoff. Durable transitions use current lease fencing. If ownership is lost during failure persistence, the stale worker returns ABANDON without a second authoritative mutation.
-
-Required failure-injection evidence includes transient Start/Append, permanent failure, attempt exhaustion, lease loss, remote mutation/local checkpoint crash, unknown error, reclaim/restart and searchable success.
+Unknown failures fail closed and MUST NOT default to retry. Retry scheduling uses PostgreSQL time and bounded backoff. If ownership is lost during failure persistence, the stale worker returns ABANDON without another authoritative mutation.
 
 ---
 
@@ -169,8 +123,7 @@ AstraIndexator SHALL reconcile the existing ingestion session through public Ast
 
 ```text
 Finalize ambiguous
-  -> retain reconciliation evidence
-  -> GetLogicalDocumentIngestionStatus(existing session)
+  -> existing session status reconciliation
      -> non-terminal: reconciliation pending
      -> terminal failure/conflict: explicit classification
      -> completed:
@@ -179,11 +132,11 @@ Finalize ambiguous
           -> SEARCHABLE => local completion
 ```
 
-If the finalized public API proves session completion but cannot recover the authoritative UUID required for readiness, AstraIndexator SHALL return/persist explicit operator-visible reconciliation gap evidence. It MUST NOT infer UUID from code, read AstraVector private storage, mark COMPLETED without searchable proof, blindly create a duplicate version or blindly replay an ambiguous mutation.
+If finalized AstraVector proves session completion but its public API cannot recover the authoritative UUID required by `GetDocumentVectorStatus`, AstraIndexator SHALL surface `DeliveryRecoveryContractGap` and the runtime executor SHALL disposition it as `DOWNSTREAM_AMBIGUOUS -> RECONCILE`. The job MUST NOT be marked COMPLETED, no UUID may be inferred from the code, no private AstraVector storage may be read, and no duplicate session/version may be created blindly.
 
 `resolved_access_zone_id`, once obtained, is private checkpoint evidence and conflicting replacement is an integrity error.
 
-Real AstraVector M8.F qualification SHALL include ambiguous Finalize.
+This explicit `RECONCILE` disposition is the durable operational boundary available without changing finalized AstraVector. Real AstraVector M8.F qualification SHALL prove the actual public-contract behavior and determine whether the gap converges automatically or remains an operator-visible downstream contract limitation.
 
 ---
 
@@ -191,7 +144,7 @@ Real AstraVector M8.F qualification SHALL include ambiguous Finalize.
 
 M7 replay is safe only when its prepared artifact remains compatible with current M8 mapping/wire/hash/validation semantics.
 
-A deterministic versioned delivery compatibility fingerprint SHALL bind at least:
+A deterministic versioned fingerprint SHALL bind at least:
 
 ```text
 M7 prepared compatibility SHA-256
@@ -202,23 +155,13 @@ structural validation revision
 fingerprint format revision
 ```
 
-It MUST exclude worker ID, attempt ID, hostname, timestamp and other ephemeral deployment values.
-
-Before downstream mutation, current fingerprint SHALL be compared to any durable checkpoint value. Unknown/malformed/incompatible evidence fails closed before Start.
-
-Required tests prove deterministic generation, same-contract replay acceptance, changed wire/mapping/prepared evidence incompatibility, and execution-identity independence.
+It MUST exclude worker ID, attempt ID, hostname, timestamp and other ephemeral values. Before downstream mutation, current fingerprint SHALL be compared to any durable checkpoint value. Unknown/malformed/incompatible evidence fails closed before Start.
 
 ---
 
 # 9. Documentation reconciliation
 
-Implementation SHALL:
-
-1. update `README.md` to Roadmap 2.0/current M8 phase;
-2. remove/supersede producer UUID semantics in Roadmap 2.0;
-3. explicitly mark producer UUID portions of `M8.0-CONTRACT-FREEZE-GAP-AUDIT.md` historical/superseded;
-4. keep `ACCESS-ZONE-CODE-CONTRACT-FREEZE.md` as active AccessZone authority unless explicitly replaced;
-5. make M8.F qualification code-only and include producer UUID rejection rather than AccessZone-by-UUID producer success.
+Implementation SHALL update README/Roadmap 2.0, explicitly supersede producer UUID portions of the historical M8.0 audit, preserve `ACCESS-ZONE-CODE-CONTRACT-FREEZE.md` as active AccessZone authority, and make M8.F code-only with producer UUID rejection evidence.
 
 ---
 
@@ -228,19 +171,19 @@ Implementation SHALL:
 CR-01 stable logical Start identity             IMPLEMENTED / qualification running
 CR-02 mandatory verified source SHA-256         IMPLEMENTED / qualification running
 CR-03 durable runtime failure executor          IMPLEMENTED / qualification running
-CR-04 ambiguous Finalize convergence            EXISTING RECONCILIATION + explicit gap; final evidence open
+CR-04 ambiguous Finalize disposition            IMPLEMENTED / real-service evidence open
 CR-05 immutable delivery compatibility          IMPLEMENTED / qualification running
-Docs reconciliation                             IN PROGRESS
-M8.F real AstraVector qualification              NOT PART OF merge claim yet
+Docs reconciliation                             IMPLEMENTED / qualification running
+M8.F real AstraVector qualification             NOT PART OF merge claim yet
 ```
 
-This table is implementation tracking only; no item becomes QUALIFIED until required tests/CI/merge evidence exists.
+No item becomes QUALIFIED until required branch CI, merge and post-merge evidence exists.
 
 ---
 
 # 11. Qualification gates
 
-Completion Remediation implementation is not QUALIFIED until:
+Completion Remediation is not QUALIFIED until:
 
 ```text
 Ruff lint                         PASS
