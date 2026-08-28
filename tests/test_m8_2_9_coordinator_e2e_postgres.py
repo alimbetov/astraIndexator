@@ -16,6 +16,7 @@ from astra_indexator.application.astravector_delivery_coordinator import (
     AstraVectorDeliveryInput,
 )
 from astra_indexator.application.coordinator import JobCoordinator
+from astra_indexator.application.delivery_compatibility import delivery_compatibility_sha256
 from astra_indexator.astravector.batching import DeterministicBatchPlanner
 from astra_indexator.astravector.contracts import (
     AppendBlocksResult,
@@ -35,6 +36,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ZONE_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 ZONE_CODE = "0001"
+SOURCE_SHA256 = "a" * 64
+PREPARED_COMPATIBILITY_SHA256 = "b" * 64
 
 
 def _psycopg_url(url: str) -> str:
@@ -163,6 +166,14 @@ def _blocks() -> tuple[LogicalBlock, ...]:
     )
 
 
+def _payload() -> AstraVectorDeliveryInput:
+    return AstraVectorDeliveryInput(
+        logical_blocks=_blocks(),
+        source_content_hash=SOURCE_SHA256,
+        prepared_compatibility_sha256=PREPARED_COMPATIBILITY_SHA256,
+    )
+
+
 def _enqueue_and_claim(engine, *, worker_id: str = "worker-a"):
     document_id = uuid4()
     with Session(engine) as session:
@@ -176,6 +187,7 @@ def _enqueue_and_claim(engine, *, worker_id: str = "worker-a"):
                 access_zone_code=ZONE_CODE,
                 requested_ttl_days=0,
                 source_file_name="m8-2-9.txt",
+                source_content_hash=SOURCE_SHA256,
                 source_size_bytes=123,
             ),
         )
@@ -199,9 +211,7 @@ def test_full_coordinator_delivery_completes_only_after_searchable(database_url:
     document_id, claimed = _enqueue_and_claim(engine)
     port = _Port(document_id)
 
-    outcome = _coordinator(engine, port).deliver(
-        claimed, AstraVectorDeliveryInput(logical_blocks=_blocks())
-    )
+    outcome = _coordinator(engine, port).deliver(claimed, _payload())
 
     assert outcome.ingestion_session_id == SESSION_ID
     assert outcome.access_zone_code == ZONE_CODE
@@ -209,6 +219,10 @@ def test_full_coordinator_delivery_completes_only_after_searchable(database_url:
     assert port.start_calls == 1
     assert port.start_commands[0].access_zone_code == ZONE_CODE
     assert port.start_commands[0].access_zone_id is None
+    assert port.start_commands[0].content_hash == SOURCE_SHA256
+    assert port.start_commands[0].idempotency_key == (
+        f"astra-indexator:{document_id}:1:{SOURCE_SHA256}"
+    )
     assert port.append_calls == [0, 1]
     assert port.finalize_calls == 1
     assert outcome.readiness.status.searchable is True
@@ -230,6 +244,9 @@ def test_full_coordinator_delivery_completes_only_after_searchable(database_url:
         assert checkpoint.resolved_access_zone_id == ZONE_ID
         assert checkpoint.next_batch_index == 2
         assert checkpoint.final_content_hash is not None
+        assert checkpoint.delivery_compatibility_sha256 == delivery_compatibility_sha256(
+            PREPARED_COMPATIBILITY_SHA256
+        )
         assert checkpoint.searchable is True
         assert [batch.status for batch in batches] == ["ACCEPTED", "ACCEPTED"]
     engine.dispose()
@@ -248,7 +265,7 @@ def test_restart_reuses_bound_session_and_does_not_start_again(database_url: str
             )
 
     port = _Port(document_id)
-    _coordinator(engine, port).deliver(claimed, AstraVectorDeliveryInput(logical_blocks=_blocks()))
+    _coordinator(engine, port).deliver(claimed, _payload())
 
     assert port.start_calls == 0
     assert port.append_calls == [0, 1]
@@ -266,9 +283,7 @@ def test_code_only_delivery_preserves_access_zone_code_end_to_end(database_url: 
         assert before is not None
         assert before.access_zone_code == ZONE_CODE
 
-    outcome = _coordinator(engine, port).deliver(
-        claimed, AstraVectorDeliveryInput(logical_blocks=_blocks())
-    )
+    outcome = _coordinator(engine, port).deliver(claimed, _payload())
 
     assert outcome.access_zone_code == ZONE_CODE
     assert outcome.resolved_access_zone_id == ZONE_ID
