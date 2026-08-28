@@ -108,9 +108,7 @@ def test_code_only_migration_preserves_non_empty_pre_m8_database() -> None:
         command.upgrade(cfg, "head")
         with engine.connect() as connection:
             row = connection.execute(
-                text(
-                    "SELECT access_zone_code FROM astra_indexator.indexation_job WHERE id=:id"
-                ),
+                text("SELECT access_zone_code FROM astra_indexator.indexation_job WHERE id=:id"),
                 {"id": legacy_job_id},
             ).one()
         assert row.access_zone_code == "0600"
