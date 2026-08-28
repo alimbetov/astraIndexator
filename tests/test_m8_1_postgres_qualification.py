@@ -36,7 +36,7 @@ def database_url() -> str:
         yield url
 
 
-def test_repository_persists_code_and_ttl_as_requested_intent(database_url: str) -> None:
+def test_repository_persists_code_and_ttl_as_authoritative_intent(database_url: str) -> None:
     engine = create_engine(database_url)
     with Session(engine) as session:
         job = IndexationJobRepository().create_or_get(
@@ -56,48 +56,34 @@ def test_repository_persists_code_and_ttl_as_requested_intent(database_url: str)
     with engine.connect() as connection:
         row = connection.execute(
             text(
-                "SELECT requested_access_zone_id, requested_access_zone_code, "
-                "requested_ttl_days FROM astra_indexator.indexation_job WHERE id=:id"
+                "SELECT access_zone_code, requested_ttl_days "
+                "FROM astra_indexator.indexation_job WHERE id=:id"
             ),
             {"id": job_id},
         ).one()
-    assert row.requested_access_zone_id is None
-    assert row.requested_access_zone_code == "0001"
+    assert row.access_zone_code == "0001"
     assert row.requested_ttl_days == 30
 
 
-def test_repository_supports_uuid_only_requested_selector(database_url: str) -> None:
+def test_head_schema_has_no_producer_uuid_or_duplicate_code_columns(database_url: str) -> None:
     engine = create_engine(database_url)
-    zone_id = uuid4()
-    with Session(engine) as session:
-        job = IndexationJobRepository().create_or_get(
-            session,
-            NewIndexationJob(
-                producer_request_id=uuid4(),
-                document_id=uuid4(),
-                document_version=1,
-                source_uri="seaweed://m8/id-only.pdf",
-                requested_access_zone_id=zone_id,
-                requested_ttl_days=0,
-            ),
-        )
-        session.commit()
-        job_id = job.id
-
     with engine.connect() as connection:
-        row = connection.execute(
-            text(
-                "SELECT requested_access_zone_id, requested_access_zone_code, "
-                "requested_ttl_days FROM astra_indexator.indexation_job WHERE id=:id"
-            ),
-            {"id": job_id},
-        ).one()
-    assert row.requested_access_zone_id == zone_id
-    assert row.requested_access_zone_code is None
-    assert row.requested_ttl_days == 0
+        columns = {
+            row.column_name
+            for row in connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='astra_indexator' AND table_name='indexation_job'"
+                )
+            )
+        }
+    assert "access_zone_code" in columns
+    assert "access_zone_id" not in columns
+    assert "requested_access_zone_id" not in columns
+    assert "requested_access_zone_code" not in columns
 
 
-def test_m8_migration_backfills_non_empty_pre_m8_database() -> None:
+def test_code_only_migration_preserves_non_empty_pre_m8_database() -> None:
     with PostgresContainer("postgres:16") as postgres:
         url = _psycopg_url(postgres.get_connection_url())
         cfg = _config(url)
@@ -123,10 +109,9 @@ def test_m8_migration_backfills_non_empty_pre_m8_database() -> None:
         with engine.connect() as connection:
             row = connection.execute(
                 text(
-                    "SELECT requested_access_zone_code "
-                    "FROM astra_indexator.indexation_job WHERE id=:id"
+                    "SELECT access_zone_code FROM astra_indexator.indexation_job WHERE id=:id"
                 ),
                 {"id": legacy_job_id},
             ).one()
-        assert row.requested_access_zone_code == "0600"
+        assert row.access_zone_code == "0600"
         command.downgrade(cfg, "base")
