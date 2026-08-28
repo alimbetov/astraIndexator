@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from testcontainers.postgres import PostgresContainer
@@ -35,27 +35,22 @@ def database_url() -> str:
         command.downgrade(cfg, "base")
 
 
-def test_initial_migration_creates_foundational_tables(database_url: str) -> None:
+def test_schema_is_created_in_dedicated_namespace(database_url: str) -> None:
     engine = create_engine(database_url)
-    expected = {
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names(schema="astra_indexator"))
+    assert {
         "indexation_job",
         "processing_attempt",
         "delivery_checkpoint",
         "delivery_batch",
         "job_event",
         "knowledge_inventory",
-    }
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema='astra_indexator'"
-            )
-        ).scalars()
-        assert expected.issubset(set(rows))
+        "prepared_artifact_checkpoint",
+    }.issubset(tables)
 
 
-def test_durable_inbox_create_or_get_is_idempotent(database_url: str) -> None:
+def test_producer_request_is_idempotent(database_url: str) -> None:
     engine = create_engine(database_url)
     repo = IndexationJobRepository()
     producer_request_id = uuid4()
@@ -88,7 +83,6 @@ def test_leading_zero_access_zone_survives_round_trip(database_url: str) -> None
         document_id=uuid4(),
         document_version=1,
         access_zone_code="0000",
-        requested_access_zone_code="0000",
         source_uri="seaweed://sources/general.txt",
         status="PENDING",
     )
@@ -118,7 +112,7 @@ def test_database_rejects_non_positive_document_version(database_url: str) -> No
         session.rollback()
 
 
-def test_database_rejects_malformed_access_zone(database_url: str) -> None:
+def test_database_rejects_invalid_access_zone_code(database_url: str) -> None:
     engine = create_engine(database_url)
     with Session(engine) as session:
         session.add(
@@ -140,29 +134,65 @@ def test_database_rejects_malformed_access_zone(database_url: str) -> None:
 def test_active_document_version_is_unique_per_zone(database_url: str) -> None:
     engine = create_engine(database_url)
     document_id = uuid4()
+    common = dict(
+        document_id=document_id,
+        document_version=1,
+        access_zone_code="0600",
+        source_uri="seaweed://sources/duplicate.txt",
+        status="PENDING",
+    )
     with Session(engine) as session:
-        session.add_all(
-            [
-                IndexationJob(
-                    id=uuid4(),
-                    producer_request_id=uuid4(),
-                    document_id=document_id,
-                    document_version=7,
-                    access_zone_code="0300",
-                    source_uri="seaweed://sources/a.pdf",
-                    status="PENDING",
-                ),
-                IndexationJob(
-                    id=uuid4(),
-                    producer_request_id=uuid4(),
-                    document_id=document_id,
-                    document_version=7,
-                    access_zone_code="0300",
-                    source_uri="seaweed://sources/a-copy.pdf",
-                    status="PENDING",
-                ),
-            ]
+        session.add(
+            IndexationJob(
+                id=uuid4(),
+                producer_request_id=uuid4(),
+                **common,
+            )
+        )
+        session.commit()
+        session.add(
+            IndexationJob(
+                id=uuid4(),
+                producer_request_id=uuid4(),
+                **common,
+            )
         )
         with pytest.raises(IntegrityError):
             session.commit()
         session.rollback()
+
+
+def test_completed_document_version_allows_new_job(database_url: str) -> None:
+    engine = create_engine(database_url)
+    document_id = uuid4()
+    with Session(engine) as session:
+        session.add(
+            IndexationJob(
+                id=uuid4(),
+                producer_request_id=uuid4(),
+                document_id=document_id,
+                document_version=1,
+                access_zone_code="0600",
+                source_uri="seaweed://sources/completed.txt",
+                status="COMPLETED",
+            )
+        )
+        session.commit()
+        session.add(
+            IndexationJob(
+                id=uuid4(),
+                producer_request_id=uuid4(),
+                document_id=document_id,
+                document_version=1,
+                access_zone_code="0600",
+                source_uri="seaweed://sources/new.txt",
+                status="PENDING",
+            )
+        )
+        session.commit()
+
+
+def test_postgres_time_is_available_for_coordination(database_url: str) -> None:
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT now() IS NOT NULL")).scalar_one() is True
