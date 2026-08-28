@@ -17,6 +17,7 @@ from astra_indexator.application.astravector_delivery_coordinator import (
 )
 from astra_indexator.application.coordinator import JobCoordinator
 from astra_indexator.application.delivery_compatibility import delivery_compatibility_sha256
+from astra_indexator.application.delivery_identity import DeliveryIdentityError
 from astra_indexator.astravector.batching import DeterministicBatchPlanner
 from astra_indexator.astravector.contracts import (
     AppendBlocksResult,
@@ -69,6 +70,7 @@ def clean_database(database_url: str):
                 "astra_indexator.job_event, "
                 "astra_indexator.delivery_batch, "
                 "astra_indexator.delivery_checkpoint, "
+                "astra_indexator.prepared_artifact_checkpoint, "
                 "astra_indexator.processing_attempt, "
                 "astra_indexator.indexation_job CASCADE"
             )
@@ -166,15 +168,20 @@ def _blocks() -> tuple[LogicalBlock, ...]:
     )
 
 
-def _payload() -> AstraVectorDeliveryInput:
+def _payload(*, source_hash: str = SOURCE_SHA256) -> AstraVectorDeliveryInput:
     return AstraVectorDeliveryInput(
         logical_blocks=_blocks(),
-        source_content_hash=SOURCE_SHA256,
+        source_content_hash=source_hash,
         prepared_compatibility_sha256=PREPARED_COMPATIBILITY_SHA256,
     )
 
 
-def _enqueue_and_claim(engine, *, worker_id: str = "worker-a"):
+def _enqueue_and_claim(
+    engine,
+    *,
+    worker_id: str = "worker-a",
+    source_hash: str | None = SOURCE_SHA256,
+):
     document_id = uuid4()
     with Session(engine) as session:
         job = IndexationJobRepository().create_or_get(
@@ -187,7 +194,7 @@ def _enqueue_and_claim(engine, *, worker_id: str = "worker-a"):
                 access_zone_code=ZONE_CODE,
                 requested_ttl_days=0,
                 source_file_name="m8-2-9.txt",
-                source_content_hash=SOURCE_SHA256,
+                source_content_hash=source_hash,
                 source_size_bytes=123,
             ),
         )
@@ -278,11 +285,6 @@ def test_code_only_delivery_preserves_access_zone_code_end_to_end(database_url: 
     document_id, claimed = _enqueue_and_claim(engine, worker_id="worker-code")
     port = _Port(document_id)
 
-    with Session(engine) as session:
-        before = session.get(IndexationJob, claimed.token.job_id)
-        assert before is not None
-        assert before.access_zone_code == ZONE_CODE
-
     outcome = _coordinator(engine, port).deliver(claimed, _payload())
 
     assert outcome.access_zone_code == ZONE_CODE
@@ -295,8 +297,32 @@ def test_code_only_delivery_preserves_access_zone_code_end_to_end(database_url: 
     with Session(engine) as session:
         job = session.get(IndexationJob, claimed.token.job_id)
         checkpoint = session.get(DeliveryCheckpoint, claimed.token.job_id)
-        assert job is not None
-        assert job.access_zone_code == ZONE_CODE
-        assert checkpoint is not None
-        assert checkpoint.resolved_access_zone_id == ZONE_ID
+        assert job is not None and job.access_zone_code == ZONE_CODE
+        assert checkpoint is not None and checkpoint.resolved_access_zone_id == ZONE_ID
+    engine.dispose()
+
+
+def test_missing_durable_source_hash_blocks_start(database_url: str) -> None:
+    engine = create_engine(database_url)
+    document_id, claimed = _enqueue_and_claim(
+        engine,
+        worker_id="worker-missing-hash",
+        source_hash=None,
+    )
+    port = _Port(document_id)
+
+    with pytest.raises(DeliveryIdentityError, match="durable source_content_hash"):
+        _coordinator(engine, port).deliver(claimed, _payload())
+    assert port.start_calls == 0
+    engine.dispose()
+
+
+def test_m7_payload_source_hash_conflict_blocks_start(database_url: str) -> None:
+    engine = create_engine(database_url)
+    document_id, claimed = _enqueue_and_claim(engine, worker_id="worker-conflict-hash")
+    port = _Port(document_id)
+
+    with pytest.raises(DeliveryIdentityError, match="differs from durable"):
+        _coordinator(engine, port).deliver(claimed, _payload(source_hash="c" * 64))
+    assert port.start_calls == 0
     engine.dispose()
