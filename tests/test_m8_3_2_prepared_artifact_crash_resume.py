@@ -222,6 +222,7 @@ def test_reclaimed_worker_resumes_from_m7_without_reprocessing(database_url: str
 
     assert replay.calls == 1
     assert payload.source_content_hash == SOURCE_SHA
+    assert payload.prepared_compatibility_sha256 == COMPAT_SHA
     assert payload.source_file_name == "recovery.pdf"
     assert [block.block_type for block in payload.logical_blocks] == ["DOCUMENT", "PARAGRAPH"]
     assert payload.logical_blocks[1].text == "durable replay payload"

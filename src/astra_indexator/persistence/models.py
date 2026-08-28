@@ -172,6 +172,11 @@ class DeliveryCheckpoint(Base):
         CheckConstraint(
             "synced_bindings IS NULL OR synced_bindings >= 0", name="synced_bindings_non_negative"
         ),
+        CheckConstraint(
+            "delivery_compatibility_sha256 IS NULL OR "
+            "delivery_compatibility_sha256 ~ '^[0-9a-f]{64}$'",
+            name="delivery_compatibility_sha256_format",
+        ),
         {"schema": SCHEMA},
     )
 
@@ -186,6 +191,7 @@ class DeliveryCheckpoint(Base):
     next_batch_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     last_accepted_batch_index: Mapped[int | None] = mapped_column(Integer)
     final_content_hash: Mapped[str | None] = mapped_column(String(128))
+    delivery_compatibility_sha256: Mapped[str | None] = mapped_column(String(64))
     session_status_raw: Mapped[str | None] = mapped_column(String(64))
     vector_state_raw: Mapped[str | None] = mapped_column(String(64))
     searchable: Mapped[bool | None] = mapped_column(Boolean)

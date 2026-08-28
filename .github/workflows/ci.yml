@@ -54,6 +54,9 @@ jobs:
             src/astra_indexator/application/finalize_reconciliation.py \
             src/astra_indexator/application/abort_reconciliation.py \
             src/astra_indexator/application/vector_readiness.py \
+            src/astra_indexator/application/delivery_identity.py \
+            src/astra_indexator/application/delivery_compatibility.py \
+            src/astra_indexator/application/delivery_execution.py \
             src/astra_indexator/application/astravector_delivery_coordinator.py \
             src/astra_indexator/astravector/wire_contract.py \
             src/astra_indexator/astravector/canonical_hash.py \

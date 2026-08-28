@@ -41,5 +41,6 @@ class PreparedArtifactDeliveryInputFactory:
             logical_blocks=self.mapper.logical_blocks(artifact),
             source_file_name=source_file_name,
             source_content_hash=identity.source_sha256,
+            prepared_compatibility_sha256=artifact.manifest.compatibility_sha256,
             metadata=dict(metadata or {}),
         )

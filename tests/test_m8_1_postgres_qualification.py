@@ -6,10 +6,11 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 from testcontainers.postgres import PostgresContainer
 
+from astra_indexator.persistence.models import DeliveryCheckpoint
 from astra_indexator.persistence.repository import IndexationJobRepository, NewIndexationJob
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,13 +32,53 @@ def _config(url: str) -> Config:
 @pytest.fixture(scope="module")
 def database_url() -> str:
     with PostgresContainer("postgres:16") as postgres:
-        url = _psycopg_url(postgres.get_connection_url())
-        command.upgrade(_config(url), "head")
-        yield url
+        yield _psycopg_url(postgres.get_connection_url())
 
 
-def test_repository_persists_code_and_ttl_as_authoritative_intent(database_url: str) -> None:
+def test_head_schema_is_code_only_and_has_delivery_compatibility(database_url: str) -> None:
+    cfg = _config(database_url)
+    command.upgrade(cfg, "head")
     engine = create_engine(database_url)
+    inspector = inspect(engine)
+
+    job_columns = {
+        column["name"]
+        for column in inspector.get_columns("indexation_job", schema="astra_indexator")
+    }
+    assert "access_zone_code" in job_columns
+    assert "access_zone_id" not in job_columns
+    assert "requested_access_zone_id" not in job_columns
+    assert "requested_access_zone_code" not in job_columns
+
+    delivery_columns = {
+        column["name"]
+        for column in inspector.get_columns("delivery_checkpoint", schema="astra_indexator")
+    }
+    assert "resolved_access_zone_id" in delivery_columns
+    assert "delivery_compatibility_sha256" in delivery_columns
+
+    inventory_columns = {
+        column["name"]
+        for column in inspector.get_columns("knowledge_inventory", schema="astra_indexator")
+    }
+    assert "access_zone_code" in inventory_columns
+    assert "access_zone_id" not in inventory_columns
+    engine.dispose()
+
+
+def test_repository_persists_code_and_ttl(database_url: str) -> None:
+    cfg = _config(database_url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(database_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "TRUNCATE TABLE astra_indexator.knowledge_inventory, "
+                "astra_indexator.job_event, astra_indexator.delivery_batch, "
+                "astra_indexator.delivery_checkpoint, astra_indexator.prepared_artifact_checkpoint, "
+                "astra_indexator.processing_attempt, astra_indexator.indexation_job CASCADE"
+            )
+        )
     with Session(engine) as session:
         job = IndexationJobRepository().create_or_get(
             session,
@@ -45,71 +86,51 @@ def test_repository_persists_code_and_ttl_as_authoritative_intent(database_url: 
                 producer_request_id=uuid4(),
                 document_id=uuid4(),
                 document_version=1,
-                source_uri="seaweed://m8/code.pdf",
+                source_uri="seaweed://document",
                 access_zone_code="0001",
                 requested_ttl_days=30,
             ),
         )
         session.commit()
-        job_id = job.id
-
-    with engine.connect() as connection:
-        row = connection.execute(
-            text(
-                "SELECT access_zone_code, requested_ttl_days "
-                "FROM astra_indexator.indexation_job WHERE id=:id"
-            ),
-            {"id": job_id},
-        ).one()
-    assert row.access_zone_code == "0001"
-    assert row.requested_ttl_days == 30
+        assert job.access_zone_code == "0001"
+        assert job.requested_ttl_days == 30
+    engine.dispose()
 
 
-def test_head_schema_has_no_producer_uuid_or_duplicate_code_columns(database_url: str) -> None:
+def test_migration_0007_preserves_existing_delivery_checkpoint(database_url: str) -> None:
+    cfg = _config(database_url)
+    command.downgrade(cfg, "0006_access_zone_code_only")
     engine = create_engine(database_url)
-    with engine.connect() as connection:
-        columns = {
-            row.column_name
-            for row in connection.execute(
-                text(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_schema='astra_indexator' AND table_name='indexation_job'"
-                )
-            )
-        }
-    assert "access_zone_code" in columns
-    assert "access_zone_id" not in columns
-    assert "requested_access_zone_id" not in columns
-    assert "requested_access_zone_code" not in columns
+    job_id = uuid4()
+    producer_request_id = uuid4()
+    document_id = uuid4()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO astra_indexator.indexation_job "
+                "(id, producer_request_id, document_id, document_version, access_zone_code, "
+                "source_uri, status, max_attempts) "
+                "VALUES (:id, :producer_request_id, :document_id, 1, '0001', "
+                "'seaweed://legacy', 'PENDING', 5)"
+            ),
+            {
+                "id": job_id,
+                "producer_request_id": producer_request_id,
+                "document_id": document_id,
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO astra_indexator.delivery_checkpoint (job_id, next_batch_index) "
+                "VALUES (:job_id, 0)"
+            ),
+            {"job_id": job_id},
+        )
 
-
-def test_code_only_migration_preserves_non_empty_pre_m8_database() -> None:
-    with PostgresContainer("postgres:16") as postgres:
-        url = _psycopg_url(postgres.get_connection_url())
-        cfg = _config(url)
-        command.upgrade(cfg, "0003_prepared_checkpoint")
-        engine = create_engine(url)
-        legacy_job_id = uuid4()
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO astra_indexator.indexation_job "
-                    "(id, producer_request_id, document_id, document_version, "
-                    "access_zone_code, source_uri, status) "
-                    "VALUES (:id, :request_id, :document_id, 1, '0600', "
-                    "'seaweed://legacy.pdf', 'PENDING')"
-                ),
-                {
-                    "id": legacy_job_id,
-                    "request_id": uuid4(),
-                    "document_id": uuid4(),
-                },
-            )
-        command.upgrade(cfg, "head")
-        with engine.connect() as connection:
-            row = connection.execute(
-                text("SELECT access_zone_code FROM astra_indexator.indexation_job WHERE id=:id"),
-                {"id": legacy_job_id},
-            ).one()
-        assert row.access_zone_code == "0600"
-        command.downgrade(cfg, "base")
+    command.upgrade(cfg, "head")
+    with Session(engine) as session:
+        checkpoint = session.get(DeliveryCheckpoint, job_id)
+        assert checkpoint is not None
+        assert checkpoint.delivery_compatibility_sha256 is None
+        assert checkpoint.next_batch_index == 0
+    engine.dispose()

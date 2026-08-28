@@ -16,6 +16,8 @@ from astra_indexator.application.astravector_delivery_coordinator import (
     AstraVectorDeliveryInput,
 )
 from astra_indexator.application.coordinator import JobCoordinator
+from astra_indexator.application.delivery_compatibility import delivery_compatibility_sha256
+from astra_indexator.application.delivery_identity import DeliveryIdentityError
 from astra_indexator.astravector.batching import DeterministicBatchPlanner
 from astra_indexator.astravector.contracts import (
     AppendBlocksResult,
@@ -35,6 +37,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ZONE_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 ZONE_CODE = "0001"
+SOURCE_SHA256 = "a" * 64
+PREPARED_COMPATIBILITY_SHA256 = "b" * 64
 
 
 def _psycopg_url(url: str) -> str:
@@ -66,6 +70,7 @@ def clean_database(database_url: str):
                 "astra_indexator.job_event, "
                 "astra_indexator.delivery_batch, "
                 "astra_indexator.delivery_checkpoint, "
+                "astra_indexator.prepared_artifact_checkpoint, "
                 "astra_indexator.processing_attempt, "
                 "astra_indexator.indexation_job CASCADE"
             )
@@ -163,7 +168,20 @@ def _blocks() -> tuple[LogicalBlock, ...]:
     )
 
 
-def _enqueue_and_claim(engine, *, worker_id: str = "worker-a"):
+def _payload(*, source_hash: str = SOURCE_SHA256) -> AstraVectorDeliveryInput:
+    return AstraVectorDeliveryInput(
+        logical_blocks=_blocks(),
+        source_content_hash=source_hash,
+        prepared_compatibility_sha256=PREPARED_COMPATIBILITY_SHA256,
+    )
+
+
+def _enqueue_and_claim(
+    engine,
+    *,
+    worker_id: str = "worker-a",
+    source_hash: str | None = SOURCE_SHA256,
+):
     document_id = uuid4()
     with Session(engine) as session:
         job = IndexationJobRepository().create_or_get(
@@ -176,6 +194,7 @@ def _enqueue_and_claim(engine, *, worker_id: str = "worker-a"):
                 access_zone_code=ZONE_CODE,
                 requested_ttl_days=0,
                 source_file_name="m8-2-9.txt",
+                source_content_hash=source_hash,
                 source_size_bytes=123,
             ),
         )
@@ -199,9 +218,7 @@ def test_full_coordinator_delivery_completes_only_after_searchable(database_url:
     document_id, claimed = _enqueue_and_claim(engine)
     port = _Port(document_id)
 
-    outcome = _coordinator(engine, port).deliver(
-        claimed, AstraVectorDeliveryInput(logical_blocks=_blocks())
-    )
+    outcome = _coordinator(engine, port).deliver(claimed, _payload())
 
     assert outcome.ingestion_session_id == SESSION_ID
     assert outcome.access_zone_code == ZONE_CODE
@@ -209,6 +226,10 @@ def test_full_coordinator_delivery_completes_only_after_searchable(database_url:
     assert port.start_calls == 1
     assert port.start_commands[0].access_zone_code == ZONE_CODE
     assert port.start_commands[0].access_zone_id is None
+    assert port.start_commands[0].content_hash == SOURCE_SHA256
+    assert port.start_commands[0].idempotency_key == (
+        f"astra-indexator:{document_id}:1:{SOURCE_SHA256}"
+    )
     assert port.append_calls == [0, 1]
     assert port.finalize_calls == 1
     assert outcome.readiness.status.searchable is True
@@ -230,6 +251,9 @@ def test_full_coordinator_delivery_completes_only_after_searchable(database_url:
         assert checkpoint.resolved_access_zone_id == ZONE_ID
         assert checkpoint.next_batch_index == 2
         assert checkpoint.final_content_hash is not None
+        assert checkpoint.delivery_compatibility_sha256 == delivery_compatibility_sha256(
+            PREPARED_COMPATIBILITY_SHA256
+        )
         assert checkpoint.searchable is True
         assert [batch.status for batch in batches] == ["ACCEPTED", "ACCEPTED"]
     engine.dispose()
@@ -248,7 +272,7 @@ def test_restart_reuses_bound_session_and_does_not_start_again(database_url: str
             )
 
     port = _Port(document_id)
-    _coordinator(engine, port).deliver(claimed, AstraVectorDeliveryInput(logical_blocks=_blocks()))
+    _coordinator(engine, port).deliver(claimed, _payload())
 
     assert port.start_calls == 0
     assert port.append_calls == [0, 1]
@@ -261,14 +285,7 @@ def test_code_only_delivery_preserves_access_zone_code_end_to_end(database_url: 
     document_id, claimed = _enqueue_and_claim(engine, worker_id="worker-code")
     port = _Port(document_id)
 
-    with Session(engine) as session:
-        before = session.get(IndexationJob, claimed.token.job_id)
-        assert before is not None
-        assert before.access_zone_code == ZONE_CODE
-
-    outcome = _coordinator(engine, port).deliver(
-        claimed, AstraVectorDeliveryInput(logical_blocks=_blocks())
-    )
+    outcome = _coordinator(engine, port).deliver(claimed, _payload())
 
     assert outcome.access_zone_code == ZONE_CODE
     assert outcome.resolved_access_zone_id == ZONE_ID
@@ -280,8 +297,32 @@ def test_code_only_delivery_preserves_access_zone_code_end_to_end(database_url: 
     with Session(engine) as session:
         job = session.get(IndexationJob, claimed.token.job_id)
         checkpoint = session.get(DeliveryCheckpoint, claimed.token.job_id)
-        assert job is not None
-        assert job.access_zone_code == ZONE_CODE
-        assert checkpoint is not None
-        assert checkpoint.resolved_access_zone_id == ZONE_ID
+        assert job is not None and job.access_zone_code == ZONE_CODE
+        assert checkpoint is not None and checkpoint.resolved_access_zone_id == ZONE_ID
+    engine.dispose()
+
+
+def test_missing_durable_source_hash_blocks_start(database_url: str) -> None:
+    engine = create_engine(database_url)
+    document_id, claimed = _enqueue_and_claim(
+        engine,
+        worker_id="worker-missing-hash",
+        source_hash=None,
+    )
+    port = _Port(document_id)
+
+    with pytest.raises(DeliveryIdentityError, match="durable source_content_hash"):
+        _coordinator(engine, port).deliver(claimed, _payload())
+    assert port.start_calls == 0
+    engine.dispose()
+
+
+def test_m7_payload_source_hash_conflict_blocks_start(database_url: str) -> None:
+    engine = create_engine(database_url)
+    document_id, claimed = _enqueue_and_claim(engine, worker_id="worker-conflict-hash")
+    port = _Port(document_id)
+
+    with pytest.raises(DeliveryIdentityError, match="differs from durable"):
+        _coordinator(engine, port).deliver(claimed, _payload(source_hash="c" * 64))
+    assert port.start_calls == 0
     engine.dispose()

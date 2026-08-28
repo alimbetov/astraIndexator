@@ -7,6 +7,11 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from astra_indexator.application.coordinator import ClaimedJob, JobCoordinator, LeaseToken
+from astra_indexator.application.delivery_compatibility import delivery_compatibility_sha256
+from astra_indexator.application.delivery_identity import (
+    resolve_verified_source_sha256,
+    start_idempotency_key,
+)
 from astra_indexator.application.durable_append_delivery import (
     DurableAppendDeliveryRunner,
     DurableAppendLeaseFence,
@@ -48,6 +53,7 @@ class AstraVectorDeliveryInput:
     logical_blocks: Sequence[LogicalBlock]
     source_file_name: str = ""
     source_content_hash: str = ""
+    prepared_compatibility_sha256: str = ""
     metadata: dict[str, str] | None = None
 
 
@@ -69,7 +75,8 @@ class AstraVectorDeliveryCoordinator:
     the finalized AstraVector GetDocumentVectorStatus wire currently requires DocumentRef UUID.
 
     PostgreSQL is the durable recovery boundary. The complete LogicalBlock graph is validated
-    before downstream mutation. Mutating RPCs start only when their configured deadline plus safety
+    before downstream mutation. A verified durable source SHA-256 and M7 compatibility fingerprint
+    are required before Start. Mutating RPCs start only when their configured deadline plus safety
     margin fits inside the remaining PostgreSQL lease window.
     """
 
@@ -123,7 +130,15 @@ class AstraVectorDeliveryCoordinator:
         validate_logical_blocks(payload.logical_blocks)
 
         job = self._load_owned_job(claimed)
-        session_id = self._ensure_session(job, claimed, payload)
+        source_sha256 = resolve_verified_source_sha256(
+            durable_hash=job.source_content_hash,
+            payload_hash=payload.source_content_hash or None,
+        )
+        compatibility_sha256 = delivery_compatibility_sha256(
+            payload.prepared_compatibility_sha256
+        )
+        self._persist_delivery_compatibility(claimed.token, compatibility_sha256)
+        session_id = self._ensure_session(job, claimed, payload, source_sha256)
 
         self._advance_stage(claimed, "ASTRAVECTOR_APPEND")
         batches = self._planner.plan(payload.logical_blocks)
@@ -196,6 +211,7 @@ class AstraVectorDeliveryCoordinator:
         job: IndexationJob,
         claimed: ClaimedJob,
         payload: AstraVectorDeliveryInput,
+        source_sha256: str,
     ) -> UUID:
         with self._session_factory() as session:
             with session.begin():
@@ -212,8 +228,12 @@ class AstraVectorDeliveryCoordinator:
             document_version=job.document_version,
             source_uri=job.source_uri,
             file_name=payload.source_file_name or job.source_file_name or "document",
-            content_hash=payload.source_content_hash or job.source_content_hash or "",
-            idempotency_key=f"astra-indexator:{job.id}:{job.document_version}",
+            content_hash=source_sha256,
+            idempotency_key=start_idempotency_key(
+                document_id=job.document_id,
+                document_version=job.document_version,
+                source_sha256=source_sha256,
+            ),
             total_bytes_estimate=job.source_size_bytes or 0,
             total_blocks_estimate=len(payload.logical_blocks),
             total_pages_estimate=0,
@@ -234,6 +254,21 @@ class AstraVectorDeliveryCoordinator:
                     session_status_raw=started.raw_status,
                 )
         return started.ingestion_session_id
+
+    def _persist_delivery_compatibility(self, token: LeaseToken, fingerprint: str) -> None:
+        with self._session_factory() as session:
+            with session.begin():
+                self._lease_fence.assert_owned(session, token)
+                checkpoint = self._repository.ensure_checkpoint(session, token.job_id)
+                if (
+                    checkpoint.delivery_compatibility_sha256 is not None
+                    and checkpoint.delivery_compatibility_sha256 != fingerprint
+                ):
+                    raise DeliveryIntegrityError(
+                        "persisted M8 delivery compatibility fingerprint differs from current contract"
+                    )
+                checkpoint.delivery_compatibility_sha256 = fingerprint
+                session.flush()
 
     def _persist_final_hash(
         self,

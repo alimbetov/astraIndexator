@@ -157,6 +157,7 @@ def test_factory_asserts_manifest_identity_before_coordinator_input() -> None:
     )
     assert payload.source_file_name == "document.pdf"
     assert payload.source_content_hash == SOURCE_SHA256
+    assert payload.prepared_compatibility_sha256 == artifact.manifest.compatibility_sha256
     assert payload.metadata == {"preparedArtifactId": artifact.manifest.artifact_id}
     assert payload.logical_blocks[0].block_type == "DOCUMENT"
 

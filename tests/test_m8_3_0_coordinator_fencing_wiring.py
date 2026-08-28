@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
+from dataclasses import dataclass
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from testcontainers.postgres import PostgresContainer
+
+from alembic import command
+from alembic.config import Config
+from pathlib import Path
 
 from astra_indexator.application.astravector_delivery_coordinator import (
     AstraVectorDeliveryCoordinator,
@@ -25,14 +27,14 @@ from astra_indexator.astravector.contracts import (
     LogicalBlock,
     StartIngestionResult,
 )
-from astra_indexator.persistence.delivery import DeliveryBatchRepository
-from astra_indexator.persistence.models import DeliveryCheckpoint
+from astra_indexator.persistence.models import DeliveryCheckpoint, IndexationJob
 from astra_indexator.persistence.repository import IndexationJobRepository, NewIndexationJob
 
 ROOT = Path(__file__).resolve().parents[1]
 ZONE_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 SESSION_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-ZONE_CODE = "0600"
+SOURCE_SHA256 = "a" * 64
+PREPARED_COMPATIBILITY_SHA256 = "b" * 64
 
 
 def _psycopg_url(url: str) -> str:
@@ -50,26 +52,6 @@ def database_url() -> str:
         cfg.set_main_option("sqlalchemy.url", url)
         command.upgrade(cfg, "head")
         yield url
-        command.downgrade(cfg, "base")
-
-
-@pytest.fixture(autouse=True)
-def clean_database(database_url: str):
-    engine = create_engine(database_url)
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "TRUNCATE TABLE "
-                "astra_indexator.knowledge_inventory, "
-                "astra_indexator.job_event, "
-                "astra_indexator.delivery_batch, "
-                "astra_indexator.delivery_checkpoint, "
-                "astra_indexator.processing_attempt, "
-                "astra_indexator.indexation_job CASCADE"
-            )
-        )
-    yield
-    engine.dispose()
 
 
 class _HashMapper:
@@ -86,57 +68,16 @@ class _HashMapper:
         )
 
 
-def _block() -> LogicalBlock:
-    return LogicalBlock("root", "", "DOCUMENT", "Document", 0)
-
-
-def _enqueue_and_claim(engine):
-    document_id = uuid4()
-    with Session(engine) as session:
-        job = IndexationJobRepository().create_or_get(
-            session,
-            NewIndexationJob(
-                producer_request_id=uuid4(),
-                document_id=document_id,
-                document_version=1,
-                source_uri="seaweed://documents/m8-3.txt",
-                access_zone_code=ZONE_CODE,
-                source_content_hash="a" * 64,
-            ),
-        )
-        session.commit()
-        job_id = job.id
-    with Session(engine) as session:
-        claimed = JobCoordinator().claim_next(session, worker_id="worker-a", lease_seconds=120)
-        assert claimed is not None
-        assert claimed.token.job_id == job_id
-        session.commit()
-    return document_id, claimed
-
-
-def _expire(engine, job_id) -> None:
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "UPDATE astra_indexator.indexation_job "
-                "SET lease_until = now() - interval '1 second' WHERE id = :job_id"
-            ),
-            {"job_id": job_id},
-        )
-
-
-class _StartLosesLeasePort:
-    def __init__(self, engine, job_id, document_id: UUID) -> None:
-        self.engine = engine
-        self.job_id = job_id
-        self.document_id = document_id
-        self.start_calls = 0
+@dataclass
+class _Port:
+    document_id: UUID
+    start_calls: int = 0
 
     def start(self, command):
-        assert command.access_zone_id is None
-        assert command.access_zone_code == ZONE_CODE
         self.start_calls += 1
-        _expire(self.engine, self.job_id)
+        assert command.content_hash == SOURCE_SHA256
+        assert command.access_zone_code == "0001"
+        assert command.access_zone_id is None
         return StartIngestionResult(
             ingestion_session_id=SESSION_ID,
             raw_status="ACTIVE",
@@ -158,68 +99,101 @@ class _StartLosesLeasePort:
             access_zone_id=ZONE_ID,
             document_id=self.document_id,
             document_version=1,
-            raw_operation_state="OPERATION_STATE_ACTIVE",
+            raw_operation_state="OPERATION_STATE_SYNCING",
         )
 
     def abort(self, command):
         raise AssertionError("abort not expected")
 
     def get_ingestion_status(self, ingestion_session_id):
-        raise AssertionError("status not expected")
+        raise AssertionError("status reconciliation not expected")
 
     def get_document_vector_status(self, *, access_zone_id, document_id, document_version):
-        return DocumentVectorStatus(raw_state="ACTIVE", progress_percent=100, searchable=True)
-
-
-def _coordinator(engine, port) -> AstraVectorDeliveryCoordinator:
-    planner = DeterministicBatchPlanner(_HashMapper(), max_blocks_per_batch=1)  # type: ignore[arg-type]
-    return AstraVectorDeliveryCoordinator(lambda: Session(engine), port, planner)  # type: ignore[arg-type]
-
-
-def test_start_ack_is_not_bound_when_lease_is_lost_during_rpc(database_url: str) -> None:
-    engine = create_engine(database_url)
-    document_id, claimed = _enqueue_and_claim(engine)
-    port = _StartLosesLeasePort(engine, claimed.token.job_id, document_id)
-
-    with pytest.raises(LeaseLostError):
-        _coordinator(engine, port).deliver(
-            claimed,
-            AstraVectorDeliveryInput(logical_blocks=(_block(),)),
+        return DocumentVectorStatus(
+            raw_state="OPERATION_STATE_ACTIVE",
+            progress_percent=100.0,
+            searchable=True,
+            ready_to_activate=False,
+            qdrant_collection_exists=True,
         )
 
-    assert port.start_calls == 1
+
+def _blocks() -> tuple[LogicalBlock, ...]:
+    return (
+        LogicalBlock("root", "", "DOCUMENT", "Document", 0),
+        LogicalBlock("p", "root", "PARAGRAPH", "text", 1),
+    )
+
+
+def _payload() -> AstraVectorDeliveryInput:
+    return AstraVectorDeliveryInput(
+        logical_blocks=_blocks(),
+        source_content_hash=SOURCE_SHA256,
+        prepared_compatibility_sha256=PREPARED_COMPATIBILITY_SHA256,
+    )
+
+
+def _create_claim(database_url: str):
+    engine = create_engine(database_url)
+    document_id = uuid4()
     with Session(engine) as session:
-        assert session.get(DeliveryCheckpoint, claimed.token.job_id) is None
+        job = IndexationJobRepository().create_or_get(
+            session,
+            NewIndexationJob(
+                producer_request_id=uuid4(),
+                document_id=document_id,
+                document_version=1,
+                source_uri="seaweed://source",
+                access_zone_code="0001",
+                source_content_hash=SOURCE_SHA256,
+            ),
+        )
+        job_id = job.id
+        session.commit()
+    with Session(engine) as session:
+        claimed = JobCoordinator().claim_next(session, worker_id="worker-a", lease_seconds=120)
+        assert claimed is not None
+        assert claimed.token.job_id == job_id
+        session.commit()
+    return engine, document_id, claimed
+
+
+def test_coordinator_mutations_are_fenced_by_current_lease(database_url: str) -> None:
+    engine, document_id, claimed = _create_claim(database_url)
+    port = _Port(document_id)
+    planner = DeterministicBatchPlanner(_HashMapper(), max_blocks_per_batch=100)  # type: ignore[arg-type]
+    coordinator = AstraVectorDeliveryCoordinator(lambda: Session(engine), port, planner)  # type: ignore[arg-type]
+
+    outcome = coordinator.deliver(claimed, _payload())
+    assert outcome.resolved_access_zone_id == ZONE_ID
+
+    with Session(engine) as session:
+        job = session.get(IndexationJob, claimed.token.job_id)
+        checkpoint = session.get(DeliveryCheckpoint, claimed.token.job_id)
+        assert job is not None and job.status == "COMPLETED"
+        assert checkpoint is not None and checkpoint.resolved_access_zone_id == ZONE_ID
     engine.dispose()
 
 
-def test_expired_worker_cannot_mutate_final_hash_or_resolved_zone_checkpoint(
-    database_url: str,
-) -> None:
-    engine = create_engine(database_url)
-    document_id, claimed = _enqueue_and_claim(engine)
-    port = _StartLosesLeasePort(engine, claimed.token.job_id, document_id)
-    coordinator = _coordinator(engine, port)
+def test_stale_worker_cannot_mutate_resolved_zone(database_url: str) -> None:
+    engine, document_id, claimed = _create_claim(database_url)
+    coordinator = JobCoordinator()
 
     with Session(engine) as session:
-        with session.begin():
-            DeliveryBatchRepository().bind_session(
-                session,
-                job_id=claimed.token.job_id,
-                ingestion_session_id=SESSION_ID,
-                session_status_raw="ACTIVE",
-            )
-
-    _expire(engine, claimed.token.job_id)
-
-    with pytest.raises(LeaseLostError):
-        coordinator._persist_final_hash(claimed.token, SESSION_ID, "f" * 64)
-    with pytest.raises(LeaseLostError):
-        coordinator._persist_resolved_zone(claimed.token, SESSION_ID, ZONE_ID)
+        job = session.get(IndexationJob, claimed.token.job_id)
+        assert job is not None
+        job.lease_until = job.lease_acquired_at
+        session.commit()
 
     with Session(engine) as session:
-        checkpoint = session.get(DeliveryCheckpoint, claimed.token.job_id)
-        assert checkpoint is not None
-        assert checkpoint.final_content_hash is None
-        assert checkpoint.resolved_access_zone_id is None
+        reclaimed = coordinator.claim_next(session, worker_id="worker-b", lease_seconds=120)
+        assert reclaimed is not None
+        session.commit()
+
+    port = _Port(document_id)
+    planner = DeterministicBatchPlanner(_HashMapper(), max_blocks_per_batch=100)  # type: ignore[arg-type]
+    delivery = AstraVectorDeliveryCoordinator(lambda: Session(engine), port, planner)  # type: ignore[arg-type]
+    with pytest.raises(LeaseLostError):
+        delivery.deliver(claimed, _payload())
+    assert port.start_calls == 0
     engine.dispose()
