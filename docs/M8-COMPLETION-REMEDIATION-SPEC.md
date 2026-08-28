@@ -4,12 +4,12 @@
 
 **Milestone:** M8 AstraVector Delivery & Reliability  
 **Work package:** Completion Remediation  
-**Status:** IMPLEMENTATION IN PROGRESS  
+**Status:** IMPLEMENTATION / QUALIFICATION IN PROGRESS  
 **AstraIndexator baseline:** `main@ec7ddc97a6446fe40d822f7e5a0e081fba3ceeb6`  
 **Baseline CI:** AstraIndexator CI #328 — SUCCESS  
 **Implementation branch:** `spec/m8-completion-remediation`  
 
-This specification defines the remediation required before final real-AstraVector qualification and before M8 may be declared QUALIFIED. By explicit project decision, implementation is performed in this same reviewed branch; this document remains the normative acceptance contract for CR-01..CR-05.
+This specification defines and governs the remediation required before final real-AstraVector qualification and before M8 may be declared QUALIFIED. By explicit project decision, implementation is performed in this same reviewed branch.
 
 ---
 
@@ -71,7 +71,7 @@ Start idempotency SHALL derive from immutable logical identity:
 document_id + document_version + verified source content hash
 ```
 
-Canonical semantic form:
+Canonical form:
 
 ```text
 astra-indexator:{documentId}:{documentVersion}:{contentHash}
@@ -87,9 +87,7 @@ astra-indexator:{documentId}:{documentVersion}:{contentHash}
 
 A non-empty verified SHA-256 source content hash is mandatory before the first AstraVector mutating RPC. Durable acquisition/job lineage is authoritative; verified M7 evidence may repeat but may not replace or contradict it. Canonical representation is lowercase 64-character hexadecimal.
 
-Missing/malformed/conflicting source hash is a local integrity/input failure before Start, not transient AstraVector unavailability.
-
-Required evidence covers missing, malformed, durable/M7 mismatch, replay preservation and proof that no downstream mutation occurs on identity failure.
+Missing/malformed/conflicting source hash is a local integrity/input failure before Start, not transient AstraVector unavailability. Tests must prove no AstraVector mutation occurs when this guard fails.
 
 ---
 
@@ -132,11 +130,11 @@ Finalize ambiguous
           -> SEARCHABLE => local completion
 ```
 
-If finalized AstraVector proves session completion but its public API cannot recover the authoritative UUID required by `GetDocumentVectorStatus`, AstraIndexator SHALL surface `DeliveryRecoveryContractGap` and the runtime executor SHALL disposition it as `DOWNSTREAM_AMBIGUOUS -> RECONCILE`. The job MUST NOT be marked COMPLETED, no UUID may be inferred from the code, no private AstraVector storage may be read, and no duplicate session/version may be created blindly.
+If finalized AstraVector proves session completion but its public API cannot recover the authoritative UUID required by `GetDocumentVectorStatus`, AstraIndexator SHALL surface `DeliveryRecoveryContractGap` and the runtime executor SHALL disposition it as `DOWNSTREAM_AMBIGUOUS -> RECONCILE`. The job MUST NOT be marked COMPLETED, no UUID may be inferred from code, no private AstraVector storage may be read, and no duplicate session/version may be created blindly.
 
 `resolved_access_zone_id`, once obtained, is private checkpoint evidence and conflicting replacement is an integrity error.
 
-This explicit `RECONCILE` disposition is the durable operational boundary available without changing finalized AstraVector. Real AstraVector M8.F qualification SHALL prove the actual public-contract behavior and determine whether the gap converges automatically or remains an operator-visible downstream contract limitation.
+Real AstraVector M8.F qualification SHALL prove whether the public contract can fully converge this case or whether an operator-visible downstream contract limitation remains.
 
 ---
 
@@ -157,11 +155,13 @@ fingerprint format revision
 
 It MUST exclude worker ID, attempt ID, hostname, timestamp and other ephemeral values. Before downstream mutation, current fingerprint SHALL be compared to any durable checkpoint value. Unknown/malformed/incompatible evidence fails closed before Start.
 
+The fingerprint is persisted in `delivery_checkpoint.delivery_compatibility_sha256` via Alembic revision `0007_m8_delivery_compatibility`.
+
 ---
 
 # 9. Documentation reconciliation
 
-Implementation SHALL update README/Roadmap 2.0, explicitly supersede producer UUID portions of the historical M8.0 audit, preserve `ACCESS-ZONE-CODE-CONTRACT-FREEZE.md` as active AccessZone authority, and make M8.F code-only with producer UUID rejection evidence.
+The branch updates README/Roadmap 2.0, explicitly supersedes producer UUID portions of the historical M8.0 audit, preserves `ACCESS-ZONE-CODE-CONTRACT-FREEZE.md` as active AccessZone authority, and makes M8.F code-only with producer UUID rejection evidence.
 
 ---
 
@@ -174,14 +174,14 @@ CR-03 durable runtime failure executor          IMPLEMENTED / qualification runn
 CR-04 ambiguous Finalize disposition            IMPLEMENTED / real-service evidence open
 CR-05 immutable delivery compatibility          IMPLEMENTED / qualification running
 Docs reconciliation                             IMPLEMENTED / qualification running
-M8.F real AstraVector qualification             NOT PART OF merge claim yet
+M8.F real AstraVector qualification             OUTSIDE this branch's qualification claim
 ```
 
 No item becomes QUALIFIED until required branch CI, merge and post-merge evidence exists.
 
 ---
 
-# 11. Qualification gates
+# 11. Branch qualification gates
 
 Completion Remediation is not QUALIFIED until:
 
@@ -191,14 +191,14 @@ Ruff format                       PASS
 M8 scoped mypy                    PASS
 full pytest                       PASS
 PostgreSQL integration            PASS
-failure-injection matrix          PASS
+failure-execution tests           PASS
 migration verification            PASS
 package build                     PASS
 reviewed PR                       MERGED
 post-merge main CI                PASS
 ```
 
-M8 itself remains NOT QUALIFIED until real AstraVector M8.F evidence passes.
+The branch MAY be merged with CR-04's finalized-AstraVector public-contract limitation explicitly documented, provided all local behavior is fail-closed and qualified. M8 itself remains NOT QUALIFIED until real AstraVector M8.F evidence passes.
 
 ---
 
@@ -210,6 +210,6 @@ Completion Remediation SHALL NOT implement M9 business/document lifecycle, produ
 
 # 13. Merge readiness
 
-This branch is merge-ready only when CR-01..CR-05 have executable evidence, code-only AccessZone remains unambiguous, no implementation depends on AstraVector private persistence, scope does not leak into M9/M10/M12, and all branch quality/test/migration gates are green.
+This branch is merge-ready only when CR-01..CR-05 local acceptance evidence is executable, code-only AccessZone remains unambiguous, no implementation depends on AstraVector private persistence, scope does not leak into M9/M10/M12, and all branch quality/test/migration gates are green.
 
 Merge plus post-merge `main` CI are required before Completion Remediation is called merged/qualified. Final M8 qualification additionally remains blocked on M8.F real AstraVector evidence.
