@@ -139,6 +139,20 @@ class AbortIngestionCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ActivateDocumentVersionCommand:
+    access_zone_id: UUID
+    document_id: UUID
+    document_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class ActivateDocumentVersionResult:
+    document_id: UUID
+    document_version: int
+    raw_status: str
+
+
+@dataclass(frozen=True, slots=True)
 class IngestionStatus:
     ingestion_session_id: UUID
     raw_status: str
@@ -158,6 +172,7 @@ class DocumentVectorStatus:
     searchable: bool
     ready_to_activate: bool
     message: str = ""
+    document_status: str = ""
     expected_bindings: int = 0
     synced_bindings: int = 0
     pending_bindings: int = 0
@@ -188,6 +203,10 @@ class AstraVectorIngestionPort(Protocol):
     def finalize(self, command: FinalizeIngestionCommand) -> FinalizeIngestionResult: ...
 
     def abort(self, command: AbortIngestionCommand) -> IngestionStatus: ...
+
+    def activate_document_version(
+        self, command: ActivateDocumentVersionCommand
+    ) -> ActivateDocumentVersionResult: ...
 
     def get_ingestion_status(self, ingestion_session_id: UUID) -> IngestionStatus: ...
 

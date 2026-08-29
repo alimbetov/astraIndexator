@@ -106,11 +106,10 @@ def evaluate_vector_readiness(
     *,
     policy: ActivationReadinessPolicy = ActivationReadinessPolicy.REQUIRE_SEARCHABLE,
 ) -> VectorReadinessDecision:
-    """Classify AstraVector post-finalize readiness without crossing into v004 activation RPCs.
+    """Classify AstraVector post-finalize readiness from public status evidence.
 
-    AstraIndexator treats the public ingestion-facade status as authoritative. It may either wait
-    until the version is actually searchable, or explicitly hand off a READY_TO_ACTIVATE version
-    to an external/manual activation owner. It never calls the v004 control-plane activation API.
+    AstraIndexator treats the public ingestion-facade status as authoritative. READY_TO_ACTIVATE
+    proves vector synchronization, but production completion still requires ACTIVE/searchable.
     """
 
     state = _normalize_operation_state(status.raw_state)
@@ -136,9 +135,11 @@ def evaluate_vector_readiness(
                 "READY_TO_ACTIVATE state must set ready_to_activate=true"
             )
         _assert_ready_sync_consistency(status)
-        if status.searchable:
-            raise VectorReadinessIntegrityError(
-                "READY_TO_ACTIVATE state must not be reported as searchable before activation"
+        if status.searchable and status.document_status.strip().upper() == "ACTIVE":
+            return VectorReadinessDecision(
+                disposition=VectorReadinessDisposition.SEARCHABLE,
+                completion_level="SEARCHABLE",
+                reason="document version is active and searchable",
             )
         if policy is ActivationReadinessPolicy.ALLOW_READY_TO_ACTIVATE:
             return VectorReadinessDecision(

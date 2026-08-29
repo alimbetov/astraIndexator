@@ -66,6 +66,32 @@ def test_ready_to_activate_is_not_searchable_under_default_policy() -> None:
     assert handoff.disposition is VectorReadinessDisposition.READY_TO_ACTIVATE
 
 
+def test_ready_to_activate_searchable_flag_still_requires_activation() -> None:
+    status = _status(
+        raw_state="OPERATION_STATE_READY_TO_ACTIVATE",
+        searchable=True,
+        ready_to_activate=True,
+    )
+
+    decision = evaluate_vector_readiness(status)
+    assert decision.disposition is VectorReadinessDisposition.WAIT
+    assert decision.completion_level == "VECTOR_READY"
+
+
+def test_ready_to_activate_with_active_document_status_is_searchable() -> None:
+    status = _status(
+        raw_state="OPERATION_STATE_READY_TO_ACTIVATE",
+        searchable=True,
+        ready_to_activate=True,
+        document_status="ACTIVE",
+    )
+
+    decision = evaluate_vector_readiness(status)
+
+    assert decision.disposition is VectorReadinessDisposition.SEARCHABLE
+    assert decision.completion_level == "SEARCHABLE"
+
+
 @pytest.mark.parametrize(
     "state",
     ["ACCEPTED", "INDEXING", "VECTORING", "PUBLISHING", "SYNCING"],
@@ -90,7 +116,6 @@ def test_terminal_states_are_not_searchable(state: str) -> None:
     "overrides",
     [
         {"raw_state": "ACTIVE", "searchable": False},
-        {"raw_state": "READY_TO_ACTIVATE", "searchable": True, "ready_to_activate": True},
         {"raw_state": "READY_TO_ACTIVATE", "searchable": False, "ready_to_activate": False},
         {"expected_bindings": 2, "synced_bindings": 1},
         {"pending_bindings": 1},
@@ -133,6 +158,7 @@ def test_real_generated_grpc_vector_status_round_trip_preserves_identity_and_syn
                     searchable=True,
                     ready_to_activate=False,
                     sync=pb.GetVectorSyncStatusResponse(
+                        document_status="ACTIVE",
                         expected_bindings=3,
                         synced_bindings=3,
                         qdrant_collection_exists=True,
@@ -164,6 +190,7 @@ def test_real_generated_grpc_vector_status_round_trip_preserves_identity_and_syn
         decision = evaluate_vector_readiness(status)
         assert decision.disposition is VectorReadinessDisposition.SEARCHABLE
         assert status.expected_bindings == status.synced_bindings == 3
+        assert status.document_status == "ACTIVE"
         assert status.qdrant_collection_exists is True
         assert status.qdrant_points_expected == status.qdrant_points_found == 3
         assert servicer.request.document.access_zone_id == str(ACCESS_ZONE_ID)

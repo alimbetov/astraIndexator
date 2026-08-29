@@ -19,6 +19,7 @@ from astra_indexator.application.astravector_delivery_coordinator import (
 from astra_indexator.application.coordinator import JobCoordinator, LeaseLostError
 from astra_indexator.astravector.batching import DeterministicBatchPlanner
 from astra_indexator.astravector.contracts import (
+    ActivateDocumentVersionResult,
     AppendBlocksResult,
     DocumentVectorStatus,
     FinalizeIngestionResult,
@@ -71,6 +72,8 @@ class _HashMapper:
 class _Port:
     document_id: UUID
     start_calls: int = 0
+    activation_calls: int = 0
+    active_after_activation: bool = True
 
     def start(self, command):
         self.start_calls += 1
@@ -107,13 +110,35 @@ class _Port:
     def get_ingestion_status(self, ingestion_session_id):
         raise AssertionError("status reconciliation not expected")
 
+    def activate_document_version(self, command):
+        self.activation_calls += 1
+        return ActivateDocumentVersionResult(
+            document_id=self.document_id,
+            document_version=1,
+            raw_status="ACTIVE",
+        )
+
     def get_document_vector_status(self, *, access_zone_id, document_id, document_version):
+        if self.active_after_activation and self.activation_calls:
+            return DocumentVectorStatus(
+                raw_state="OPERATION_STATE_ACTIVE",
+                progress_percent=100.0,
+                searchable=True,
+                ready_to_activate=False,
+                qdrant_collection_exists=True,
+            )
         return DocumentVectorStatus(
-            raw_state="OPERATION_STATE_ACTIVE",
+            raw_state="OPERATION_STATE_READY_TO_ACTIVATE",
             progress_percent=100.0,
             searchable=True,
-            ready_to_activate=False,
+            ready_to_activate=True,
+            expected_bindings=1,
+            synced_bindings=1,
+            pending_bindings=0,
             qdrant_collection_exists=True,
+            qdrant_points_expected=1,
+            qdrant_points_found=1,
+            qdrant_points_missing=0,
         )
 
 
@@ -165,6 +190,7 @@ def test_coordinator_mutations_are_fenced_by_current_lease(database_url: str) ->
 
     outcome = coordinator.deliver(claimed, _payload())
     assert outcome.resolved_access_zone_id == ZONE_ID
+    assert port.activation_calls == 1
 
     with Session(engine) as session:
         job = session.get(IndexationJob, claimed.token.job_id)
@@ -195,4 +221,5 @@ def test_stale_worker_cannot_mutate_resolved_zone(database_url: str) -> None:
     with pytest.raises(LeaseLostError):
         delivery.deliver(claimed, _payload())
     assert port.start_calls == 0
+    assert port.activation_calls == 0
     engine.dispose()
