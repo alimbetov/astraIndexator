@@ -20,6 +20,7 @@ from astra_indexator.application.delivery_compatibility import delivery_compatib
 from astra_indexator.application.delivery_identity import DeliveryIdentityError
 from astra_indexator.astravector.batching import DeterministicBatchPlanner
 from astra_indexator.astravector.contracts import (
+    ActivateDocumentVersionResult,
     AppendBlocksResult,
     DocumentVectorStatus,
     FinalizeIngestionResult,
@@ -100,7 +101,36 @@ class _Port:
         self.start_commands: list[StartIngestionCommand] = []
         self.append_calls: list[int] = []
         self.finalize_calls = 0
+        self.activation_calls = 0
         self.vector_calls = 0
+        self.statuses = [
+            DocumentVectorStatus(
+                raw_state="OPERATION_STATE_READY_TO_ACTIVATE",
+                progress_percent=100.0,
+                searchable=True,
+                ready_to_activate=True,
+                expected_bindings=2,
+                synced_bindings=2,
+                pending_bindings=0,
+                qdrant_collection_exists=True,
+                qdrant_points_expected=2,
+                qdrant_points_found=2,
+                qdrant_points_missing=0,
+            ),
+            DocumentVectorStatus(
+                raw_state="OPERATION_STATE_ACTIVE",
+                progress_percent=100.0,
+                searchable=True,
+                ready_to_activate=False,
+                expected_bindings=2,
+                synced_bindings=2,
+                pending_bindings=0,
+                qdrant_collection_exists=True,
+                qdrant_points_expected=2,
+                qdrant_points_found=2,
+                qdrant_points_missing=0,
+            ),
+        ]
 
     def start(self, command: StartIngestionCommand):
         self.start_calls += 1
@@ -145,18 +175,23 @@ class _Port:
             expires_at="",
         )
 
+    def activate_document_version(self, command):
+        self.activation_calls += 1
+        assert command.access_zone_id == ZONE_ID
+        assert command.document_id == self.document_id
+        assert command.document_version == 1
+        return ActivateDocumentVersionResult(
+            document_id=self.document_id,
+            document_version=1,
+            raw_status="ACTIVE",
+        )
+
     def get_document_vector_status(self, *, access_zone_id, document_id, document_version):
         self.vector_calls += 1
         assert access_zone_id == ZONE_ID
         assert document_id == self.document_id
         assert document_version == 1
-        return DocumentVectorStatus(
-            raw_state="OPERATION_STATE_ACTIVE",
-            progress_percent=100.0,
-            searchable=True,
-            ready_to_activate=False,
-            qdrant_collection_exists=True,
-        )
+        return self.statuses.pop(0)
 
 
 def _blocks() -> tuple[LogicalBlock, ...]:
@@ -232,6 +267,7 @@ def test_full_coordinator_delivery_completes_only_after_searchable(database_url:
     )
     assert port.append_calls == [0, 1]
     assert port.finalize_calls == 1
+    assert port.activation_calls == 1
     assert outcome.readiness.status.searchable is True
 
     with Session(engine) as session:
@@ -245,7 +281,7 @@ def test_full_coordinator_delivery_completes_only_after_searchable(database_url:
         )
         assert job is not None and job.status == "COMPLETED"
         assert job.access_zone_code == ZONE_CODE
-        assert job.processing_stage == "ASTRAVECTOR_READINESS"
+        assert job.processing_stage == "ASTRAVECTOR_ACTIVATE"
         assert checkpoint is not None
         assert checkpoint.ingestion_session_id == SESSION_ID
         assert checkpoint.resolved_access_zone_id == ZONE_ID

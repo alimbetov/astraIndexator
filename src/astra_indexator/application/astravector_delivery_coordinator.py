@@ -21,6 +21,7 @@ from astra_indexator.application.finalize_reconciliation import (
     FinalizeReadinessIdentityUnavailable,
     FinalizeReconciliationRunner,
 )
+from astra_indexator.application.vector_activation import VectorActivationRunner
 from astra_indexator.application.vector_readiness import (
     VectorReadinessOutcome,
     VectorReadinessRunner,
@@ -92,6 +93,7 @@ class AstraVectorDeliveryCoordinator:
         lease_fence: DurableAppendLeaseFence | None = None,
         finalize_runner: FinalizeReconciliationRunner | None = None,
         readiness_runner: VectorReadinessRunner | None = None,
+        activation_runner: VectorActivationRunner | None = None,
         mutating_rpc_deadline_seconds: float = 30.0,
         rpc_safety_margin_seconds: float = 5.0,
     ) -> None:
@@ -120,6 +122,14 @@ class AstraVectorDeliveryCoordinator:
         )
         self._readiness_runner = readiness_runner or VectorReadinessRunner(
             session_factory, port, repository=self._repository
+        )
+        self._activation_runner = activation_runner or VectorActivationRunner(
+            session_factory,
+            port,
+            repository=self._repository,
+            lease_fence=self._lease_fence,
+            max_active_polls=90,
+            poll_delay_seconds=1.0,
         )
 
     def deliver(
@@ -176,14 +186,16 @@ class AstraVectorDeliveryCoordinator:
         self._persist_resolved_zone(claimed.token, session_id, resolved_zone_id)
 
         self._advance_stage(claimed, "ASTRAVECTOR_READINESS")
-        readiness = self._readiness_runner.wait_until_ready(
-            job_id=job.id,
+        self._advance_stage(claimed, "ASTRAVECTOR_ACTIVATE")
+        activation = self._activation_runner.activate_until_searchable(
+            token=claimed.token,
             ingestion_session_id=session_id,
             access_zone_id=resolved_zone_id,
             document_id=job.document_id,
             document_version=job.document_version,
             initial_status=finalize.vector_status,
         )
+        readiness = activation.readiness
 
         self._complete(claimed)
         return AstraVectorDeliveryOutcome(

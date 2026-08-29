@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -240,6 +241,25 @@ def test_ready_to_activate_rejects_incomplete_sync_evidence() -> None:
             inconsistent,
             policy=ActivationReadinessPolicy.ALLOW_READY_TO_ACTIVATE,
         )
+
+
+def test_ready_to_activate_searchable_flag_is_not_terminal_completion() -> None:
+    status = _ready("READY_TO_ACTIVATE", searchable=True)
+
+    decision = evaluate_vector_readiness(status)
+
+    assert decision.disposition is VectorReadinessDisposition.WAIT
+    assert decision.completion_level == "VECTOR_READY"
+
+
+def test_ready_to_activate_with_active_document_status_completes() -> None:
+    status = _ready("READY_TO_ACTIVATE", searchable=True)
+    status = replace(status, document_status="ACTIVE")
+
+    decision = evaluate_vector_readiness(status)
+
+    assert decision.disposition is VectorReadinessDisposition.SEARCHABLE
+    assert decision.completion_level == "SEARCHABLE"
 
 
 def test_active_without_searchable_is_integrity_error() -> None:

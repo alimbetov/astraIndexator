@@ -7,6 +7,7 @@ from typing import Any
 from .canonical_hash import normalize_sha256_hex
 from .contracts import (
     AbortIngestionCommand,
+    ActivateDocumentVersionCommand,
     AppendBlocksCommand,
     FinalizeIngestionCommand,
     LogicalBlock,
@@ -121,6 +122,16 @@ class AstraVectorProtoMapper:
         return self._pb.AbortLogicalDocumentIngestionRequest(
             ingestion_session_id=str(command.ingestion_session_id),
             reason=self._required_text(command.reason, "reason"),
+        )
+
+    def activate_document_version_request(self, command: ActivateDocumentVersionCommand) -> Any:
+        document_version = require_positive_uint32(
+            command.document_version, field="document_version"
+        )
+        return self._pb.ActivateDocumentVersionRequest(
+            access_zone_id=str(command.access_zone_id),
+            document_id=str(command.document_id),
+            document_version=document_version,
         )
 
     def ingestion_status_request(self, ingestion_session_id: Any) -> Any:

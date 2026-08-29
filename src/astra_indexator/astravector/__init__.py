@@ -15,6 +15,8 @@ from .canonical_hash import (
 )
 from .contracts import (
     AbortIngestionCommand,
+    ActivateDocumentVersionCommand,
+    ActivateDocumentVersionResult,
     AppendBlocksCommand,
     AppendBlocksResult,
     AstraVectorIngestionPort,
@@ -71,6 +73,8 @@ from .wire_contract import (
 __all__ = [
     "ASTRAVECTOR_CARGO_BLOB_SHA",
     "AbortIngestionCommand",
+    "ActivateDocumentVersionCommand",
+    "ActivateDocumentVersionResult",
     "ActivationReadinessPolicy",
     "AppendBlocksCommand",
     "AppendBlocksResult",

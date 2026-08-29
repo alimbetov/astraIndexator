@@ -8,6 +8,8 @@ import grpc
 
 from .contracts import (
     AbortIngestionCommand,
+    ActivateDocumentVersionCommand,
+    ActivateDocumentVersionResult,
     AppendBlocksCommand,
     AppendBlocksResult,
     AstraVectorTransportError,
@@ -75,6 +77,12 @@ class AstraVectorGrpcAdapter:
         self._generated = generated or load_generated_client()
         self._channel = channel or create_grpc_channel(config)
         self._stub = stub or self._generated.pb_grpc.AstraVectorIngestionFacadeStub(self._channel)
+        control_stub_factory = getattr(self._generated.pb_grpc, "AstraVectorV004ControlStub", None)
+        self._control_stub = (
+            control_stub_factory(self._channel)
+            if control_stub_factory and hasattr(self._channel, "unary_unary")
+            else None
+        )
         self._mapper = AstraVectorProtoMapper(self._generated.pb)
 
     @property
@@ -244,6 +252,48 @@ class AstraVectorGrpcAdapter:
             expires_at="",
         )
 
+    def activate_document_version(
+        self, command: ActivateDocumentVersionCommand
+    ) -> ActivateDocumentVersionResult:
+        if self._control_stub is None:
+            raise AstraVectorGrpcError(
+                code="INVALID_CLIENT",
+                message="generated AstraVector client does not expose ActivateDocumentVersion",
+            )
+        request = self._mapper.activate_document_version_request(command)
+        try:
+            response = self._control_stub.ActivateDocumentVersion(
+                request,
+                timeout=self._config.deadline_seconds,
+                metadata=self._metadata(),
+            )
+        except grpc.RpcError as exc:
+            raise self._transport_error(exc) from exc
+
+        try:
+            response_document_id = UUID(str(response.document_id))
+            response_document_version = int(response.document_version)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="ActivateDocumentVersion returned malformed document identity",
+            ) from exc
+        if response_document_id != command.document_id:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="ActivateDocumentVersion returned a different document_id",
+            )
+        if response_document_version != command.document_version:
+            raise AstraVectorGrpcError(
+                code="INVALID_RESPONSE",
+                message="ActivateDocumentVersion returned a different document_version",
+            )
+        return ActivateDocumentVersionResult(
+            document_id=response_document_id,
+            document_version=response_document_version,
+            raw_status=str(getattr(response, "status", "")),
+        )
+
     def get_ingestion_status(self, ingestion_session_id: UUID) -> IngestionStatus:
         request = self._mapper.ingestion_status_request(ingestion_session_id)
         try:
@@ -385,6 +435,7 @@ class AstraVectorGrpcAdapter:
             searchable=bool(getattr(status, "searchable", False)),
             ready_to_activate=bool(getattr(status, "ready_to_activate", False)),
             message=str(getattr(status, "message", "")),
+            document_status=str(getattr(sync, "document_status", "")),
             expected_bindings=expected_bindings,
             synced_bindings=synced_bindings,
             pending_bindings=pending_bindings,
