@@ -4,10 +4,10 @@
 
 ```text
 B1 FINAL QUALIFICATION
-PENDING POST-MERGE EVIDENCE
+PASS
 ```
 
-This report is included in the CODEX-05 qualifying PR as candidate evidence only. It must not be interpreted as B1 PASS until the exact merged `main` SHA has completed green post-merge GitHub Actions.
+The qualified implementation baseline is `main@f43ff28a93dc13c3fb6202c09046807142b4b1d7`. This documentation-only follow-up records final evidence after that exact main SHA completed green post-merge GitHub Actions.
 
 ## Qualified Implementation Baseline
 
@@ -20,12 +20,15 @@ This report is included in the CODEX-05 qualifying PR as candidate evidence only
 | Runtime integration commit | `bdc659e3dcd6a2a01f589d4209c8d1bf8cdaab2e` |
 | CODEX-03 evidence | `docs/qualification/CODEX-03-B1-INTEGRATION-RESULT.md` |
 | Qualification date | `2026-08-29` |
-| PR number | Pending |
-| PR CI run | Pending |
-| Merge SHA | Pending |
-| Post-merge CI run | Pending |
-| Qualified main SHA | Pending |
-| Evidence documentation SHA | Pending |
+| CODEX-05 candidate SHA | `d51411334260c6356a496717836f338a1bf44518` |
+| PR number | `42` |
+| PR URL | `https://github.com/alimbetov/astraIndexator/pull/42` |
+| PR CI run | `33239699355` / run `361` |
+| Merge SHA | `f43ff28a93dc13c3fb6202c09046807142b4b1d7` |
+| Merge timestamp | `2026-08-29T07:00:24Z` |
+| Post-merge CI run | `33239808608` / run `362` |
+| Qualified main SHA | `f43ff28a93dc13c3fb6202c09046807142b4b1d7` |
+| Evidence documentation SHA | Documentation-only follow-up commit containing this final PASS update. |
 
 ## Historical Failure
 
@@ -101,12 +104,12 @@ Historical post-merge `main` at `4121e452bbe6dfcfc81c7ab43aa3c5ebf6e72f23` faile
 
 | Gate | Result | SHA / Run |
 | --- | --- | --- |
-| PR diff review | Pending | Pending PR |
-| PR CI | Pending | Pending PR |
-| Unit/PostgreSQL job | Pending | Pending PR |
-| Quality gates job | Pending | Pending PR |
-| Merge | Pending | Pending PR |
-| Post-merge main CI | Pending | Pending exact main SHA |
+| PR diff review | PASS | PR #42 diff contained CR-06 runtime bootstrap, runtime tests, dependency/build hygiene, qualification docs, and B2 blocked evidence; no generated client or CODEX-01 report was committed. |
+| PR CI | PASS | `d51411334260c6356a496717836f338a1bf44518`, run `33239699355` / `361`, event `pull_request`. |
+| Unit/PostgreSQL job | PASS | Job `99066797622`, completed `2026-08-29T06:58:38Z`. |
+| Quality gates job | PASS | Job `99066797757`, completed `2026-08-29T06:58:25Z`; Ruff lint, Ruff format, M8 scoped mypy, and package build all executed successfully. |
+| Merge | PASS | PR #42 merged by merge commit `f43ff28a93dc13c3fb6202c09046807142b4b1d7`. |
+| Post-merge main CI | PASS | `main@f43ff28a93dc13c3fb6202c09046807142b4b1d7`, run `33239808608` / `362`, event `push`. |
 
 ## Defects
 
@@ -138,12 +141,12 @@ Historical post-merge `main` at `4121e452bbe6dfcfc81c7ab43aa3c5ebf6e72f23` faile
 | Root cause | `.gitignore` ignored `.venv/` but not other `.venv-*` or `.venv-*`-style fresh environment names. |
 | Fix | Add `.venv*/` to `.gitignore`. |
 | Verification | `python -m build` successfully built sdist and wheel. |
-| Commit | Pending CODEX-05 commit |
+| Commit | `d51411334260c6356a496717836f338a1bf44518` |
 
 ## Final Statement
 
 ```text
-PENDING POST-MERGE EVIDENCE
+PASS
 ```
 
-B1 is not yet PASS in this report. The maximum valid state before PR CI, merge, and exact post-merge `main` CI is candidate evidence pending GitHub qualification.
+B1 is PASS for qualified implementation SHA `f43ff28a93dc13c3fb6202c09046807142b4b1d7`. The evidence-documentation commit that records this final state is documentation-only and does not redefine the qualified implementation baseline.
