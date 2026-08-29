@@ -33,3 +33,64 @@ See [`docs/ACCESS-ZONE-CODE-CONTRACT-FREEZE.md`](docs/ACCESS-ZONE-CODE-CONTRACT-
 ## Documentation
 
 Canonical architecture and subsystem technical specifications are maintained under [`docs/`](docs/). Implementation changes must preserve those contracts or explicitly supersede the affected historical requirement in the same reviewed change.
+
+## Runtime bootstrap
+
+Canonical production-oriented startup command:
+
+```bash
+python -m astra_indexator
+```
+
+Prerequisites:
+
+- Python 3.12 or newer;
+- PostgreSQL with the Alembic schema migrated to `head`;
+- generated AstraVector Python gRPC client from the pinned wire contract before executing M8 delivery;
+- syntactically valid AstraVector gRPC endpoint.
+
+Install and prepare a clean checkout:
+
+```bash
+python -m pip install --upgrade pip
+pip install -e ".[dev]"
+python tools/generate_astravector_proto.py
+```
+
+Run database migrations explicitly before starting the worker:
+
+```bash
+ASTRA_INDEXATOR_DATABASE_URL=postgresql+psycopg://astra_indexator:astra_indexator@localhost:5432/astra_indexator \
+  alembic upgrade head
+```
+
+Required runtime environment:
+
+```text
+ASTRA_INDEXATOR_DATABASE_URL=postgresql+psycopg://user:password@host:5432/database
+```
+
+Optional runtime environment:
+
+```text
+ASTRA_INDEXATOR_ASTRAVECTOR_GRPC_TARGET=astravector:50051
+ASTRA_INDEXATOR_WORKER_ID=<hostname-pid default>
+ASTRA_INDEXATOR_LEASE_SECONDS=120
+ASTRA_INDEXATOR_POLL_INTERVAL_SECONDS=1.0
+ASTRA_INDEXATOR_RPC_TIMEOUT_SECONDS=30.0
+ASTRA_INDEXATOR_RPC_SAFETY_MARGIN_SECONDS=5.0
+ASTRA_INDEXATOR_LOG_LEVEL=INFO
+```
+
+Startup validates PostgreSQL connectivity and the current Alembic head. It does not run
+`Base.metadata.create_all()` and does not apply migrations automatically. AstraVector availability is
+lazy: the process may start and poll with no queued M8 delivery work when the endpoint is
+syntactically valid; downstream gRPC use occurs only when delivery is executed.
+
+The runtime handles `SIGINT` and `SIGTERM` by stopping new job claims, allowing the current bounded
+operation to finish through the existing lease-fenced/durable failure path, disposing database
+resources, and exiting deterministically.
+
+Real AstraVector end-to-end qualification is not claimed here. For B2/real-service qualification,
+the portable AstraVector deployment is maintained at
+[`alimbetov/agent-astradeployment-portable-local-1.0`](https://github.com/alimbetov/agent-astradeployment-portable-local-1.0).

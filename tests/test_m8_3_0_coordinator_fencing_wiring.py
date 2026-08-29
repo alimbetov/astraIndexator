@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from testcontainers.postgres import PostgresContainer
-
-from alembic import command
-from alembic.config import Config
-from pathlib import Path
 
 from astra_indexator.application.astravector_delivery_coordinator import (
     AstraVectorDeliveryCoordinator,

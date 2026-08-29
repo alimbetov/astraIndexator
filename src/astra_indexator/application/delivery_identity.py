@@ -33,9 +33,7 @@ def resolve_verified_source_sha256(*, durable_hash: str | None, payload_hash: st
     return durable
 
 
-def start_idempotency_key(
-    *, document_id: UUID, document_version: int, source_sha256: str
-) -> str:
+def start_idempotency_key(*, document_id: UUID, document_version: int, source_sha256: str) -> str:
     if document_version <= 0:
         raise DeliveryIdentityError("document_version must be positive")
     digest = require_source_sha256(source_sha256, field="source_sha256")

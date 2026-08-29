@@ -4,6 +4,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+.venv*/
 venv/
 .env
 .coverage
@@ -11,3 +12,4 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+src/astra_indexator/astravector/generated/

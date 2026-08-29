@@ -134,9 +134,7 @@ class AstraVectorDeliveryCoordinator:
             durable_hash=job.source_content_hash,
             payload_hash=payload.source_content_hash or None,
         )
-        compatibility_sha256 = delivery_compatibility_sha256(
-            payload.prepared_compatibility_sha256
-        )
+        compatibility_sha256 = delivery_compatibility_sha256(payload.prepared_compatibility_sha256)
         self._persist_delivery_compatibility(claimed.token, compatibility_sha256)
         session_id = self._ensure_session(job, claimed, payload, source_sha256)
 
