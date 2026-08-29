@@ -63,6 +63,7 @@ class PreparedArtifactDeliveryMapper:
             block_type="DOCUMENT",
             text=f"Document {identity.document_id} v{identity.document_version}",
             order_index=0,
+            source_location=SourceLocation(),
             metadata={
                 "astra.synthetic_root": "true",
                 "astra.source_sha256": identity.source_sha256,

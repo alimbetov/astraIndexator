@@ -151,3 +151,45 @@ Do not use the old `astravector-smoke-runtime` as final CODEX-07 evidence unless
 the required public HTTP `8080` endpoint and the rest of the portable baseline gates.
 
 Do not commit `.env`, PDF files, extracted CV text, generated protobuf files, or smoke outputs.
+
+## Resolution And Revalidation
+
+Chronological update from CODEX-07B continuation:
+
+| Step | Result |
+| --- | --- |
+| Initial portable start | `BLOCKED`; preserved PostgreSQL volume password mismatch |
+| Root cause | `astradeployment-postgres-data` was reused with credentials that did not match the newly created ignored `.env` |
+| Remediation | Synchronized the local `astravector_app` role password with the ignored `deploy/local/.env` |
+| Network auth check | PASS from a separate container on `astradeployment-network` |
+| `make start` | PASS |
+| `make health` | PASS |
+| `make smoke` | PASS |
+| Current runtime state | `B2_RUNTIME_READY = YES` |
+
+Current public endpoints:
+
+| Endpoint | Address | State |
+| --- | --- | --- |
+| AstraVector gRPC | `127.0.0.1:50051` | published |
+| AstraVector HTTP | `127.0.0.1:8080` | published; `/ready` returned `{"ready":true,"status":"READY"}` |
+| AstraVector metrics | `127.0.0.1:9090` | published |
+| Qdrant HTTP | `127.0.0.1:6333` | published by portable baseline |
+
+Current running portable containers after remediation:
+
+| Container | Image | State |
+| --- | --- | --- |
+| `astradeployment-astravector-1` | `registry.astrabase.asia/astravector:sha-1cb6065` | healthy |
+| `astradeployment-postgres-1` | `pgvector/pgvector:pg16` | healthy |
+| `astradeployment-qdrant-1` | `qdrant/qdrant:v1.14.1` | running |
+
+The validated AstraVector image identity remained:
+
+```text
+registry.astrabase.asia/astravector:sha-1cb6065
+sha256:b0567810b5ea3df752ff8ba559fcf16bc46b245878e798b8888dcf93426ee6ad
+```
+
+Native AstraDeployment smoke completed after remediation. It used the deployment's own smoke
+document, not the real CV/PDF used by AstraIndexator qualification.
