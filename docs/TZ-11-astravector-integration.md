@@ -60,7 +60,7 @@ AstraIndexator owns:
 - provenance and source links;
 - structural and wire-range validation;
 - access-zone intent normalization to one ingestion zone;
-- Start/Append/Finalize orchestration;
+- Start/Append/Finalize/Activate orchestration;
 - client idempotency and replay checkpoints;
 - downstream status reconciliation.
 
@@ -106,6 +106,17 @@ service AstraVectorIngestionFacade {
 
 AstraIndexator SHALL use generated clients for this facade rather than hand-maintained transport DTOs.
 
+Manual document activation uses the public generated AstraVector v004 control service:
+
+```proto
+service AstraVectorV004Control {
+  rpc ActivateDocumentVersion(ActivateDocumentVersionRequest)
+      returns (DocumentVersionResponse);
+}
+```
+
+AstraIndexator MAY call only this public activation RPC for the current MANUAL activation policy. It MUST NOT activate by editing AstraVector PostgreSQL, Qdrant, outbox rows or private storage.
+
 ---
 
 ## 5. Application DTO layers
@@ -124,6 +135,7 @@ Recommended application command shapes follow the approved deployment mapping.
 StartIndexingCommand
 LogicalBlockBatch
 FinalizeIndexingCommand
+ActivateDocumentVersionCommand
 AbortIndexingCommand
 IngestionSessionStatus
 DocumentVectorStatus
@@ -617,6 +629,26 @@ AbortIndexingCommand {
 
 Mutating timeout does not prove failure; recovery follows TZ-13.
 
+Activation:
+
+```text
+ActivateDocumentVersionCommand {
+  accessZoneId
+  documentId
+  documentVersion
+}
+```
+
+Wire:
+
+```text
+access_zone_id
+document_id
+document_version:uint64
+```
+
+`ActivateDocumentVersion` is a public mutating AstraVector RPC. AstraIndexator SHALL call it only after public readiness evidence reaches `READY_TO_ACTIVATE` with consistent sync counters. The call and subsequent status polling are lease-fenced. A timeout/transport loss after sending activation is ambiguous and MUST be reconciled with public `GetDocumentVectorStatus` before any retry is treated as safe.
+
 ---
 
 ## 18. Session status DTO
@@ -687,6 +719,7 @@ DocumentVectorStatus {
   searchable
   message
   readyToActivate
+  documentStatus
   sync: VectorSyncStatus
 }
 ```
@@ -710,7 +743,7 @@ DELETING
 
 Application adapters SHALL keep an UNKNOWN/UNSPECIFIED-safe path for future additive enum values.
 
-`searchable=true` is the authoritative completion gate used by AstraIndexator job lifecycle.
+`searchable=true` is the authoritative completion gate used by AstraIndexator job lifecycle only when it is paired with non-contradictory public state evidence. On the `sha-f6493fa` AstraVector runtime, the public top-level state may remain `READY_TO_ACTIVATE` after activation while `sync.documentStatus=ACTIVE` and `searchable=true`; that combination is accepted as searchable completion.
 
 ---
 
@@ -791,9 +824,31 @@ Only verified downstream:
 
 ```text
 GetDocumentVectorStatus.status.searchable == true
+and GetDocumentVectorStatus.status.sync.documentStatus == ACTIVE when required by runtime state
 ```
 
 allows the normal indexing job to transition to `COMPLETED`.
+
+For MANUAL activation policy, the normal completion path is:
+
+```text
+Finalize
+  -> GetDocumentVectorStatus == READY_TO_ACTIVATE with consistent sync evidence
+  -> ActivateDocumentVersion
+  -> GetDocumentVectorStatus proves searchable completion
+  -> local COMPLETED
+```
+
+The accepted searchable completion forms are:
+
+```text
+state=ACTIVE + searchable=true + consistent sync evidence
+
+or
+
+state=READY_TO_ACTIVATE + ready_to_activate=true + searchable=true
+  + sync.documentStatus=ACTIVE + consistent sync evidence
+```
 
 ---
 

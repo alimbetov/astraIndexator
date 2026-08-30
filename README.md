@@ -4,7 +4,7 @@ AstraIndexator is an internal document indexing service responsible for acquirin
 
 ## Current phase
 
-The TZ-00..TZ-18 architecture/specification baseline is implemented through the M1–M7 foundation, and M8 AstraVector Delivery & Reliability is in completion remediation and final qualification.
+The TZ-00..TZ-18 architecture/specification baseline is implemented through the M1–M7 foundation. M8 AstraVector Delivery & Reliability has real AstraVector B2 qualification evidence on branch `codex/real-pdf-smoke`, including public activation and retrieval proof against `registry.astrabase.asia/astravector:sha-f6493fa`.
 
 Current high-level status:
 
@@ -16,13 +16,13 @@ M4 Canonical Parser                  ✅ implemented
 M5 OCR Pipeline                      ✅ implemented / hardened
 M6 Normalization & Logical Splitter  ✅ implemented / hardened
 M7 Prepared Artifacts & Replay       ✅ qualified
-M8 AstraVector Delivery              🚧 completion remediation / final qualification open
+M8 AstraVector Delivery              ✅ B2 qualified on real AstraVector runtime
 M9+                                  ⬜ planned after M8 qualification
 ```
 
 The active implementation roadmap is [`docs/IMPLEMENTATION-ROADMAP-2.0.md`](docs/IMPLEMENTATION-ROADMAP-2.0.md).
 
-The current M8 remediation contract is [`docs/M8-COMPLETION-REMEDIATION-SPEC.md`](docs/M8-COMPLETION-REMEDIATION-SPEC.md).
+The current M8 remediation contract is [`docs/M8-COMPLETION-REMEDIATION-SPEC.md`](docs/M8-COMPLETION-REMEDIATION-SPEC.md). The latest real-runtime qualification result is [`docs/qualification/CODEX-10-ASTRAINDEXATOR-B2-DEBUG-RESULT.md`](docs/qualification/CODEX-10-ASTRAINDEXATOR-B2-DEBUG-RESULT.md).
 
 ## AccessZone contract
 
@@ -91,6 +91,5 @@ The runtime handles `SIGINT` and `SIGTERM` by stopping new job claims, allowing 
 operation to finish through the existing lease-fenced/durable failure path, disposing database
 resources, and exiting deterministically.
 
-Real AstraVector end-to-end qualification is not claimed here. For B2/real-service qualification,
-the portable AstraVector deployment is maintained at
-[`alimbetov/agent-astradeployment-portable-local-1.0`](https://github.com/alimbetov/agent-astradeployment-portable-local-1.0).
+Real AstraVector end-to-end qualification is claimed by CODEX-10 for the current B2 scope. The portable AstraVector deployment is maintained at
+[`alimbetov/agent-astradeployment-portable-local-1.0`](https://github.com/alimbetov/agent-astradeployment-portable-local-1.0), using `registry.astrabase.asia/astravector:sha-f6493fa` for the qualified run.
