@@ -61,6 +61,18 @@ Generated/pinned AstraVector protobuf + gRPC is the transport authority. AstraIn
 
 Session `COMPLETED` is not searchable proof. Local successful completion requires authoritative vector readiness evidence.
 
+For the current MANUAL AstraVector activation policy, local successful completion additionally requires public activation:
+
+```text
+Finalize
+  -> GetDocumentVectorStatus READY_TO_ACTIVATE
+  -> ActivateDocumentVersion
+  -> GetDocumentVectorStatus searchable evidence
+  -> local COMPLETED
+```
+
+On AstraVector `registry.astrabase.asia/astravector:sha-f6493fa`, the accepted post-activation searchable evidence is `searchable=true` with `sync.documentStatus=ACTIVE`, even when the top-level operation state remains `OPERATION_STATE_READY_TO_ACTIVATE`.
+
 ---
 
 # 4. CR-01 — Stable logical Start idempotency
@@ -134,7 +146,7 @@ If finalized AstraVector proves session completion but its public API cannot rec
 
 `resolved_access_zone_id`, once obtained, is private checkpoint evidence and conflicting replacement is an integrity error.
 
-Real AstraVector M8.F qualification SHALL prove whether the public contract can fully converge this case or whether an operator-visible downstream contract limitation remains.
+CODEX-10 real AstraVector qualification proved the positive Start/Append/Finalize/Activate/searchable path against the public contract. Ambiguous Finalize remains fail-closed through public reconciliation; if a future runtime cannot recover the authoritative `DocumentRef`, `DeliveryRecoveryContractGap` remains the correct disposition.
 
 ---
 
@@ -171,11 +183,11 @@ The branch updates README/Roadmap 2.0, explicitly supersedes producer UUID porti
 CR-01 stable logical Start identity             IMPLEMENTED / qualification running
 CR-02 mandatory verified source SHA-256         IMPLEMENTED / qualification running
 CR-03 durable runtime failure executor          IMPLEMENTED / qualification running
-CR-04 ambiguous Finalize disposition            IMPLEMENTED / real-service evidence open
+CR-04 ambiguous Finalize disposition            IMPLEMENTED / fail-closed, positive real-service path proved
 CR-05 immutable delivery compatibility          IMPLEMENTED / qualification running
 CR-06 canonical runtime bootstrap               IMPLEMENTED / local integration qualification running
 Docs reconciliation                             IMPLEMENTED / qualification running
-M8.F real AstraVector qualification             OUTSIDE this branch's qualification claim
+M8.F/B2 real AstraVector qualification           CODEX-10 positive path PASS
 ```
 
 No item becomes QUALIFIED until required branch CI, merge and post-merge evidence exists.
@@ -199,7 +211,7 @@ reviewed PR                       MERGED
 post-merge main CI                PASS
 ```
 
-The branch MAY be merged with CR-04's finalized-AstraVector public-contract limitation explicitly documented, provided all local behavior is fail-closed and qualified. M8 itself remains NOT QUALIFIED until real AstraVector M8.F evidence passes.
+The branch MAY be merged with CR-04's finalized-AstraVector public-contract limitation explicitly documented, provided all local behavior is fail-closed and qualified. CODEX-10 supplies real AstraVector B2 positive-path evidence; post-merge main CI is still required before the repository default branch can be called fully qualified.
 
 ## 11.1 CR-06 canonical runtime bootstrap
 
@@ -245,9 +257,7 @@ AstraVector PostgreSQL/Qdrant access remains forbidden.
 current bounded operation through the existing lease-fenced/durable failure semantics, closes local
 resources and exits deterministically.
 
-This CR-06 runtime bootstrap does not claim final M8.F real AstraVector qualification. Real-service
-qualification remains a separate B2 task; the portable AstraVector deployment reference is
-`alimbetov/agent-astradeployment-portable-local-1.0`.
+CR-06 runtime bootstrap is now complemented by CODEX-10 real AstraVector B2 qualification. The portable AstraVector deployment reference is `alimbetov/agent-astradeployment-portable-local-1.0`; the qualified image is `registry.astrabase.asia/astravector:sha-f6493fa`.
 
 ---
 
@@ -261,4 +271,4 @@ Completion Remediation SHALL NOT implement M9 business/document lifecycle, produ
 
 This branch is merge-ready only when CR-01..CR-05 local acceptance evidence is executable, code-only AccessZone remains unambiguous, no implementation depends on AstraVector private persistence, scope does not leak into M9/M10/M12, and all branch quality/test/migration gates are green.
 
-Merge plus post-merge `main` CI are required before Completion Remediation is called merged/qualified. Final M8 qualification additionally remains blocked on M8.F real AstraVector evidence.
+Merge plus post-merge `main` CI are required before Completion Remediation is called merged/qualified on the default branch. Final M8 real-runtime evidence is available from CODEX-10.

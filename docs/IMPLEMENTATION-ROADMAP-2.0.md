@@ -168,9 +168,9 @@ Manifest/parts carry SHA-256 and compatibility evidence. M8 consumes this bounda
 
 # M8 — AstraVector Delivery & Reliability
 
-**Status:** 🚧 ACTIVE — COMPLETION REMEDIATION / FINAL REAL-SERVICE QUALIFICATION OPEN
+**Status:** ✅ B2 REAL-RUNTIME QUALIFIED ON `codex/real-pdf-smoke`; DEFAULT-BRANCH MERGE/CI STILL REQUIRED
 
-M8 remains one coherent milestone. The durable-delivery core is implemented, but final M8 qualification is blocked by completion-remediation evidence, documentation/traceability reconciliation and real AstraVector qualification.
+M8 remains one coherent milestone. The durable-delivery core, completion remediation and CODEX-10 real AstraVector B2 positive path are implemented and qualified on the working branch. Default-branch merge plus post-merge CI are still required before `main` is advertised as fully qualified.
 
 ## M8.A — AccessZone / TTL durable lineage
 
@@ -201,21 +201,21 @@ Capabilities:
 - deterministic bounded batching;
 - response identity/ack validation;
 - fail-closed gRPC classification;
-- `READY_TO_ACTIVATE != SEARCHABLE`;
+- `READY_TO_ACTIVATE` synchronization, public activation, and searchable completion evidence;
 - real M7 prepared-artifact → M8 delivery-input mapping.
 
 ## M8.C — Durable delivery execution
 
-**Status:** ✅ CORE IMPLEMENTED / COMPLETION REMEDIATION IN PROGRESS
+**Status:** ✅ IMPLEMENTED / CODEX-10 QUALIFIED
 
-Existing capabilities include lease-fenced PREPARED/ACCEPTED batch mutations, stale-worker rejection, Start/session/final-hash/resolved-zone fencing, RPC lease-window guards, retry/dead-letter primitives, crash/reclaim from M7 artifacts and failure-injection coverage.
+Existing capabilities include lease-fenced PREPARED/ACCEPTED batch mutations, stale-worker rejection, Start/session/final-hash/resolved-zone fencing, public activation fencing, RPC lease-window guards, retry/dead-letter primitives, crash/reclaim from M7 artifacts and failure-injection coverage.
 
 Completion Remediation adds/qualifies the missing release-level closure rather than creating a second delivery engine.
 
 ## M8.CR — Completion Remediation
 
 **Normative spec:** `docs/M8-COMPLETION-REMEDIATION-SPEC.md`  
-**Status:** 🚧 IMPLEMENTATION IN PROGRESS
+**Status:** ✅ IMPLEMENTED / CODEX-10 POSITIVE REAL-RUNTIME PATH PASS
 
 Required work packages:
 
@@ -225,13 +225,15 @@ CR-02 mandatory verified source SHA-256 before mutation
 CR-03 unified durable runtime failure executor
 CR-04 ambiguous Finalize convergence / explicit public-contract gap
 CR-05 immutable M7→M8 delivery compatibility fingerprint
+CR-06 canonical runtime bootstrap
+CR-07 public ActivateDocumentVersion completion bridge
 ```
 
-Branch qualification requires Ruff lint/format, scoped mypy, full pytest, PostgreSQL/migration verification and package build. No CR item is called QUALIFIED before merge and post-merge main CI.
+Branch qualification evidence includes Ruff lint/format, scoped mypy, full pytest, PostgreSQL/migration verification, package build and CODEX-10 real AstraVector B2 smoke. No CR item is called qualified on the default branch before merge and post-merge main CI.
 
 ## M8.D — Post-implementation traceability reconciliation
 
-**Status:** 🚧 UPDATE REQUIRED AFTER COMPLETION REMEDIATION
+**Status:** ✅ UPDATED THROUGH CODEX-10 CONTRACT RECONCILIATION
 
 Audit current requirements against executable evidence. Historical UUID-producer requirements must be marked obsolete/superseded rather than reintroduced.
 
@@ -249,7 +251,7 @@ No unchecked historical list may remain the operational status source.
 
 ## M8.E — Reconciliation closure
 
-**Status:** 🚧 PART OF COMPLETION REMEDIATION
+**Status:** ✅ IMPLEMENTED / POSITIVE PATH QUALIFIED
 
 Scope is convergence after ambiguous downstream mutations, not a duplicate delivery engine.
 
@@ -264,11 +266,11 @@ Minimum responsibilities:
 
 ## M8.F — Real AstraVector qualification
 
-**Status:** ⬜ REQUIRED BEFORE M8 QUALIFIED
+**Status:** ✅ CODEX-10/B2 POSITIVE PATH PASS
 
 In-process/generated-gRPC tests are necessary but not sufficient.
 
-Required real-service evidence:
+CODEX-10 supplied the required positive real-service evidence against `registry.astrabase.asia/astravector:sha-f6493fa`:
 
 ```text
 1. Start -> Append(s) -> Finalize
@@ -294,9 +296,11 @@ Required variants:
 
 Producer “AccessZone by UUID success” is obsolete and is not an AstraIndexator qualification variant.
 
+CODEX-10 caveat: retrieval of the real PDF was proven through public HTTP with `callerAccessLevel=INTERNAL`; `PUBLIC` did not return the target document. The positive path does not rely on AstraVector private PostgreSQL/Qdrant access.
+
 ## M8.G — Final M8 qualification
 
-**Status:** ⬜ BLOCKED BY M8.CR/D/F
+**Status:** 🚧 BRANCH QUALIFIED; DEFAULT-BRANCH MERGE/CI AND FINAL ROLLUP DOC REMAIN
 
 M8 becomes QUALIFIED only when:
 

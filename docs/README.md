@@ -23,7 +23,7 @@ No production implementation should introduce a contract that contradicts these 
 | TZ-08 | Multilingual Logical Splitter | Structure-aware, tokenizer-calibrated logical fragmentation mapped through TZ-09 `LogicalBlock[]` | Baseline |
 | TZ-09 | Canonical Document Model | ParsedDocument, DocumentElement, LogicalFragment, LogicalBlock mapping, provenance, deterministic IDs | Baseline |
 | TZ-10 | Access Zones & TTL | AstraVector-compatible zone selectors, canonical `0000–0999` knowledge catalog and registry-owned TTL semantics | Baseline |
-| TZ-11 | AstraVector Integration | Public ingestion facade, LogicalBlock mapping, sessions, idempotency/readiness | Baseline |
+| TZ-11 | AstraVector Integration | Public ingestion facade, LogicalBlock mapping, sessions, activation, idempotency/readiness | Baseline + CODEX-10 B2 evidence |
 | TZ-12 | Document Lifecycle | Numeric versions, reindex/delete/cancel/expiry/searchability semantics | Baseline |
 | TZ-13 | Reliability & Recovery | Crash recovery, replay, reconciliation, dead-letter and fencing | Baseline |
 | TZ-14 | Observability & Knowledge Inventory | Logs, metrics, traces, health, audit, loaded-knowledge inventory and lifetime visibility | Baseline |
@@ -205,6 +205,20 @@ reclaim expired lease
 ```
 
 Mutating AstraVector RPC timeouts are ambiguous outcomes and are reconciled before replay/replacement. New versions build without destroying the previous searchable version. Delete is asynchronous through AstraVector facade; AstraIndexator never mutates Qdrant directly.
+
+For MANUAL AstraVector activation policy, the current production completion path is:
+
+```text
+StartLogicalDocumentIngestion
+  -> AppendLogicalDocumentBlocks
+  -> FinalizeLogicalDocumentIngestion
+  -> GetDocumentVectorStatus until READY_TO_ACTIVATE
+  -> ActivateDocumentVersion
+  -> GetDocumentVectorStatus until searchable evidence
+  -> local COMPLETED
+```
+
+On AstraVector `registry.astrabase.asia/astravector:sha-f6493fa`, public status may remain top-level `OPERATION_STATE_READY_TO_ACTIVATE` after activation while `sync.documentStatus=ACTIVE` and `searchable=true`. AstraIndexator treats that public evidence as searchable completion and does not read AstraVector PostgreSQL or Qdrant directly.
 
 Canonical indexing processing stages are owned by TZ-02 and reused by TZ-12/TZ-14/TZ-17 rather than duplicated as competing enums.
 
